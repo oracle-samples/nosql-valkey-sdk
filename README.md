@@ -1,8 +1,8 @@
-# Oracle NoSQL SDK for Java
+# Oracle NoSQL Redis SDK for Java
 
 ## About
 
-The Oracle NoSQL SDK for Java provides interfaces,
+The Oracle NoSQL Redis SDK for Java provides interfaces,
 documentation, and examples to help develop Java
 applications that connect to the Oracle NoSQL
 Database Cloud Service, Oracle NoSQL Database or to the Oracle NoSQL
