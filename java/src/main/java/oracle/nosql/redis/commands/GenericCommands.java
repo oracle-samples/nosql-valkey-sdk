@@ -9,10 +9,12 @@
 
 import static oracle.nosql.redis.util.Utils.millisToSeconds;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.function.LongBinaryOperator;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.handler.codec.redis.ArrayRedisMessage;
 import io.netty.handler.codec.redis.IntegerRedisMessage;
 import io.netty.handler.codec.redis.RedisMessage;
 import io.netty.handler.codec.redis.SimpleStringRedisMessage;
@@ -33,6 +35,10 @@ public class GenericCommands extends CommandsBase {
         GT,
         LT
     }
+
+    private static final long SCAN_DEF_COUNT = 10;
+
+    private final Scan scan;
 
     private static int compExp(long exp1, long exp2) {
         assert exp1 >= NO_EXP;
@@ -130,6 +136,7 @@ public class GenericCommands extends CommandsBase {
     public GenericCommands(NoSQLHandle nosqlHandle,
         PreparedStatementCache pstmtCache) {
         super(nosqlHandle, pstmtCache);
+        scan = new Scan(nosqlHandle, pstmtCache);
     }
 
     public void registerCommands(HashMap<String, CommandHandler> cmdMap) {
@@ -278,13 +285,55 @@ public class GenericCommands extends CommandsBase {
     public RedisMessage handleScan(RedisClientContext client, RawCommand cmd)
         throws RedisResponseException
     {
-        throw RedisResponseException.unknownCommand(cmd);
+        chkMinNumArgs(cmd, 1);
+
+        // SCAN cursor [MATCH pattern] [COUNT count] [TYPE type]
+        if (cmd.args.length % 2 == 0) {
+            throw RedisResponseException.syntaxError();
+        }
+        
+        long cursor;
+        try {
+            cursor = Utils.byteBufToLong(cmd.args[0]);
+        } catch (RedisResponseException ex) {
+            throw new RedisResponseException(ErrorPrefix.ERR,
+            "invalid cursor");
+        }
+
+        ByteBuf match = null;
+        String type = null;
+        long count = SCAN_DEF_COUNT;
+
+        for(int i = 1; i < cmd.args.length; i += 2) {
+            String arg = Utils.byteBufToString(cmd.args[i]);
+            if (arg.equalsIgnoreCase("MATCH")) {
+                match = cmd.args[i + 1];
+            } else if (arg.equalsIgnoreCase("COUNT")) {
+                count = Utils.byteBufToLong(cmd.args[i + 1]);
+                if (count <= 0) {
+                    throw RedisResponseException.syntaxError();
+                }
+            } else if (arg.equalsIgnoreCase("TYPE")) {
+                type = Utils.byteBufToString(cmd.args[i + 1]);
+            } else {
+                throw RedisResponseException.syntaxError();
+            }
+        }
+
+        return scan.scan(cursor, match, count, type);
     }
 
     public RedisMessage handleKeys(RedisClientContext client, RawCommand cmd)
         throws RedisResponseException
     {
-        throw RedisResponseException.unknownCommand(cmd);
+        chkExactNumArgs(cmd, 1);
+        ArrayList<RedisMessage> results = new ArrayList<>();
+        long cursor = 0;
+        do {
+            cursor = scan.scan(cursor, cmd.args[0], 10, null, results);
+        } while (cursor != 0);
+
+        return new ArrayRedisMessage(results);
     }
 
 }

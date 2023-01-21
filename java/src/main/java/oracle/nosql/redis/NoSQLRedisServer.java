@@ -40,6 +40,8 @@ public class NoSQLRedisServer {
     public static final String CREATE_MAIN_TABLE =
         "CREATE TABLE IF NOT EXISTS redis(id STRING, key JSON, value JSON, " +
         "PRIMARY KEY(id))";
+    public static final String CREATE_SCANID_IDX =
+        "CREATE INDEX IF NOT EXISTS scanIdIdx ON redis(key.scanId AS LONG)";
     private TableLimits DEFAULT_TABLE_LIMITS = new TableLimits(50, 100, 5);
     
     private ServerBootstrap serverBootstrap = new ServerBootstrap();
@@ -53,6 +55,8 @@ public class NoSQLRedisServer {
         nosqlHandle.doTableRequest(new TableRequest()
             .setStatement(CREATE_MAIN_TABLE)
             .setTableLimits(DEFAULT_TABLE_LIMITS), 30000, 500);
+        nosqlHandle.doTableRequest(new TableRequest()
+            .setStatement(CREATE_SCANID_IDX), 30000, 500);
     }
 
     public NoSQLRedisServer(String host, int port, NoSQLHandle nosqlHandle) {

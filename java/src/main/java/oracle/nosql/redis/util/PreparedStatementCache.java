@@ -7,20 +7,33 @@
 
 package oracle.nosql.redis.util;
 
+import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.Map;
+
 import oracle.nosql.driver.NoSQLHandle;
+import oracle.nosql.driver.ops.PrepareRequest;
 import oracle.nosql.driver.ops.PreparedStatement;
 
 public class PreparedStatementCache {
 	
     private final NoSQLHandle handle;
+    private Map<String,PreparedStatement> map;
 
     public PreparedStatementCache(NoSQLHandle handle)
     {
         this.handle = handle;
+        map = Collections.synchronizedMap(new IdentityHashMap<>());
     }
 
-    public PreparedStatement getPreparedStatement(String stmt) {
-        return null;
+    public PreparedStatement get(String stmt) {
+        PreparedStatement pStmt = map.get(stmt);
+        if (pStmt == null) {
+            pStmt = handle.prepare(new PrepareRequest().setStatement(stmt))
+                .getPreparedStatement();
+            map.put(stmt, pStmt);
+        }
+        return pStmt.copyStatement();
     }
 
 }

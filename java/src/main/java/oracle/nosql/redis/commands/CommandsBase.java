@@ -62,7 +62,7 @@ abstract class CommandsBase {
     static final String FLD_DATA = "data";
     static final String FLD_ISBIN = "isBin";
     static final String KEY_DATA = FLD_DATA;
-    static final String KEY_HASH = "hash";
+    static final String KEY_SCAN_ID = "scanId";
     static final String KEY_ISBIN = FLD_ISBIN;
     static final String KEY_EXP = "exp";
     static final String VALUE_TYPE = "type";
@@ -213,7 +213,8 @@ abstract class CommandsBase {
     }
 
     static MapValue makeRedisKey(RedisKeyInfo keyInfo) {
-        MapValue res = new MapValue().put(KEY_DATA, keyInfo.data);
+        MapValue res = new MapValue().put(KEY_DATA, keyInfo.data)
+            .put(KEY_SCAN_ID, Scan.makeScanId(keyInfo));
         if (keyInfo.exp > 0) {
             res.put(KEY_EXP, keyInfo.exp);
         }
