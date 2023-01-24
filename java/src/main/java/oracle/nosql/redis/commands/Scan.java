@@ -35,7 +35,8 @@ class Scan extends CommandsBase {
 	
     private static final String SCAN_STMT =
         "SELECT t.key, t.value.type AS type FROM redis t "
-        + "WHERE t.key.scanId >= ? ORDER BY t.key.scanId";
+        + "WHERE t.key.scanId >= ? AND (NOT EXISTS t.key.exp OR "
+        + "t.key.exp >= ?) ORDER BY t.key.scanId";
 
     private static final String FLD_TYPE = VALUE_TYPE;
 
@@ -202,11 +203,20 @@ class Scan extends CommandsBase {
         return (int)Math.min(count + 1, Integer.MAX_VALUE);
     }
 
-    // To be improved, this is just for testing.
+    // This will need to be reconsidered.  String.hashCode() is not very
+    // strong anyway.  Need to look for better 3rd party hash function.
     // Make sure the scan id != 0, because of special meaning of cursor = 0.
     static long makeScanId(RedisKeyInfo keyInfo) {
-        long res = keyInfo.id.hashCode();
-        return res != 0 ? res : res + 1;
+        long vLow = keyInfo.id.hashCode();
+        long vHigh = new StringBuilder(keyInfo.id).reverse().toString()
+            .hashCode();
+        long res = (vHigh << 32) | vLow;
+        // This should not really be possible (hashcode = 0 for both string
+        // and its reverse?), but just in case.
+        if (res == 0) {
+            res = Long.MIN_VALUE;
+        }
+        return res;
     }
 
     // Returns next cursor value.  Accumulates results into results list.
@@ -226,7 +236,8 @@ class Scan extends CommandsBase {
 
         PreparedStatement pStmt = pstmtCache.get(SCAN_STMT)
             .setVariable(1, new LongValue(
-                cursor == 0 ? Long.MIN_VALUE : cursor));
+                cursor == 0 ? Long.MIN_VALUE : cursor))
+            .setVariable(2, new LongValue(System.currentTimeMillis()));
         // Nested "try" to avoid resource leak warning on qReq because of
         // set... methods below.
         try(QueryRequest qReq = new QueryRequest()) {

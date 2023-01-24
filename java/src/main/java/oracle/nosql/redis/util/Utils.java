@@ -7,9 +7,11 @@
 
 package oracle.nosql.redis.util;
 
+import java.security.MessageDigest;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
+import io.netty.handler.codec.base64.Base64;
 import io.netty.util.CharsetUtil;
 import oracle.nosql.redis.RedisResponseException;
 import oracle.nosql.redis.RedisResponseException.ErrorPrefix;
@@ -25,6 +27,8 @@ public class Utils {
     public interface ThrowingBiFunction<T1, T2, R, E extends Exception> {
         R apply(T1 t1, T2 t2) throws E;
     }
+
+    private static final String SHA256_ALG = "SHA-256";
 
     public static String byteBufToString(ByteBuf buf)
         throws RedisResponseException {
@@ -78,8 +82,17 @@ public class Utils {
     }
 
     public static String createDigest(ByteBuf buf) {
-        // To be implemented.
-        return null;
+        try {
+            MessageDigest digest = MessageDigest.getInstance(SHA256_ALG);
+            byte[] res = digest.digest(ByteBufUtil.getBytes(buf, 0,
+                buf.readableBytes(), false));
+            return Base64.encode(Unpooled.wrappedBuffer(res)).toString(
+                CharsetUtil.UTF_8);
+        } catch(Exception ex) {
+            // This shouldn't happen.
+            assert false;
+            throw new RuntimeException("Unexpected message digest error", ex);
+        }
     }
 
 }

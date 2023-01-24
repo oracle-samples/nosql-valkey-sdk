@@ -32,7 +32,10 @@ public class PreparedStatementCache {
             pStmt = handle.prepare(new PrepareRequest().setStatement(stmt))
                 .getPreparedStatement();
             map.put(stmt, pStmt);
+            return pStmt;
         }
+        // How much faster would using ThreadLocal be rather than copying
+        //every time?
         return pStmt.copyStatement();
     }
 

@@ -54,9 +54,15 @@ class RedisServerHandler extends SimpleChannelInboundHandler<RedisMessage> {
     
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-        System.err.print("exceptionCaught: ");
-        cause.printStackTrace(System.err);
+        // This happens when redis-cli disconnects (even via exit command).
+        // Todo: log the error.
         ctx.close();
+    }
+
+    @Override
+    public void channelInactive(ChannelHandlerContext ctx) {
+        // This is called when the channel is closed.
+        // Todo: any necessary cleanup on RedisClientContext when implemented.
     }
     
 }
