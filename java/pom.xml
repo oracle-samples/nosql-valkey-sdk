@@ -9,12 +9,12 @@
     <dependency>
         <groupId>com.oracle.nosql.sdk</groupId>
         <artifactId>nosqldriver</artifactId>
-        <version>5.3.7</version>
+        <version>5.4.15</version>
     </dependency>
     <dependency>
         <groupId>io.netty</groupId>
         <artifactId>netty-all</artifactId>
-        <version>4.1.82.Final</version>
+        <version>4.1.108.Final</version>
     </dependency>
   </dependencies>
   <properties>
@@ -39,17 +39,24 @@
         </configuration>
         </plugin>
         <plugin>
-        <artifactId>maven-assembly-plugin</artifactId>
-        <configuration>
-            <archive>
-            <manifest>
-                <mainClass>oracle.nosql.redis.NoSQLRedisServer</mainClass>
-            </manifest>
-            </archive>
-            <descriptorRefs>
-            <descriptorRef>jar-with-dependencies</descriptorRef>
-            </descriptorRefs>
-        </configuration>
+            <artifactId>maven-assembly-plugin</artifactId>
+                <configuration>
+                    <finalName>oracle-nosql-redis</finalName>
+                    <!-- don't deploy at this time -->
+                    <attach>true</attach>
+                    <descriptorRefs>
+                        <descriptorRef>jar-with-dependencies</descriptorRef>
+                    </descriptorRefs>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>make-assembly</id>
+                        <phase>install</phase>
+                        <goals>
+                        <goal>single</goal>
+                        </goals>
+                    </execution>
+                </executions>
         </plugin>
     </plugins>
 </build>

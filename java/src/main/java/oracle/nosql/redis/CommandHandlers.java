@@ -11,11 +11,12 @@ import java.util.HashMap;
 
 import io.netty.handler.codec.redis.RedisMessage;
 import oracle.nosql.driver.NoSQLHandle;
-import oracle.nosql.redis.util.PreparedStatementCache;
-import oracle.nosql.redis.util.Utils.ThrowingBiFunction;
 import oracle.nosql.redis.commands.ConnectionCommands;
 import oracle.nosql.redis.commands.GenericCommands;
+import oracle.nosql.redis.commands.ListCommands;
 import oracle.nosql.redis.commands.StringCommands;
+import oracle.nosql.redis.util.PreparedStatementCache;
+import oracle.nosql.redis.util.Utils.ThrowingBiFunction;
 
 public class CommandHandlers {
 	
@@ -31,6 +32,7 @@ public class CommandHandlers {
     private final GenericCommands genericCommands;
     
     private final StringCommands stringCommands;
+    private final ListCommands listCommands;
     
     CommandHandlers(NoSQLHandle nosqlHandle) {
         cmdMap = new HashMap<>();
@@ -39,10 +41,12 @@ public class CommandHandlers {
         connCommands = new ConnectionCommands(nosqlHandle, pstmtCache);
         genericCommands = new GenericCommands(nosqlHandle, pstmtCache);
         stringCommands = new StringCommands(nosqlHandle, pstmtCache);
+        listCommands = new ListCommands(nosqlHandle, pstmtCache);
 
         connCommands.registerCommands(cmdMap);
         genericCommands.registerCommands(cmdMap);
         stringCommands.registerCommands(cmdMap);
+        listCommands.registerCommands(cmdMap);
     }
 
     CommandHandler getHandler(String name) {

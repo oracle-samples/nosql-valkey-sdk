@@ -8,6 +8,7 @@
 package oracle.nosql.redis.commands;
 
 import java.util.function.Predicate;
+
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.handler.codec.base64.Base64;
@@ -79,7 +80,8 @@ abstract class CommandsBase {
     static final int NO_EXP = -1;
     static final int KEEP_TTL = -2;
 
-    static final int ATOMIC_SET_TRIES = 10;
+    //static final int ATOMIC_SET_TRIES = 10;
+    static final int ATOMIC_SET_TRIES = 10000000;
 
     static final SimpleStringRedisMessage okReply =
         new SimpleStringRedisMessage("OK");
@@ -112,9 +114,8 @@ abstract class CommandsBase {
         }
     }
 
-    // Used mostly when reading key-value pair.
-    static class RedisValueInfo {
-        final MapValue val;
+    static class RedisValueInfoBase<V> {
+        final V val;
         final oracle.nosql.driver.Version ver;
         final long exp;
 
@@ -123,7 +124,7 @@ abstract class CommandsBase {
         static final RedisValueInfo NONE = new RedisValueInfo(null, null,
             NO_EXP);
 
-        RedisValueInfo(MapValue val, oracle.nosql.driver.Version ver,
+        RedisValueInfoBase(V val, oracle.nosql.driver.Version ver,
             long exp) {
             this.val = val;
             this.ver = ver;
@@ -141,6 +142,25 @@ abstract class CommandsBase {
         boolean isValid() {
             return val != null && (exp == NO_EXP ||
                 System.currentTimeMillis() <= exp);
+        }
+
+        // the key exists but has expired
+        boolean isExpired(long currTime) {
+            return val != null && exp != NO_EXP && currTime > exp;
+        }
+    }
+
+    // Used mostly when reading key-value pair.
+    static class RedisValueInfo extends RedisValueInfoBase<MapValue> {
+
+        // Represents non-existing row or when we want to unconditionally
+        // overwrite existing row.
+        static final RedisValueInfo NONE = new RedisValueInfo(null, null,
+            NO_EXP);
+
+        RedisValueInfo(MapValue val, oracle.nosql.driver.Version ver,
+            long exp) {
+            super(val, ver, exp);
         }
     }
 
@@ -169,6 +189,14 @@ abstract class CommandsBase {
         }
     }
 
+    static void chkNumArgs(RawCommand cmd, int minNumArgs, int maxNumArgs)
+        throws RedisResponseException {
+        int numArgs = cmd.args != null ? cmd.args.length : 0;
+        if (numArgs < minNumArgs || numArgs > maxNumArgs) {
+            throw RedisResponseException.numArgs(cmd.name);
+        }
+    }
+
     static void chkNotSet(Object o) throws RedisResponseException {
         if (o != null) {
             throw RedisResponseException.syntaxError();
@@ -182,6 +210,13 @@ abstract class CommandsBase {
         }
     }
 
+    //TODO: isText() takes time. We should avoid calling it if possible.
+    //Maybe this could be combined with conversion to UTF-8, that is if it
+    //fails, we consider the key binary and do base64 encoding. This will
+    //work well when most of the keys are UTF-8. In any case, I suspect the
+    //time taken by isText is comparable to the actual UTF-8 conversion.
+    //Another way would be to use isText() only for short keys and always
+    //base64-encode longer keys.
     static RedisKeyInfo makeRedisKeyInfo(ByteBuf buf, long exp) {
         boolean isBin = !ByteBufUtil.isText(buf, CharsetUtil.UTF_8);
         if (isBin) {

@@ -35,7 +35,7 @@ public class PreparedStatementCache {
             return pStmt;
         }
         // How much faster would using ThreadLocal be rather than copying
-        //every time?
+        // every time?
         return pStmt.copyStatement();
     }
 
