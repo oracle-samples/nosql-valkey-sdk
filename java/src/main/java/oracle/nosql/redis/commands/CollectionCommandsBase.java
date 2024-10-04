@@ -8,7 +8,9 @@
 package oracle.nosql.redis.commands;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.UUID;
 
 import oracle.nosql.driver.NoSQLException;
 import oracle.nosql.driver.NoSQLHandle;
@@ -18,6 +20,7 @@ import oracle.nosql.driver.ops.PreparedStatement;
 import oracle.nosql.driver.ops.PutRequest;
 import oracle.nosql.driver.ops.QueryIterableResult;
 import oracle.nosql.driver.ops.QueryRequest;
+import oracle.nosql.driver.ops.QueryResult;
 import oracle.nosql.driver.ops.Request;
 import oracle.nosql.driver.ops.WriteMultipleRequest;
 import oracle.nosql.driver.ops.WriteMultipleResult;
@@ -33,19 +36,67 @@ import oracle.nosql.redis.util.Utils.ThrowingFunction;
 
 abstract class CollectionCommandsBase extends CommandsBase {
 
+    protected static final String FLD_CID = "cid";
+    protected static final String FLD_VER = "ver";
+
+    static class CollectionHeader {
+
+        String cid;
+
+        CollectionHeader() {
+            cid = UUID.randomUUID().toString();
+        }
+
+        CollectionHeader(String cid) {
+            this.cid = cid;
+        }
+
+        CollectionHeader(MapValue val) throws RedisResponseException {
+            cid = getCid(val);
+        }
+
+        static String getCid(MapValue val) throws RedisResponseException {
+            FieldValue fldCid = val.get(FLD_CID);
+            if (fldCid == null || !fldCid.isString()) {
+                throw RedisResponseException.corrupt(
+                    "Missing or invalid value cid field");
+            }
+    
+            String cid = fldCid.getString();
+            if (cid == null || cid.isEmpty()) {
+                throw RedisResponseException.corrupt("Invalid cid");
+            }
+
+            return cid;
+        }
+
+        MapValue makeValue() {
+            return new MapValue().put(FLD_CID, cid);
+        }
+
+    }
+
     // Same as RedisValueInfo but also contains values for collection
     // elements (mostly element keys), which were typically obtained via
     // join query with the collection's child table.
     // TODO: better unify CollectionValueInfo and RedisValueInfo.
-    static class CollectionValueInfo<V, E> extends RedisValueInfoBase<V> {
-        final List<E> elems = new ArrayList<>();
+    static class CollectionValueInfo<V extends CollectionHeader, E>
+        extends RedisValueInfoBase<V> {
+        final List<E> elems;
 
         private static final CollectionValueInfo<?,?> NONE =
-            new CollectionValueInfo<>(null, null, NO_EXP);
+            new CollectionValueInfo<>(null, Collections.emptyList(),
+            null, NO_EXP);
+
+        CollectionValueInfo(V val, List<E> elems,
+            oracle.nosql.driver.Version ver, long exp) {
+            super(val, ver, exp);
+            this.elems = elems;
+        }
 
         CollectionValueInfo(V val, oracle.nosql.driver.Version ver,
             long exp) {
-            super(val, ver, exp);
+            this(val, new ArrayList<>(), ver, exp);
         }
 
         // oldVal is provided to return a value that keeps the version and
@@ -53,14 +104,16 @@ abstract class CollectionCommandsBase extends CommandsBase {
         // to make update conditional on expired key version. The resulting
         // value has val = null to simplify the handling code.
         @SuppressWarnings("unchecked")
-        static <V, E> CollectionValueInfo<V, E> none(
+        static <V extends CollectionHeader, E> CollectionValueInfo<V, E> none(
             CollectionValueInfo<V, E> oldVal) {
             return oldVal == null ?
                 (CollectionValueInfo<V, E>) NONE :
-                new CollectionValueInfo<V,E>(null, oldVal.ver, oldVal.exp);
+                new CollectionValueInfo<V,E>(null, Collections.emptyList(),
+                    oldVal.ver, oldVal.exp);
         }
 
-        static <V, E> CollectionValueInfo<V, E> none() {
+        static <V extends CollectionHeader, E> CollectionValueInfo<V, E>
+            none() {
             return none(null);
         }
     }
@@ -68,13 +121,14 @@ abstract class CollectionCommandsBase extends CommandsBase {
     // Contains information needed to perform an update operation together
     // with the value of the new collection header (dependent on collection
     // type).
-    static class CollectionUpdateInfo<V> {
+    static class CollectionUpdateInfo<V extends CollectionHeader> {
 
         final WriteMultipleRequest req = new WriteMultipleRequest();
-        V newVal; // newVal = null means the collection key is to be deleted
+        // newVal = null means the collection key is to be deleted
+        final V newVal;
 
-        void setValue(V val) {
-            this.newVal = val;
+        CollectionUpdateInfo(V newVal) {
+            this.newVal = newVal;
         }
 
         boolean needUpdate() {
@@ -83,14 +137,14 @@ abstract class CollectionCommandsBase extends CommandsBase {
 
         // Add put request for the collection header.
         <E> CollectionUpdateInfo<V> addPutKeyReq(RedisKeyInfo keyInfo,
-            CollectionValueInfo<V, E> valInfo, MapValue newVal) {
+            CollectionValueInfo<V, E> valInfo) {
             
             // put or delete key request should always be set first
             assert req.getNumOperations() == 0;
 
             MapValue row = new MapValue().put(FLD_ID, keyInfo.id)
                 .put(FLD_KEY, makeRedisKey(keyInfo))
-                .put(FLD_VALUE, newVal);
+                .put(FLD_VALUE, newVal.makeValue());
             PutRequest putReq = new PutRequest()
                 .setTableName(NoSQLRedisServer.MAIN_TABLE_NAME)
                 .setValue(row);
@@ -99,7 +153,7 @@ abstract class CollectionCommandsBase extends CommandsBase {
             // on the fact that the key did not exist before the update.
             if (valInfo.ver != null) {
                 putReq.setOption(PutRequest.Option.IfVersion);
-                putReq.setMatchVersion(valInfo.ver);                        
+                putReq.setMatchVersion(valInfo.ver);                
             } else {
                 putReq.setOption(PutRequest.Option.IfAbsent);
             }
@@ -150,15 +204,26 @@ abstract class CollectionCommandsBase extends CommandsBase {
 
     }
 
-    static final String FLD_VER = "ver";
-
-    // WriteMultipleRequest can do max of 50 ops and we use one for the
-    // collection header.
-    static final int MAX_TXN_ELEM_CNT = 49;
+    // WriteMultipleRequest can do max of 50 ops.
+    static final int MAX_WM_CNT = 50;
+    // For most transactions, we use one for the ops for the collection header.
+    static final int MAX_TXN_ELEM_CNT = MAX_WM_CNT - 1;
 
     CollectionCommandsBase(NoSQLHandle nosqlHandle,
         PreparedStatementCache pstmtCache) {
         super(nosqlHandle, pstmtCache);
+    }
+
+    private void doWM(WriteMultipleRequest wmReq)
+        throws RedisResponseException {
+        WriteMultipleResult wmRes =
+        nosqlHandle.writeMultiple(wmReq);
+        if (!wmRes.getSuccess()) {
+            // this should not happen but just in case
+            throw RedisResponseException.corrupt(
+                "Unsuccessful writeMultiple when updating " +
+                "elements TTL");
+        }
     }
 
     // Retrieves row version from the query result row, where it is returned
@@ -169,6 +234,13 @@ abstract class CollectionCommandsBase extends CommandsBase {
             throw RedisResponseException.corrupt("Invalid row version");
         }
         return val.getBinary();
+    }
+
+    static void chkSingleResult(List<?> res) throws RedisResponseException {
+        if (res.size() != 1) {
+            throw RedisResponseException.corrupt(
+                "Expected single result, got multiple");
+        }
     }
 
     <R> List<R> doQuery(RedisKeyInfo keyInfo, String sql,
@@ -202,7 +274,35 @@ abstract class CollectionCommandsBase extends CommandsBase {
         return doQuery(keyInfo, sql, (val) -> val, vals);
     }
 
-    <V, E, R> R doMultiUpdate(RedisKeyInfo keyInfo,
+    // Have to change name because of ambiguity with doQuery() that uses
+    // ThrowingFunction above.
+    // applyRow will return true if we are done, false otherwise.
+    void processQuery(RedisKeyInfo keyInfo, String sql,
+        ThrowingFunction<MapValue, Boolean, RedisResponseException> applyRow,
+        FieldValue... vars) throws RedisResponseException {
+        PreparedStatement pStmt = pstmtCache.get(sql);
+        
+        // The first variable is always the key id.
+        pStmt.setVariable("$var1", new StringValue(keyInfo.id));
+        for(int i = 0; i < vars.length; i++) {
+            pStmt.setVariable("$var" + (i + 2), vars[i]);
+        }
+
+        // Nested "try" to avoid resource leak warning on qReq because of
+        // set... methods below.
+        try(QueryRequest qReq = new QueryRequest()) {
+            qReq.setPreparedStatement(pStmt);
+            try(QueryIterableResult qir = nosqlHandle.queryIterable(qReq)) {
+                for(MapValue row : qir) {
+                    if (applyRow.apply(row)) {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    <V extends CollectionHeader, E, R> R doMultiUpdate(RedisKeyInfo keyInfo,
         ThrowingFunction<RedisKeyInfo, CollectionValueInfo<V, E>,
             RedisResponseException> getOldVal,
         ThrowingBiFunction<RedisKeyInfo, CollectionValueInfo<V, E>,
@@ -248,6 +348,113 @@ abstract class CollectionCommandsBase extends CommandsBase {
         throw new RedisResponseException(ErrorPrefix.NOSQL,
             "Failed to perform atomic read-update sequence after "
                 + ATOMIC_SET_TRIES + " tries");
+    }
+
+    abstract String getElemsTblName();
+    abstract String getSQLSelElems();
+    abstract String getSQLDelElems();
+
+    // In most cases using cid and count should be sufficient to create the
+    // copied header. In other cases, we may need to do some queries since
+    // the source collection may have changed while it was copied.
+    abstract CollectionHeader doCopyHeader(RedisValueInfo oldVal,
+        String cid, long cnt) throws RedisResponseException;
+
+    protected void doDelElems(RedisKeyInfo keyInfo, RedisValueInfo valInfo)
+        throws RedisResponseException{
+        String cid = CollectionHeader.getCid(valInfo.val);
+        PreparedStatement pStmt = pstmtCache.get(getSQLDelElems());
+        
+        pStmt.setVariable("$var1", new StringValue(keyInfo.id));
+        pStmt.setVariable("$var2", new StringValue(cid));
+
+        // Nested "try" to avoid resource leak warning on qReq because of
+        // set... methods below.
+        try(QueryRequest qReq = new QueryRequest()) {
+            qReq.setPreparedStatement(pStmt);
+            do {
+                @SuppressWarnings("unused")
+                QueryResult res = nosqlHandle.query(qReq);
+            } while(!qReq.isDone());
+        };
+    }
+
+    protected void doSetElemsExp(RedisKeyInfo keyInfo, RedisValueInfo valInfo,
+        TimeToLive ttl) throws RedisResponseException {
+        String cid = CollectionHeader.getCid(valInfo.val);
+        PreparedStatement pStmt = pstmtCache.get(getSQLSelElems());
+
+        pStmt.setVariable("$var1", new StringValue(keyInfo.id));
+        pStmt.setVariable("$var2", new StringValue(cid));
+
+        WriteMultipleRequest wmReq = new WriteMultipleRequest();
+        String tblName = getElemsTblName();
+
+        // Nested "try" to avoid resource leak warning on qReq because of
+        // set... methods below.
+        try(QueryRequest qReq = new QueryRequest()) {
+            qReq.setPreparedStatement(pStmt);
+            try(QueryIterableResult qir = nosqlHandle.queryIterable(qReq)) {
+                for(MapValue row : qir) {
+                    if (wmReq.getNumOperations() == MAX_WM_CNT) {
+                        doWM(wmReq);
+                        wmReq.clear();
+                    }
+                    wmReq.add(new PutRequest().setTableName(tblName)
+                        .setValue(row).setTTL(ttl), true);
+                }
+            }
+        }
+
+        if (wmReq.getNumOperations() != 0) {
+            doWM(wmReq);
+        }
+    }
+
+    protected MapValue doCopy(RedisKeyInfo srcKeyInfo,
+        RedisValueInfo srcValInfo, RedisKeyInfo dstKeyInfo)
+        throws RedisResponseException {
+        String cid = CollectionHeader.getCid(srcValInfo.val);
+        PreparedStatement pStmt = pstmtCache.get(getSQLSelElems());
+
+        pStmt.setVariable("$var1", new StringValue(srcKeyInfo.id));
+        pStmt.setVariable("$var2", new StringValue(cid));
+
+        String newCid = UUID.randomUUID().toString();
+
+        WriteMultipleRequest wmReq = new WriteMultipleRequest();
+        String tblName = getElemsTblName();
+        
+        long cnt = 0;
+
+        // Nested "try" to avoid resource leak warning on qReq because of
+        // set... methods below.
+        try(QueryRequest qReq = new QueryRequest()) {
+            qReq.setPreparedStatement(pStmt);
+            try(QueryIterableResult qir = nosqlHandle.queryIterable(qReq)) {
+                for(MapValue row : qir) {
+                    if (wmReq.getNumOperations() == MAX_WM_CNT) {
+                        doWM(wmReq);
+                        cnt += MAX_TXN_ELEM_CNT;
+                        wmReq.clear();
+                    }
+                    
+                    // replace primary key - destination key id and new cid
+                    row.put(FLD_ID, dstKeyInfo.id);
+                    row.put(FLD_CID, newCid);
+
+                    wmReq.add(new PutRequest().setTableName(tblName)
+                        .setValue(row), true);
+                }
+            }
+        }
+
+        if (wmReq.getNumOperations() != 0) {
+            doWM(wmReq);
+            cnt += wmReq.getNumOperations();
+        }
+
+        return doCopyHeader(srcValInfo, newCid, cnt).makeValue();
     }
 
 }

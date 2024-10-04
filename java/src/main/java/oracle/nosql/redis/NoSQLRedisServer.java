@@ -22,11 +22,9 @@ import io.netty.handler.codec.redis.RedisDecoder;
 import io.netty.handler.codec.redis.RedisEncoder;
 import io.netty.handler.logging.LogLevel;
 import io.netty.handler.logging.LoggingHandler;
-import oracle.nosql.driver.AuthorizationProvider;
 import oracle.nosql.driver.NoSQLHandle;
 import oracle.nosql.driver.NoSQLHandleConfig;
 import oracle.nosql.driver.NoSQLHandleFactory;
-import oracle.nosql.driver.ops.Request;
 import oracle.nosql.driver.ops.TableLimits;
 import oracle.nosql.driver.ops.TableRequest;
 import oracle.nosql.redis.util.CommandLine;
@@ -45,11 +43,11 @@ public class NoSQLRedisServer {
         "CREATE INDEX IF NOT EXISTS scanIdIdx ON redis(key.scanId AS LONG)";
     private static final TableLimits DEFAULT_TABLE_LIMITS =
         new TableLimits(20000, 20000, 10);
-    private static final TableLimits CLOUDSIM_TABLE_LIMITS =
-        new TableLimits(2000000, 2000000, 10);
     public static final String CREATE_LIST_TABLE =
         "CREATE TABLE IF NOT EXISTS redis.lists(elemId NUMBER, " +
-        "value STRING, PRIMARY KEY(elemId))";
+        "cid STRING AS UUID, value STRING, PRIMARY KEY(elemId))";
+    public static final String CREATE_LISTID_IDX =
+        "CREATE INDEX IF NOT EXISTS listIdIdx ON redis.lists(cid)";
     
     private final ServerBootstrap serverBootstrap = new ServerBootstrap();
     private Channel serverChannel;
@@ -62,23 +60,23 @@ public class NoSQLRedisServer {
     private void initDB() {
         nosqlHandle.doTableRequest(new TableRequest()
             .setStatement(CREATE_MAIN_TABLE)
-            /*
-            .setTableLimits(
-                useCloudSim ? CLOUDSIM_TABLE_LIMITS : DEFAULT_TABLE_LIMITS),
-            */
             .setTableLimits(DEFAULT_TABLE_LIMITS),
             30000, 500);
         nosqlHandle.doTableRequest(new TableRequest()
             .setStatement(CREATE_SCANID_IDX), 30000, 500);
         nosqlHandle.doTableRequest(new TableRequest()
             .setStatement(CREATE_LIST_TABLE), 30000, 500);
+        nosqlHandle.doTableRequest(new TableRequest()
+            .setStatement(CREATE_LISTID_IDX), 30000, 500);
     }
 
     public NoSQLRedisServer(String host, int port, NoSQLHandle nosqlHandle) {
         this.host = host;
         this.port = port;
         this.nosqlHandle = nosqlHandle;
-        this.cmdHandlers = new CommandHandlers(nosqlHandle);
+        
+        cmdHandlers = new CommandHandlers(nosqlHandle);
+        cmdHandlers.init();
 
         initDB();
 

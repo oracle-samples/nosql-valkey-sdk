@@ -19,6 +19,9 @@ import io.netty.handler.codec.redis.IntegerRedisMessage;
 import io.netty.handler.codec.redis.RedisMessage;
 import io.netty.handler.codec.redis.SimpleStringRedisMessage;
 import oracle.nosql.driver.NoSQLHandle;
+import oracle.nosql.driver.TimeToLive;
+import oracle.nosql.driver.values.MapValue;
+import oracle.nosql.redis.CommandHandlers;
 import oracle.nosql.redis.CommandHandlers.CommandHandler;
 import oracle.nosql.redis.RawCommand;
 import oracle.nosql.redis.RedisClientContext;
@@ -38,6 +41,25 @@ public class GenericCommands extends CommandsBase {
 
     private static final long SCAN_DEF_COUNT = 10;
 
+    public static final String CMD_COPY = "COPY";
+    public static final String CMD_DEL = "DEL";
+    public static final String CMD_EXISTS = "EXISTS";
+    public static final String CMD_PEXIPRETIME = "PEXPIRETIME";
+    public static final String CMD_EXPIRETIME = "EXPIRETIME";
+    public static final String CMD_PTTL = "PTTL";
+    public static final String CMD_TTL = "TTL";
+    public static final String CMD_PEXIPRE = "PEXPIRE";
+    public static final String CMD_PEXIPREAT = "PEXPIREAT";
+    public static final String CMD_EXIPRE = "EXPIRE";
+    public static final String CMD_EXIPREAT = "EXPIREAT";
+    public static final String CMD_PERSIST = "PERSIST";
+    public static final String CMD_TYPE = "TYPE";
+    public static final String CMD_SCAN = "SCAN";
+    public static final String CMD_KEYS = "KEYS";
+    public static final String CMD_RENAME = "RENAME";
+    public static final String CMD_RENAMENX = "RENAMENX";
+
+    private final CommandHandlers cmdHandlers;
     private final Scan scan;
 
     private static int compExp(long exp1, long exp2) {
@@ -68,7 +90,8 @@ public class GenericCommands extends CommandsBase {
     // EXPIRE, PEXPIRE, EXPIREAT, PEXPIREAT, PERSIST.
     private RedisMessage doSetExp(ByteBuf keyBuf, long exp, TTLOpt ttlOpt)
         throws RedisResponseException {
-        return doGetSet(keyBuf,
+        RedisKeyInfo keyInfo = makeRedisKeyInfo(keyBuf);
+        return doGetSet(keyInfo,
             (oldVal) -> oldVal.exists() &&
                 (ttlOpt == null ||
                  (ttlOpt == TTLOpt.NX && oldVal.exp == NO_EXP) ||
@@ -76,8 +99,15 @@ public class GenericCommands extends CommandsBase {
                  (ttlOpt == TTLOpt.GT && compExp(exp, oldVal.exp) > 0) ||
                  (ttlOpt == TTLOpt.LT && compExp(exp, oldVal.exp) < 0)),
             (oldVal) -> new RedisValueInfo(oldVal.val, null, exp),
-            (oldVal, newVal) -> newVal.exists() ? oneReply : zeroReply,
-            true);
+            (oldVal, newVal) -> {
+                if (newVal.exists()) {
+                    doSetElemsExp(keyInfo, newVal,
+                        TimeToLive.fromExpirationTime(exp,
+                        System.currentTimeMillis()));
+                    return oneReply;
+                }
+                return zeroReply;
+            }, true);
     }
 
     // For all commands as above except PERSIST.
@@ -111,16 +141,31 @@ public class GenericCommands extends CommandsBase {
             ttlOpt);
     }
 
+    // For collections, this will delete collection elements after the key is
+    // deleted (see cmds.afterDelete()). Note that we do not need to worry
+    // about atomicity here. If the collection key gets concurrently
+    // re-created, it will use different cid, which will not clash with the
+    // elements with old cid.
     private boolean doDel(ByteBuf keyBuf) throws RedisResponseException {
-        return doGetDel(keyBuf).exists();
+        RedisKeyInfo keyInfo = makeRedisKeyInfo(keyBuf);
+        RedisValueInfo oldVal = doDelGetVal(keyInfo);
+        if (oldVal.val == null) {
+            // the key didn't exist or expired
+            return false;
+        }
+
+        CommandsBase cmds = cmdHandlers.getCommandsByValueType(
+            getValueType(oldVal.val));
+        cmds.doDelElems(keyInfo, oldVal);
+        return true;
     }
- 
-    // Note that copy cannot be made atomic since src and dst can be on
-    // different shards.
+
+    // Copy is not atomic since src and dst can be on different shards.
     private boolean doCopy(ByteBuf srcKeyBuf, ByteBuf dstKeyBuf,
         boolean toReplace, boolean throwIfNotFound)
         throws RedisResponseException {
-        RedisValueInfo srcVal = doGet(srcKeyBuf);
+        RedisKeyInfo srcKeyInfo = makeRedisKeyInfo(srcKeyBuf);
+        RedisValueInfo srcVal = doGet(srcKeyInfo);
         if (!srcVal.isValid()) {
             if (!throwIfNotFound) {
                 return false;
@@ -128,33 +173,54 @@ public class GenericCommands extends CommandsBase {
             throw new RedisResponseException(ErrorPrefix.ERR, "no such key");
         }
 
-        return doGetSet(dstKeyBuf, (oldVal) -> toReplace || !oldVal.exists(),
-            (oldVal) -> new RedisValueInfo(srcVal.val, null, srcVal.exp),
-            (oldVal, newVal) -> newVal.exists(), !toReplace);
+        RedisKeyInfo dstKeyInfo = makeRedisKeyInfo(dstKeyBuf);
+        CommandsBase cmds = cmdHandlers.getCommandsByValueType(
+            getValueType(srcVal.val));
+        MapValue newVal = cmds.doCopy(srcKeyInfo, srcVal, dstKeyInfo);
+        return doSet(dstKeyInfo, newVal, srcVal.exp,
+            toReplace ? null : SetOpt.NX);
+    }
+    
+    // Note that it is impossible for us to make rename atomic, since it needs
+    // to delete existing key, because the source and destination could be on
+    // different shards.
+    private boolean doRename(ByteBuf srcKeyBuf, ByteBuf dstKeyBuf,
+        boolean isNX) throws RedisResponseException {
+        boolean success = doCopy(srcKeyBuf, dstKeyBuf, !isNX, true);
+        if (isNX && !success) {
+            return false;
+        }
+        assert success;
+        success = doDel(srcKeyBuf);
+        // success could be false if the key was concurrently deleted
+        return true;
     }
 
     public GenericCommands(NoSQLHandle nosqlHandle,
-        PreparedStatementCache pstmtCache) {
+        PreparedStatementCache pstmtCache, CommandHandlers cmdHandlers) {
         super(nosqlHandle, pstmtCache);
+        this.cmdHandlers = cmdHandlers;
         scan = new Scan(nosqlHandle, pstmtCache);
     }
 
     public void registerCommands(HashMap<String, CommandHandler> cmdMap) {
-        cmdMap.put("COPY", this::handleCopy);
-        cmdMap.put("DEL", this::handleDel);
-        cmdMap.put("EXISTS", this::handleExists);
-        cmdMap.put("PEXPIRETIME", this::handlePExpireTime);
-        cmdMap.put("EXPIRETIME", this::handleExpireTime);
-        cmdMap.put("PTTL", this::handlePTTL);
-        cmdMap.put("TTL", this::handleTTL);
-        cmdMap.put("PEXPIRE", this::handlePExpire);
-        cmdMap.put("PEXPIREAT", this::handlePExpireAt);
-        cmdMap.put("EXPIRE", this::handleExpire);
-        cmdMap.put("EXPIREAT", this::handleExpireAt);
-        cmdMap.put("PERSIST", this::handlePersist);
-        cmdMap.put("TYPE", this::handleType);
-        cmdMap.put("SCAN", this::handleScan);
-        cmdMap.put("KEYS", this::handleKeys);
+        cmdMap.put(CMD_COPY, this::handleCopy);
+        cmdMap.put(CMD_DEL, this::handleDel);
+        cmdMap.put(CMD_EXISTS, this::handleExists);
+        cmdMap.put(CMD_PEXIPRETIME, this::handlePExpireTime);
+        cmdMap.put(CMD_EXPIRETIME, this::handleExpireTime);
+        cmdMap.put(CMD_PTTL, this::handlePTTL);
+        cmdMap.put(CMD_TTL, this::handleTTL);
+        cmdMap.put(CMD_PEXIPRE, this::handlePExpire);
+        cmdMap.put(CMD_PEXIPREAT, this::handlePExpireAt);
+        cmdMap.put(CMD_EXIPRE, this::handleExpire);
+        cmdMap.put(CMD_EXIPREAT, this::handleExpireAt);
+        cmdMap.put(CMD_PERSIST, this::handlePersist);
+        cmdMap.put(CMD_TYPE, this::handleType);
+        cmdMap.put(CMD_SCAN, this::handleScan);
+        cmdMap.put(CMD_KEYS, this::handleKeys);
+        cmdMap.put(CMD_RENAME, this::handleRename);
+        cmdMap.put(CMD_RENAMENX, this::handleRenameNX);
     }
 
     public RedisMessage handleDel(RedisClientContext client, RawCommand cmd)
@@ -269,17 +335,19 @@ public class GenericCommands extends CommandsBase {
             oneReply : zeroReply;
     }
 
-    // Note that it is impossible for us to make rename atomic, since it needs
-    // to delete existing key, because the source and destination could be on
-    // different shards.
     public RedisMessage handleRename(RedisClientContext client, 
         RawCommand cmd) throws RedisResponseException {
         chkExactNumArgs(cmd, 2);
-        boolean success = doCopy(cmd.args[0], cmd.args[1], true, true);
-        assert success;
-        success = doDel(cmd.args[0]);
+        boolean success = doRename(cmd.args[0], cmd.args[1], false);
         assert success;
         return okReply;
+    }
+
+    public RedisMessage handleRenameNX(RedisClientContext client, 
+        RawCommand cmd) throws RedisResponseException {
+        chkExactNumArgs(cmd, 2);
+        boolean success = doRename(cmd.args[0], cmd.args[1], true);
+        return success ? oneReply : zeroReply;
     }
 
     public RedisMessage handleScan(RedisClientContext client, RawCommand cmd)

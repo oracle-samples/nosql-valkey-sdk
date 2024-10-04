@@ -58,10 +58,7 @@ class Scan extends CommandsBase {
 
     private static ByteBuf keyToKeyBuf(MapValue key)
         throws RedisResponseException {
-        String data = getData(key);
-        boolean isBin = getIsBin(key);
-        ByteBuf buf = Unpooled.copiedBuffer(data, CharsetUtil.UTF_8);
-        return isBin ? Base64.decode(buf) : buf;
+        return getStrVal(getData(key));
     }
 
     private static String rowToType(MapValue row)

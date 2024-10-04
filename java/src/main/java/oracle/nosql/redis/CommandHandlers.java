@@ -11,6 +11,7 @@ import java.util.HashMap;
 
 import io.netty.handler.codec.redis.RedisMessage;
 import oracle.nosql.driver.NoSQLHandle;
+import oracle.nosql.redis.commands.CommandsBase;
 import oracle.nosql.redis.commands.ConnectionCommands;
 import oracle.nosql.redis.commands.GenericCommands;
 import oracle.nosql.redis.commands.ListCommands;
@@ -26,20 +27,23 @@ public class CommandHandlers {
         RedisResponseException>{
     }
 
-    private final HashMap<String, CommandHandler> cmdMap;
+    private final HashMap<String, CommandHandler> cmdMap = new HashMap<>();
+    private final NoSQLHandle nosqlHandle;
     private final PreparedStatementCache pstmtCache;
-    private final ConnectionCommands connCommands;
-    private final GenericCommands genericCommands;
-    
-    private final StringCommands stringCommands;
-    private final ListCommands listCommands;
+
+    private ConnectionCommands connCommands;
+    private GenericCommands genericCommands;
+    private StringCommands stringCommands;
+    private ListCommands listCommands;
     
     CommandHandlers(NoSQLHandle nosqlHandle) {
-        cmdMap = new HashMap<>();
-        pstmtCache = new PreparedStatementCache(nosqlHandle);
-        
+        this.nosqlHandle = nosqlHandle;
+        pstmtCache = new PreparedStatementCache(nosqlHandle);        
+    }
+
+    void init() {
         connCommands = new ConnectionCommands(nosqlHandle, pstmtCache);
-        genericCommands = new GenericCommands(nosqlHandle, pstmtCache);
+        genericCommands = new GenericCommands(nosqlHandle, pstmtCache, this);
         stringCommands = new StringCommands(nosqlHandle, pstmtCache);
         listCommands = new ListCommands(nosqlHandle, pstmtCache);
 
@@ -51,6 +55,19 @@ public class CommandHandlers {
 
     CommandHandler getHandler(String name) {
         return cmdMap.get(name);
+    }
+
+    public CommandsBase getCommandsByValueType(String type)
+        throws RedisResponseException {
+        switch(type) {
+            case CommandsBase.TYPE_STRING:
+                return stringCommands;
+            case CommandsBase.TYPE_LIST:
+                return listCommands;
+            default:
+                throw RedisResponseException.corrupt(
+                    "Value of unknown type " + type);
+        }
     }
 
 }

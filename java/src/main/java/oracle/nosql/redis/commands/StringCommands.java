@@ -12,14 +12,11 @@ import java.util.HashMap;
 import java.util.List;
 
 import io.netty.buffer.ByteBuf;
-import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
-import io.netty.handler.codec.base64.Base64;
 import io.netty.handler.codec.redis.ArrayRedisMessage;
 import io.netty.handler.codec.redis.FullBulkStringRedisMessage;
 import io.netty.handler.codec.redis.IntegerRedisMessage;
 import io.netty.handler.codec.redis.RedisMessage;
-import io.netty.util.CharsetUtil;
 import oracle.nosql.driver.NoSQLHandle;
 import oracle.nosql.driver.values.MapValue;
 import oracle.nosql.redis.CommandHandlers.CommandHandler;
@@ -71,33 +68,13 @@ public class StringCommands extends CommandsBase {
         if (!getValueType(val).equals(TYPE_STRING)) {
             throw RedisResponseException.wrongType();
         }
-        
-        boolean isBin = getIsBin(val);
-        String data = getData(val);
 
-        ByteBuf buf = Unpooled.copiedBuffer(data, CharsetUtil.UTF_8);
-        if (isBin) {
-            try {
-                buf = Base64.decode(buf);
-            } catch(Exception ex) {
-                throw RedisResponseException.corrupt(
-                    "Invalid base64 encoding of data field in value");
-            }
-        }
-
-        return buf;
+        return getStrVal(getData(val));
     }
 
     private static MapValue makeStringValue(ByteBuf buf) {
-        MapValue res = new MapValue().put(VALUE_TYPE, TYPE_STRING);
-        boolean isText = ByteBufUtil.isText(buf, CharsetUtil.UTF_8);
-        if (!isText) {
-            buf = Base64.encode(buf);
-            res.put(VALUE_ISBIN, true);
-        }
-        String data = buf.toString(CharsetUtil.UTF_8);
-        res.put(VALUE_DATA, data);
-        return res;
+        return new MapValue().put(VALUE_TYPE, TYPE_STRING)
+            .put(VALUE_DATA, makeStrVal(buf));
     }
 
     private ByteBuf valInfoToByteBuf(RedisValueInfo valInfo)
@@ -136,20 +113,31 @@ public class StringCommands extends CommandsBase {
         SetOpt setOpt, boolean toGetOldVal, RedisMessage successReply,
         RedisMessage failureReply)
         throws RedisResponseException {
+        // If the result does not depend on the old value, we don't need
+        // version-conditioned put or retries done by doGetSet().
+        if (!toGetOldVal && exp != KEEP_TTL) {
+            return doSet(keyBuf, makeStringValue(valBuf), exp, setOpt) ?
+                successReply : failureReply;
+        }
         return doGetSet(
             keyBuf,
             (oldVal) -> setOpt == null ||
                 (setOpt == SetOpt.NX && !oldVal.exists()) ||
                 (setOpt == SetOpt.XX && oldVal.exists()),
-            (oldVal) -> new RedisValueInfo(makeStringValue(valBuf), null,
-                exp != KEEP_TTL ? exp : oldVal.exp),
+            (oldVal) -> {
+                if (toGetOldVal && oldVal.val != null &&
+                    !getValueType(oldVal.val).equals(TYPE_STRING)) {
+                    throw RedisResponseException.wrongType();
+                }
+                return new RedisValueInfo(makeStringValue(valBuf), null,
+                    exp != KEEP_TTL ? exp : oldVal.exp);
+            },
             // newVal is NONE if SET is not successful
             (oldVal, newVal) -> {
                 assert(setOpt != null || newVal.exists());
                 return toGetOldVal ? valInfoToResp(oldVal) :
                     (newVal.exists() ? successReply : failureReply);
-            },
-            toGetOldVal || setOpt != null || exp == KEEP_TTL);
+            }, true);
     }
 
     private RedisMessage doSetString(ByteBuf keyBuf, long exp, ByteBuf valBuf,
@@ -419,10 +407,14 @@ public class StringCommands extends CommandsBase {
     public RedisMessage handleGetDel(RedisClientContext client,
         RawCommand cmd) throws RedisResponseException {
         chkExactNumArgs(cmd, 1);
-        RedisValueInfo val = doGetDel(cmd.args[0]);
-        return val.exists() ?
-            new FullBulkStringRedisMessage(getStringValue(val.val)) :
-            FullBulkStringRedisMessage.NULL_INSTANCE;
+        RedisKeyInfo keyInfo = makeRedisKeyInfo(cmd.args[0]);
+        // Note that we cannot use doDelGetVal() here because we have to check
+        // that the value is of type String before deleting it.
+        return doGetDel(keyInfo,
+            (oldVal) -> oldVal.exists() ? getStringValue(oldVal.val) : null,
+            (oldVal, iRes) -> iRes != null ?
+                new FullBulkStringRedisMessage(iRes) :
+                FullBulkStringRedisMessage.NULL_INSTANCE);
     }
 
     public RedisMessage handleMSet(RedisClientContext client, RawCommand cmd)

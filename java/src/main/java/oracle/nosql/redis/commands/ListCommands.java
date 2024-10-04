@@ -8,21 +8,17 @@
  package oracle.nosql.redis.commands;
 
 import java.math.BigDecimal;
-import java.math.MathContext;
+import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Arrays;
 import io.netty.buffer.ByteBuf;
-import io.netty.buffer.ByteBufUtil;
-import io.netty.buffer.Unpooled;
-import io.netty.handler.codec.base64.Base64;
 import io.netty.handler.codec.redis.ArrayRedisMessage;
 import io.netty.handler.codec.redis.FullBulkStringRedisMessage;
 import io.netty.handler.codec.redis.IntegerRedisMessage;
 import io.netty.handler.codec.redis.RedisMessage;
-import io.netty.util.CharsetUtil;
 import oracle.nosql.driver.NoSQLHandle;
 import oracle.nosql.driver.ops.DeleteRequest;
 import oracle.nosql.driver.ops.PutRequest;
@@ -30,6 +26,7 @@ import oracle.nosql.driver.ops.WriteMultipleResult.OperationResult;
 import oracle.nosql.driver.values.FieldValue;
 import oracle.nosql.driver.values.LongValue;
 import oracle.nosql.driver.values.MapValue;
+import oracle.nosql.driver.values.NumberValue;
 import oracle.nosql.driver.values.StringValue;
 import oracle.nosql.redis.CommandHandlers.CommandHandler;
 import oracle.nosql.redis.RawCommand;
@@ -45,9 +42,6 @@ public class ListCommands extends CollectionCommandsBase {
     private static final String FLD_LEN = "len";
     private static final String FLD_ELEM_ID = "elemId";
 
-    private static final char BIN_VAL_PFX = BIN_KEY_PFX;
-    private static final char STR_VAL_PFX = STR_KEY_PFX;
-
     private static final String DESC = " DESC";
     private static final String LIMIT_1 = " LIMIT 1";
     private static final String VAR2_LONG = "$var2 LONG; ";
@@ -58,14 +52,17 @@ public class ListCommands extends CollectionCommandsBase {
     private static final String OFFSET_VAR2 = " OFFSET $var2";
     // private static final String ELEM_VAL = ", $l.value AS elemVal";
     private static final String ELEM_VAL_VAR2 = " AND $l.value = $var2";
+    private static final String NOT_EXPIRED =
+        "AND (NOT EXISTS $r.key.exp OR $r.key.exp > current_time_millis()) ";
+    private static final String VAL_LEN = ", $r.value.len AS len";
 
     // The commented line below currently not working for DESC order 
     // because of a bug, so we use this variation for now.
     private static final String SQL_ELEMS_FMT =
-        "DECLARE $var1 STRING; %sSELECT row_version($r) as ver, $r.key, " +
+        "DECLARE $var1 STRING; %sSELECT row_version($r) AS ver, $r.key, " +
         "$r.value, $l.elemId%s FROM redis $r LEFT OUTER JOIN redis.lists $l " +
-        //"ON $r.id = $l.id WHERE $r.id = $var1%s " +
-        "ON $r.id = $l.id AND $r.id = $var1 WHERE $l.elemId IS NOT NULL%s " +
+        //"ON $r.id = $l.id WHERE $r.id = $var1%s AND $l.cid = $r.value.cid " +
+        "ON $r.id = $l.id AND $r.id = $var1 WHERE $l.cid = $r.value.cid%s " +
         "ORDER BY $l.id%s, $l.elemId%s%s%s";
 
     private static final String SQL_LPUSH = String.format(SQL_ELEMS_FMT, "",
@@ -77,15 +74,35 @@ public class ListCommands extends CollectionCommandsBase {
     private static final String SQL_RPOP = String.format(SQL_ELEMS_FMT,
         VAR2_LONG, "", "", DESC, DESC, LIMIT_VAR2, "");
 
+    // Commented out line below for the same reason as in SQL_ELEMS_FMT
     private static final String SQL_LRANGE_FMT =
         "DECLARE $var1 STRING; $var2 INTEGER; $var3 LONG; SELECT $l.value " +
-        "from redis.lists $l WHERE $l.id = $var1 ORDER BY $l.id%s, " +
-        "$l.elemId%s LIMIT $var2 OFFSET $var3";
+        "from redis $r LEFT OUTER JOIN redis.lists $l " +
+        // "ON $r.id = $l.id WHERE $r.id = $var1 AND $l.cid = $r.value.cid " +
+        "ON $r.id = $l.id AND $r.id = $var1 WHERE $l.cid = $r.value.cid " +
+        NOT_EXPIRED +
+        "ORDER BY $l.id%s, $l.elemId%s LIMIT $var2 OFFSET $var3";
 
     private static final String SQL_LRANGE = String.format(SQL_LRANGE_FMT,
         "", "");
     private static final String SQL_LRANGE_DESC = String.format(
         SQL_LRANGE_FMT, DESC, DESC);
+
+    // Commented out line below for the same reason as in SQL_ELEMS_FMT
+    private static final String SQL_LPOS_FMT =
+        "DECLARE $var1 STRING; %sSELECT $l.value%s from redis $r " +
+        "LEFT OUTER JOIN redis.lists $l " +
+        // "ON $r.id = $l.id WHERE $r.id = $var1 AND $l.cid = $r.value.cid " +
+        "ON $r.id = $l.id AND $r.id = $var1 WHERE $l.cid = $r.value.cid " +
+        NOT_EXPIRED + "ORDER BY $l.id%s, $l.elemId%s%s";
+    private static final String SQL_LPOS = String.format(SQL_LPOS_FMT, "", "",
+        "", "", "");
+    private static final String SQL_LPOS_MAXLEN = String.format(SQL_LPOS_FMT,
+        VAR2_LONG, "", "", "", LIMIT_VAR2);
+    private static final String SQL_LPOS_DESC = String.format(SQL_LPOS_FMT,
+        "", VAL_LEN, DESC, DESC, "");
+    private static final String SQL_LPOS_DESC_MAXLEN = String.format(
+        SQL_LPOS_FMT, VAR2_LONG, VAL_LEN, DESC, DESC, LIMIT_VAR2);
 
     private static final String SQL_LSET = String.format(SQL_ELEMS_FMT,
         VAR2_LONG, "", "", "", "", LIMIT_1, OFFSET_VAR2);
@@ -96,7 +113,43 @@ public class ListCommands extends CollectionCommandsBase {
         VAR2_STR_VAR3_INT, "", ELEM_VAL_VAR2, "", "", LIMIT_VAR3, "");
     private static final String SQL_LREM_DESC = String.format(SQL_ELEMS_FMT,
         VAR2_STR_VAR3_INT, "", ELEM_VAL_VAR2, DESC, DESC, LIMIT_VAR3, "");
+
+    // The query to find pivot elemId for LINSERT command.
+    // Note that per return value spec, we are required to differentiate
+    // between the case when list key does not exist and the case when list
+    // exists but the pivot is not found. 
+    private static final String SQL_LINSERT_PIVOT =
+        "DECLARE $var1 STRING; $var2 STRING; SELECT row_version($r) AS ver, " +
+        "$r.key, $r.value, $l.elemId FROM redis $r LEFT OUTER JOIN " +
+        "redis.lists $l ON $r.id = $l.id " + ELEM_VAL_VAR2 +
+        " WHERE $r.id = $var1 AND $l.cid = $r.value.cid ORDER BY " +
+        "$l.id, $l.elemId" + LIMIT_1;
+    // Selects 1 element either before or after the pivot (given by its
+    // elemId). Unfortunately, since subquery is not supported, we cannot find
+    // pivot and the id before/after in a single query.
+    private static final String SQL_LINSERT_ELEM_FMT =
+        "DECLARE $var1 STRING; $var2 NUMBER; SELECT $l.elemId FROM redis $r " +
+        "LEFT OUTER JOIN redis.lists $l " +
+        // "ON $r.id = $l.id WHERE $r.id = $var1 AND $l.cid = $r.value.cid " +
+        "ON $r.id = $l.id AND $r.id = $var1 WHERE $l.cid = $r.value.cid " +
+        "AND $l.elemId %s $var2 ORDER BY $l.id%s, $l.elemId%s " + LIMIT_1;
+    private static final String SQL_LINSERT_AFTER = String.format(
+        SQL_LINSERT_ELEM_FMT, ">", "", "");
+    private static final String SQL_LINSERT_BEFORE = String.format(
+        SQL_LINSERT_ELEM_FMT, "<", DESC, DESC);
     
+    private static final String SQL_SEL_ELEMS =
+        "DECLARE $var1 STRING; $var2 STRING; SELECT * FROM redis.lists " +
+        "WHERE id = $var1 AND cid = $var2";
+    private static final String SQL_DEL_ELEMS =
+        "DECLARE $var1 STRING; $var2 STRING; DELETE FROM redis.lists WHERE " +
+        "id = $var1 AND cid = $var2";
+
+    private static final BigDecimal VALUE_TWO = new BigDecimal(2);
+
+    private static final int ELEM_ID_MAX_SCALE = 20;
+    private static final int ELEM_ID_PREF_MAX_SCALE = 10;
+
     public static final String CMD_LPUSH = "LPUSH";
     public static final String CMD_LPOP = "LPOP";
     public static final String CMD_RPUSH = "RPUSH";
@@ -110,16 +163,38 @@ public class ListCommands extends CollectionCommandsBase {
     public static final String CMD_LRANGE = "LRANGE";
     public static final String CMD_LSET = "LSET";
     public static final String CMD_LTRIM = "LTRIM";
+    public static final String CMD_LPOS = "LPOS";
+    public static final String CMD_LINSERT = "LINSERT";
 
-    static class ListHeader {
+    private static class ListHeader extends CollectionHeader {
         long len;
+
+        ListHeader(String cid, long len) {
+            super(cid);
+            this.len = len;
+        }
 
         ListHeader(long len) {
             this.len = len;
         }
+
+        ListHeader(MapValue val) throws RedisResponseException {
+            super(val);
+
+            if (!getValueType(val).equals(TYPE_LIST)) {
+                throw RedisResponseException.wrongType();
+            }
+            
+            len = valToLen(val);
+        }
+
+        MapValue makeValue() {
+            return super.makeValue().put(VALUE_TYPE, TYPE_LIST)
+                .put(FLD_LEN, len);
+        }
     }
 
-    static class ListTrimInfo extends ListHeader {
+    private static class ListTrimInfo extends ListHeader {
         long start;
         long stop;
 
@@ -130,48 +205,76 @@ public class ListCommands extends CollectionCommandsBase {
         }
     }
 
+    private static class LPosState {
+        private final String elemVal;
+        private final ArrayList<Long> matches;
+        private long rank;
+        private long len = -1;
+        private long pos;
+        private final int count;
+        private final boolean isDesc;
+
+        LPosState(ByteBuf elemVal, long rank, int count, boolean isDesc) {
+            assert elemVal != null;
+            this.elemVal = makeStrVal(elemVal);
+            this.count = count;
+            matches = count != 0 ?
+                new ArrayList<>((int)count) : new ArrayList<>();
+            this.isDesc = isDesc;
+            this.rank = rank;
+        }
+
+        // Returns true if we have count matches, otherwise false.
+        boolean applyRow(MapValue row) throws RedisResponseException {
+            if (isDesc && len == -1) {
+                len = valToLen(row);
+            }
+
+            if (elemVal.equals(rowToElemVal(row))) {
+                if (rank == 1) {
+                    matches.add(pos);
+                } else {
+                    rank--;
+                }
+                if (matches.size() == count) {
+                    return true;
+                }
+            }
+
+            pos++;
+            return false;
+        }
+
+        ArrayList<Long> getMatches() {
+            return matches;
+        }
+
+        long getLen() {
+            return len;
+        }
+        
+    }
+
     public ListCommands(NoSQLHandle nosqlHandle,
         PreparedStatementCache pstmtCache) {
         super(nosqlHandle, pstmtCache);
     }
 
-    private static ListHeader getListValue(MapValue val)
+    private static BigDecimal rowToElemId(MapValue row, boolean allowNull)
         throws RedisResponseException {
-        if (val == null) {
-            return null;
+        FieldValue val = row.get(FLD_ELEM_ID);
+        if (val == null || !val.isNumber()) {
+            if (allowNull && val.isAnyNull()) {
+                return null;
+            }
+            throw RedisResponseException.corrupt("Invalid element id");
         }
-
-        if (!getValueType(val).equals(TYPE_LIST)) {
-            throw RedisResponseException.wrongType();
-        }
-        
-        FieldValue fldLen = val.get(FLD_LEN);
-        if (fldLen == null || !fldLen.isLong()) {
-            throw RedisResponseException.corrupt(
-                "Missing or invalid list len field");
-        }
-
-        long len = fldLen.getLong();
-        if (len <= 0) {
-            throw RedisResponseException.corrupt(
-                "Invalid list length: " + len);
-        }
-
-        return new ListHeader(len);
-    }
-
-    private static MapValue makeListValue(ListHeader header) {
-        return new MapValue().put(VALUE_TYPE, TYPE_LIST)
-            .put(FLD_LEN, header.len);
+        return val.getNumber();
     }
 
     private static BigDecimal rowToElemId(MapValue row)
         throws RedisResponseException {
-        FieldValue val = row.get(FLD_ELEM_ID);
-        if (val == null || !val.isNumber()) {
-            throw RedisResponseException.corrupt("Invalid element id");
-        }
-        return val.getNumber();
+        return rowToElemId(row, false);
     }
 
     private static String rowToElemVal(MapValue row)
@@ -184,47 +287,27 @@ public class ListCommands extends CollectionCommandsBase {
         return val.getString();
     }
 
-    private static String makeListElemValue(ByteBuf val) {
-        boolean isText = ByteBufUtil.isText(val, CharsetUtil.UTF_8);
-        if (!isText) {
-            val = Base64.encode(val);
+    private static long valToLen(MapValue val) throws RedisResponseException {
+        FieldValue fldLen = val.get(FLD_LEN);
+        if (fldLen == null || !fldLen.isLong()) {
+            throw RedisResponseException.corrupt(
+                "Missing or invalid len field");
         }
 
-        return (isText ? STR_VAL_PFX : BIN_VAL_PFX) +
-            val.toString(CharsetUtil.UTF_8);
-    }
-
-    private static ByteBuf getListElemValue(String val)
-        throws RedisResponseException {
-        if (val.isEmpty()) {
-            throw RedisResponseException.corrupt("Invalid value");
+        long len = fldLen.getLong();
+        if (len <= 0) {
+            throw RedisResponseException.corrupt(
+                "Invalid list length: " + len);
         }
-
-        char pfx = val.charAt(0);
-        boolean isBin = pfx == BIN_VAL_PFX;
-        if (!isBin && pfx != STR_VAL_PFX) {
-            throw RedisResponseException.corrupt("Invalid value");
-        }
-        
-        ByteBuf res = Unpooled.copiedBuffer(val.substring(1),
-            CharsetUtil.UTF_8);
-        if (isBin) {
-            try {
-                res = Base64.decode(res);
-            } catch(Exception ex) {
-                throw RedisResponseException.corrupt(
-                    "Invalid base64 encoding of data field in value");
-            }
-        }
-
-        return res;
+        return len;
     }
 
     private static PutRequest makePutElemReq(RedisKeyInfo keyInfo,
-        BigDecimal elemId, ByteBuf val) {
+        BigDecimal elemId, String cid, ByteBuf val) {
         return new PutRequest().setTableName(LIST_TABLE_NAME)
             .setValue(new MapValue().put(FLD_ID, keyInfo.id)
-            .put(FLD_ELEM_ID, elemId).put(FLD_VALUE, makeListElemValue(val)));
+            .put(FLD_ELEM_ID, elemId).put(FLD_CID, cid)
+            .put(FLD_VALUE, makeStrVal(val)));
     }
 
     private static DeleteRequest makeDeleteElemReq(RedisKeyInfo keyInfo,
@@ -253,14 +336,15 @@ public class ListCommands extends CollectionCommandsBase {
                 "Invalid list element count");
         }
 
-        CollectionUpdateInfo<T> opInfo = new CollectionUpdateInfo<>();
+        CollectionUpdateInfo<T> opInfo;
         if (header.len > delCnt) {
             // Can remove delCnt elements without emptying the list.
             header.len -= delCnt;
-            opInfo.addPutKeyReq(keyInfo, oldVal, makeListValue(header));
-            opInfo.setValue(header);
+            opInfo = new CollectionUpdateInfo<>(header);
+            opInfo.addPutKeyReq(keyInfo, oldVal);
         } else { // header.len == delCnt
             // Remove all elements from the list and delete the list.
+            opInfo = new CollectionUpdateInfo<T>(null);
             opInfo.addDeleteKeyReq(keyInfo, oldVal);
         }
 
@@ -275,25 +359,48 @@ public class ListCommands extends CollectionCommandsBase {
     // We don't worry about expired list key here, since it will be handled
     // in doMultiUpdate().
     private CollectionValueInfo<ListHeader, BigDecimal> queryListElems(
-        RedisKeyInfo keyInfo, String sql, FieldValue... vars)
+        RedisKeyInfo keyInfo, String sql, boolean allowNoElems,
+        FieldValue... vars)
         throws RedisResponseException {
         List<MapValue> rows = doQuery(keyInfo, sql, vars);
 
+        // Note that the situation where we get no list elements matching list
+        // key or cid of the list while still having valid list header, is not
+        // possible, it would imply corrupted data (the elements with
+        // different cid are possible after list deletion before these
+        // elements are cleaned up, or if the list is expired and new one is
+        // created, but in these cases the list header would be already
+        // deleted and/or replaced with another valid list).
         if (rows.isEmpty()) {
             return CollectionValueInfo.none(); // list does not exist
         }
         
         MapValue row0 = rows.get(0);
         CollectionValueInfo<ListHeader, BigDecimal> res =
-            new CollectionValueInfo<>(getListValue(rowToValue(row0)),
+            new CollectionValueInfo<>(new ListHeader(rowToValue(row0)),
             oracle.nosql.driver.Version.createVersion(rowToVer(row0)),
             getExpTime(rowToKey(row0)));
+        
+        BigDecimal elemId0 = rowToElemId(row0, allowNoElems);
+        if (allowNoElems && elemId0 == null) {
+            chkSingleResult(rows);
+            return res;
+        }
 
-        for(int i = 0; i < rows.size(); i++) {
+        assert elemId0 != null;
+        res.elems.add(elemId0);
+
+        for(int i = 1; i < rows.size(); i++) {
             res.elems.add(rowToElemId(rows.get(i)));
         }
 
         return res;
+    }
+
+    private CollectionValueInfo<ListHeader, BigDecimal> queryListElems(
+        RedisKeyInfo keyInfo, String sql, FieldValue... vars)
+        throws RedisResponseException {
+        return queryListElems(keyInfo, sql, false, vars);
     }
 
     private ListHeader doLRPush(RedisKeyInfo keyInfo, ByteBuf[] elems,
@@ -310,15 +417,15 @@ public class ListCommands extends CollectionCommandsBase {
                     assert oldVal.elems.size() == 1;
                     if (isLeft) {
                         startId = oldVal.elems.get(0)
-                            .round(MathContext.UNLIMITED)
+                            .setScale(0, RoundingMode.HALF_DOWN)
                             .subtract(BigDecimal.ONE);
                     } else {
                         startId = oldVal.elems.get(0)
-                            .round(MathContext.UNLIMITED)
+                            .setScale(0, RoundingMode.HALF_UP)
                             .add(BigDecimal.ONE);
                     }
                     header.len += cnt;
-                } else {
+                } else { // The list doesn't exist or expired.
                     if (ifExists) {
                         return null;
                     }
@@ -328,13 +435,13 @@ public class ListCommands extends CollectionCommandsBase {
                 }
 
                 CollectionUpdateInfo<ListHeader> opInfo =
-                    new CollectionUpdateInfo<>();
-                opInfo.addPutKeyReq(keyInfo, oldVal, makeListValue(header));
-                opInfo.setValue(header);
+                    new CollectionUpdateInfo<>(header);
+                opInfo.addPutKeyReq(keyInfo, oldVal);
                 
                 int end = off + cnt;
                 for(int i = off; i < end; i++) {
-                    opInfo.addElemReq(makePutElemReq(ki, startId, elems[i]));
+                    opInfo.addElemReq(makePutElemReq(ki, startId, header.cid,
+                        elems[i]));
                     startId = isLeft ? startId.subtract(BigDecimal.ONE) :
                         startId.add(BigDecimal.ONE);
                 }
@@ -406,7 +513,7 @@ public class ListCommands extends CollectionCommandsBase {
                             "Missing existing value in operation result");
                     }
                     vals.add(new FullBulkStringRedisMessage(
-                        getListElemValue(rowToElemVal(val))));
+                        getStrVal(rowToElemVal(val))));
                 }
 
                 return vals;
@@ -479,7 +586,7 @@ public class ListCommands extends CollectionCommandsBase {
         throws RedisResponseException {
         RedisValueInfo valInfo = doGet(keyInfo);
         return new RedisValueInfoBase<ListHeader>(
-            valInfo.exists() ? getListValue(valInfo.val) : null,
+            valInfo.isValid() ? new ListHeader(valInfo.val) : null,
             valInfo.ver, valInfo.exp);
     }
 
@@ -495,8 +602,7 @@ public class ListCommands extends CollectionCommandsBase {
         int len, boolean isDesc) throws RedisResponseException {
         return doQuery(keyInfo,
             isDesc ? SQL_LRANGE_DESC : SQL_LRANGE, val ->
-                new FullBulkStringRedisMessage(
-                    getListElemValue(rowToElemVal(val))),
+                new FullBulkStringRedisMessage(getStrVal(rowToElemVal(val))),
                     new LongValue(len), new LongValue(off));
     }
 
@@ -504,8 +610,7 @@ public class ListCommands extends CollectionCommandsBase {
         boolean isDesc) throws RedisResponseException {
         return doMultiUpdate(keyInfo,
             (ki) -> queryListElems(ki, isDesc ? SQL_LREM_DESC : SQL_LREM,
-                new StringValue(makeListElemValue(val)),
-                new LongValue(cnt)),
+                new StringValue(makeStrVal(val)), new LongValue(cnt)),
             (ki, oldVal) -> makeDeleteListElems(ki, oldVal, false),
             (header, res) -> {
                 if (header == null) {
@@ -665,6 +770,184 @@ public class ListCommands extends CollectionCommandsBase {
         return res;
     }
 
+    private boolean doTrim(RedisKeyInfo keyInfo, long start, long stop)
+        throws RedisResponseException {
+        // Use array to avoid issue with using non-effectively-final
+        // variables in lambda.
+        long [] bounds = { start, stop };
+
+        // Here success means trim was performed (there were list elements to
+        // be trimmed).
+        boolean success = false;
+        do {
+            ListTrimInfo trimRes = doMultiUpdate(keyInfo,
+                (ki) -> queryElemsForTrim(keyInfo, bounds[0], bounds[1]),
+                (ki, oldVal) -> makeDeleteListElems(keyInfo, oldVal, false),
+                (trimInfo, res) -> trimInfo);
+
+            if (trimRes == null) {
+                return success;
+            }
+
+            success = true;
+            bounds[0] = trimRes.start;
+            bounds[1] = trimRes.stop;
+        } while(bounds[0] != 0 || bounds[1] != -1);
+
+        return success;
+    }
+
+    private RedisMessage doLPos(RedisKeyInfo keyInfo, ByteBuf val, long rank,
+        int count, long maxLen) throws RedisResponseException {
+        boolean isDesc = rank < 0;
+        if (isDesc) {
+            rank = -rank;
+        }
+        boolean hasCount = count != -1;
+        if (!hasCount) {
+            count = 1;
+        }
+        String sql = !isDesc ? (maxLen == 0 ? SQL_LPOS : SQL_LPOS_MAXLEN) :
+            (maxLen == 0 ? SQL_LPOS_DESC : SQL_LPOS_DESC_MAXLEN);
+        LPosState lpState = new LPosState(val, rank, count, isDesc);
+        if (maxLen == 0) {
+            processQuery(keyInfo, sql, (row) -> lpState.applyRow(row));
+        } else {
+            processQuery(keyInfo, sql, (row) -> lpState.applyRow(row),
+                new LongValue(maxLen));
+        }
+
+        List<Long> matches = lpState.getMatches();
+        int numMatches = matches.size();
+        if (numMatches == 0) {
+            return hasCount ?
+                ArrayRedisMessage.EMPTY_INSTANCE :
+                FullBulkStringRedisMessage.NULL_INSTANCE;
+        }
+
+        if (isDesc) {
+            long len = lpState.getLen();
+            assert len > 0;
+            // reverse the indexes to count from the start of the list
+            for(int i = 0; i < numMatches; i++) {
+                matches.set(i, len - 1 - matches.get(i));
+            }
+        }
+
+        if (hasCount) {
+            assert numMatches <= count;
+            ArrayList<RedisMessage> ls = new ArrayList<>();
+            matches.forEach((elem) -> ls.add(new FullBulkStringRedisMessage(
+                Utils.longToByteBuf(elem))));
+            return new ArrayRedisMessage(ls);
+        }
+
+        assert numMatches == 1;
+        return new FullBulkStringRedisMessage(
+            Utils.longToByteBuf(matches.get(0)));
+    }
+
+    private RedisMessage doLInsert(RedisKeyInfo keyInfo, ByteBuf pivot,
+        ByteBuf val, boolean isBefore) throws RedisResponseException {
+        return doMultiUpdate(keyInfo, (ki) -> {
+            CollectionValueInfo<ListHeader, BigDecimal> res =
+                queryListElems(ki, SQL_LINSERT_PIVOT, true,
+                new StringValue(makeStrVal(pivot)));
+            if (res.elems.isEmpty()) {
+                // either the list itself or the pivot is not found
+                return res;
+            }
+            List<MapValue> rows = doQuery(ki,
+                isBefore ? SQL_LINSERT_BEFORE : SQL_LINSERT_AFTER,
+                new NumberValue(res.elems.get(0)));
+            if (!rows.isEmpty()) {
+                chkSingleResult(rows);
+                res.elems.add(rowToElemId(rows.get(0)));
+            }
+            // res should have at most 2 elements - the pivot and the
+            // element before/after if exists.
+            return res;
+        }, (ki, oldVal) -> {
+            ListHeader header = oldVal.val;
+            if (header == null) { // list is not found
+                return null;
+            }
+            
+            header.len++;
+
+            CollectionUpdateInfo<ListHeader> opInfo =
+                new CollectionUpdateInfo<>(header);
+            if (oldVal.elems.isEmpty()) {
+                return opInfo; // pivot is not found
+            }
+            
+            BigDecimal pivotId = oldVal.elems.get(0);
+            BigDecimal newId;
+
+            if (oldVal.elems.size() == 1) {
+                // Inserting at either end of the list, same as for
+                // LPUSH/RPUSH.
+                newId = isBefore ?
+                    pivotId.setScale(0, RoundingMode.HALF_DOWN)
+                        .subtract(BigDecimal.ONE) :
+                    pivotId.setScale(0, RoundingMode.HALF_UP)
+                        .add(BigDecimal.ONE);
+            } else {
+                // Inserting between 2 elements. Try to insert at the
+                // mid-point, appropriately rounded.
+                BigDecimal otherId = oldVal.elems.get(1);
+                newId = pivotId.add(otherId).divide(VALUE_TWO);
+                if (newId.scale() > ELEM_ID_PREF_MAX_SCALE) {
+                    // Rounding mode shouldn't matter here, we only aim to
+                    // get a value distinct from the 2 elements.
+                    BigDecimal roundedNewId = newId.setScale(
+                        ELEM_ID_PREF_MAX_SCALE, RoundingMode.HALF_EVEN);
+                    if (roundedNewId.compareTo(pivotId) == 0 ||
+                        roundedNewId.compareTo(otherId) == 0) {
+                        // If we could not find distinct point using preferred
+                        // max scale, try with absolute max scale, but make
+                        // make sure we run do reindexing at this place after
+                        // this op.
+                        // TODO: trigger reindexing job after this op
+                        roundedNewId = newId.setScale(ELEM_ID_MAX_SCALE,
+                            RoundingMode.HALF_EVEN);
+                        if (roundedNewId.compareTo(pivotId) == 0 ||
+                            roundedNewId.compareTo(otherId) == 0) {
+                            // TODO: trigger and/or wait for current
+                            // reindexing job to complete with timeout before
+                            // giving up. If complete, retry this op.
+                            throw new RedisResponseException(ErrorPrefix.ERR,
+                                "need to reindex list");
+                        }
+                    }
+                    newId = roundedNewId;
+                }
+            }
+
+            opInfo.addPutKeyReq(ki, oldVal);
+            opInfo.addElemReq(makePutElemReq(ki, newId, header.cid, val));
+            return opInfo;
+        }, (header, res) -> {
+            if (res == null) {
+                // header == null - list not found
+                // header != null - pivot not found
+                return header == null ? zeroReply : minusOneReply; 
+            }
+            assert header != null;
+            // On success return list length after insert.
+            return new IntegerRedisMessage(header.len);
+        });
+    }
+
+    protected String getElemsTblName() { return LIST_TABLE_NAME; }
+    protected String getSQLSelElems() { return SQL_SEL_ELEMS; }
+    protected String getSQLDelElems() { return SQL_DEL_ELEMS; }
+
+    protected CollectionHeader doCopyHeader(RedisValueInfo oldVal, String cid,
+        long cnt) throws RedisResponseException {
+        return new ListHeader(cid, cnt);
+    }
+
     public void registerCommands(HashMap<String, CommandHandler> cmdMap) {
         cmdMap.put(CMD_LPUSH, this::handleLPush);
         cmdMap.put(CMD_RPUSH, this::handleRPush);
@@ -679,6 +962,8 @@ public class ListCommands extends CollectionCommandsBase {
         cmdMap.put(CMD_LSET, this::handleLSet);
         cmdMap.put(CMD_LREM, this::handleLRem);
         cmdMap.put(CMD_LTRIM, this::handleLTrim);
+        cmdMap.put(CMD_LPOS, this::handleLPos);
+        cmdMap.put(CMD_LINSERT, this::handleLInsert);
     }
 
     public RedisMessage handleLPush(RedisClientContext client,
@@ -859,14 +1144,11 @@ public class ListCommands extends CollectionCommandsBase {
                 throw new RedisResponseException(ErrorPrefix.ERR,
                     "index out of range");
             }
-            if (rows.size() != 1) {
-                throw RedisResponseException.corrupt(
-                    "Expected single result, got multiple");
-            }
+            chkSingleResult(rows);
 
             MapValue row0 = rows.get(0);
             CollectionValueInfo<ListHeader, BigDecimal> res =
-                new CollectionValueInfo<>(getListValue(rowToValue(row0)),
+                new CollectionValueInfo<>(new ListHeader(rowToValue(row0)),
                 oracle.nosql.driver.Version.createVersion(rowToVer(row0)),
                 getExpTime(rowToKey(row0)));
             BigDecimal elemId = rowToElemId(row0);
@@ -874,15 +1156,20 @@ public class ListCommands extends CollectionCommandsBase {
             res.elems.add(elemId);
 
             return res;
-            }, (keyInfo, oldVal) -> {
+            }, (ki, oldVal) -> {
                 ListHeader header = oldVal.val;
+                // This may happen if the list has expired.
+                if (header == null) {
+                    throw new RedisResponseException(ErrorPrefix.ERR,
+                        "index out of range");
+                }
+                
                 CollectionUpdateInfo<ListHeader> opInfo =
-                    new CollectionUpdateInfo<>();
-                opInfo.setValue(header);
-                opInfo.addPutKeyReq(keyInfo, oldVal, makeListValue(header));
+                    new CollectionUpdateInfo<>(header);
+                opInfo.addPutKeyReq(ki, oldVal);
                 assert oldVal.elems.size() == 1;
-                opInfo.addElemReq(makePutElemReq(keyInfo, oldVal.elems.get(0),
-                    cmd.args[2]));
+                opInfo.addElemReq(makePutElemReq(ki, oldVal.elems.get(0),
+                    header.cid, cmd.args[2]));
                 return opInfo;
             }, (header, res) -> okReply);
     }
@@ -929,28 +1216,68 @@ public class ListCommands extends CollectionCommandsBase {
         throws RedisResponseException {
         chkExactNumArgs(cmd, 3);
         RedisKeyInfo keyInfo = makeRedisKeyInfo(cmd.args[0]);
-        // Use array to avoid issue with using non-effectively-final
-        // variables in lambda.
-        long [] bounds = {
-            Utils.byteBufToLong(cmd.args[1]),
-            Utils.byteBufToLong(cmd.args[2])
-        };
-
-        ListTrimInfo trimRes;
-        do {
-            trimRes = doMultiUpdate(keyInfo,
-                (ki) -> queryElemsForTrim(keyInfo, bounds[0], bounds[1]),
-                (ki, oldVal) -> makeDeleteListElems(keyInfo, oldVal, false),
-                (trimInfo, res) -> trimInfo);
-
-            if (trimRes == null) {
-                break;
-            }
-            bounds[0] = trimRes.start;
-            bounds[1] = trimRes.stop;
-        } while(bounds[0] != 0 || bounds[1] != -1);
-
+        doTrim(keyInfo, Utils.byteBufToLong(cmd.args[1]),
+            Utils.byteBufToLong(cmd.args[2]));
         return okReply;
+    }
+
+    public RedisMessage handleLPos(RedisClientContext client, RawCommand cmd)
+        throws RedisResponseException {
+        chkNumArgs(cmd, 2, 8);
+        // must have even number of args
+        if ((cmd.args.length & 1) != 0) {
+            throw RedisResponseException.numArgs(cmd.name);
+        }
+
+        long rank = 1;
+        // -1 to differentiate the case where count was not provided
+        long count = -1;
+        long maxLen = 0;
+
+        for(int i = 2; i < cmd.args.length; i += 2) {
+            String arg = Utils.byteBufToString(cmd.args[i]);
+            if (arg.equalsIgnoreCase("RANK")) {
+                rank = Utils.byteBufToLong(cmd.args[i + 1]);
+                if (rank == 0) {
+                    throw new RedisResponseException(ErrorPrefix.ERR,
+                        "RANK can't be zero: use 1 to start from the first " +
+                        "match, 2 from the second, ...");
+                }
+            } else if (arg.equalsIgnoreCase("COUNT")) {
+                count = Utils.byteBufToLong(cmd.args[i + 1]);
+                if (count < 0) {
+                    throw new RedisResponseException(ErrorPrefix.ERR,
+                        "COUNT can't be negative");
+                }
+                // We can only support 32-bit value of count (Java collection
+                // size is an int).
+                if (count > Integer.MAX_VALUE) {
+                    count = Integer.MAX_VALUE;
+                }
+            } else if (arg.equalsIgnoreCase("MAXLEN")) {
+                maxLen = Utils.byteBufToLong(cmd.args[i + 1]);
+                if (maxLen < 0) {
+                    throw new RedisResponseException(ErrorPrefix.ERR,
+                        "MAXLEN can't be negative");
+                }
+            }
+        }
+
+        return doLPos(makeRedisKeyInfo(cmd.args[0]), cmd.args[1], rank,
+            (int)count, maxLen);
+    }
+
+    public RedisMessage handleLInsert(RedisClientContext client,
+        RawCommand cmd) throws RedisResponseException {
+        chkExactNumArgs(cmd, 4);
+        String beforeAfter = Utils.byteBufToString(cmd.args[1]);
+        boolean isBefore = beforeAfter.equalsIgnoreCase("BEFORE");
+        if (!isBefore && !beforeAfter.equalsIgnoreCase("AFTER")) {
+            throw RedisResponseException.syntaxError();
+        }
+
+        return doLInsert(makeRedisKeyInfo(cmd.args[0]), cmd.args[2],
+            cmd.args[3], isBefore);
     }
 
 }
