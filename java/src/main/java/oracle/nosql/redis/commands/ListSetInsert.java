@@ -1,0 +1,591 @@
+/*-
+ * Copyright (c) 2011, 2022 Oracle and/or its affiliates. All rights reserved.
+ *
+ * Licensed under the Universal Permissive License v 1.0 as shown at
+ *  https://oss.oracle.com/licenses/upl/
+ */
+ 
+ package oracle.nosql.redis.commands;
+
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.util.HashMap;
+import java.util.List;
+import io.netty.buffer.ByteBuf;
+import io.netty.handler.codec.redis.IntegerRedisMessage;
+import io.netty.handler.codec.redis.RedisMessage;
+import oracle.nosql.driver.NoSQLHandle;
+import oracle.nosql.driver.values.FieldValue;
+import oracle.nosql.driver.values.LongValue;
+import oracle.nosql.driver.values.MapValue;
+import oracle.nosql.driver.values.NumberValue;
+import oracle.nosql.driver.values.StringValue;
+import oracle.nosql.redis.CommandHandlers.CommandHandler;
+import oracle.nosql.redis.RawCommand;
+import oracle.nosql.redis.RedisClientContext;
+import oracle.nosql.redis.RedisResponseException;
+import oracle.nosql.redis.RedisResponseException.ErrorPrefix;
+import oracle.nosql.redis.util.PreparedStatementCache;
+import oracle.nosql.redis.util.Utils;
+
+public class ListSetInsert extends ListCommandsBase {
+
+    // Using writeMultiple, can perform max of MAX_TXN_ELEM_CNT puts/deletes.
+    // One put is reserved for the list header.  Shifting each elemId requres
+    // one delete and one put thus max number of elemIds shifted is half of
+    // that.
+    private static final int REINDEX_STEP_CNT = (MAX_TXN_ELEM_CNT - 1) / 2;
+
+    private static final int MAX_REINDEX_ATTEMPTS = 3;
+    private static final int MAX_LINSERT_ATTEMPS = 3;
+
+    private static final String FLD_ELEM_VAL = "elemValue";
+    private static final String VAR2_NUM_VAR3_NUM =
+        "$var2 NUMBER; $var3 NUMBER; ";
+    private static final String ELEM_VAL = ", $l.value AS elemValue";
+    private static final String REINDEX_LIMIT = " LIMIT " + REINDEX_STEP_CNT;
+
+    private static final String SQL_LSET = String.format(SQL_ELEMS_FMT,
+        VAR2_LONG, "", "", "", "", LIMIT_1, OFFSET_VAR2);
+    private static final String SQL_LSET_DESC = String.format(SQL_ELEMS_FMT,
+        VAR2_LONG, "", "", DESC, DESC, LIMIT_1, OFFSET_VAR2);
+
+    // The query to find pivot elemId for LINSERT command.
+    // Note that per return value spec, we are required to differentiate
+    // between the case when list key does not exist and the case when list
+    // exists but the pivot is not found.
+    private static final String SQL_LINSERT_PIVOT =
+        "DECLARE $var1 STRING; $var2 STRING; SELECT row_version($r) AS ver, " +
+        "$r.key, $r.value, $l.elemId FROM redis $r LEFT OUTER JOIN " +
+        "redis.lists $l ON $r.id = $l.id " + ELEM_VAL_VAR2 +
+        " WHERE $r.id = $var1 AND $l.cid = $r.value.cid ORDER BY " +
+        "$l.id, $l.elemId" + LIMIT_1;
+
+    private static final String SQL_ELEM_IDS_RIGHT = String.format(
+        SQL_ELEM_ID_FMT, ">=", "", "", "");
+    private static final String SQL_ELEM_IDS_LEFT = String.format(
+        SQL_ELEM_ID_FMT, "<=", DESC, DESC, "");
+
+    private static final String SQL_ELEMS_AFTER = String.format(SQL_ELEMS_FMT,
+        VAR2_NUM_VAR3_NUM, ELEM_VAL,
+        " AND $l.elemId > $var2 AND $l.elemId < $var3", "", "", REINDEX_LIMIT,
+        "");
+    private static final String SQL_ELEMS_BEFORE = String.format(SQL_ELEMS_FMT,
+        VAR2_NUM_VAR3_NUM, ELEM_VAL,
+        " AND $l.elemId < $var2 AND $l.elemId > $var3", DESC, DESC,
+        REINDEX_LIMIT, "");
+
+    // Selects 1 element either before or after the pivot (given by its
+    // elemId). Unfortunately, since subquery is not supported, we cannot find
+    // pivot and the id before/after in a single query.
+    private static final String SQL_LINSERT_AFTER = String.format(
+        SQL_ELEM_ID_FMT, ">", "", "", LIMIT_1);
+    private static final String SQL_LINSERT_BEFORE = String.format(
+        SQL_ELEM_ID_FMT, "<", DESC, DESC, LIMIT_1);
+
+    // To avoid unlimited growth of elemId size when there are repeated
+    // inserts near the same location, we cap the elemId scale at certain max
+    // value when calculating new elemId to insert. This means that in certain
+    // rare cases insert will fail as it will not be able to find distinct
+    // elemId (see doLInsert()). In this case, we have to reindex to spread
+    // element ids. Reindexing will move adjacent ids to a preferred minimum
+    // distance from each other (see ELEM_ID_PREF_MIN_DIST) allowing for more
+    // inserts. It will also cap their scale at preferred maximum scale (see
+    // ELEM_ID_PREF_MAX_SCALE). To avoid frequent reindexing, we use much
+    // smaller max scale (and bigger min distance) when reindexing than when
+    // doing inserts, hoping that many inserts can take place in the same
+    // viscinity before we need to reindex again.
+    // To avoid reindexing the whole list, we try to only reindex by spreding
+    // the ids near the problematic area. In particular we need to spread the
+    // interval between the two ids that bounded the problematic id (that
+    // failed to insert) and then all affected neighboring ids.
+    // In simple case, without considering concurrency or durability, we could
+    // just start shifting affected ids going in one direction achieving
+    // preferred minimum distance between any adjacent ids, until the next id
+    // we encounter is already at preferred minumum distance (or above), at
+    // which point we can stop. In the worst case, this process would proceed
+    // until one of the ends of the list.
+    // However, because reindexing would have to be done over multiple
+    // requests, the sorted order of the list may be violated between these
+    // requests. To preserve the order of the list while shifting the ids, we
+    // have to move along the list in the opposite directions of shifting the
+    // ids. E.g. we can move from right to left while shifting each id from
+    // left to right. For this we use 2 passes. The 1st pass will find the
+    // minumum interval to reindex. The 2nd pass will move in the opposite
+    // direction of the 1st and shift the ids to the preferred min distance
+    // from each other.
+
+    //private static final int ELEM_ID_MAX_SCALE = 10;
+    private static final int ELEM_ID_MAX_SCALE = 4;
+    //private static final int ELEM_ID_PREF_MAX_SCALE = 5;
+    private static final int ELEM_ID_PREF_MAX_SCALE = 2;
+    private static final BigDecimal ELEM_ID_PREF_MIN_DIST =
+        BigDecimal.ONE.movePointLeft(ELEM_ID_PREF_MAX_SCALE);
+    private static final BigDecimal HALF = new BigDecimal(0.5);
+
+    private static class ElemInfo {
+        final BigDecimal elemId;
+        final FieldValue elemVal;
+        ElemInfo(MapValue elemRow) throws RedisResponseException {
+            elemId = rowToElemId(elemRow);
+            elemVal = elemRow.get(FLD_ELEM_VAL);
+            if (elemVal == null || !elemVal.isString()) {
+                throw RedisResponseException.corrupt(
+                    "Missing or invalid elemVal field");
+            }
+        }
+    }
+
+    private static class ReindexBatchResult {
+        BigDecimal nextFromId;
+        boolean isDone;
+    }
+
+    private static class InsertResult {
+        final RedisMessage res;
+        final BigDecimal reindexStartId;
+
+        InsertResult(RedisMessage res) {
+            this.res = res;
+            reindexStartId = null;
+        }
+        
+        InsertResult(BigDecimal reindexStartId) {
+            this.reindexStartId = reindexStartId;
+            this.res = null;
+        }
+    }
+
+    public ListSetInsert(NoSQLHandle nosqlHandle,
+        PreparedStatementCache pstmtCache) {
+        super(nosqlHandle, pstmtCache);
+    }
+
+    // Shift left but make sure we cap at the max preferable scale by rounding
+    // to the left.
+    private static BigDecimal reindexShiftLeft(BigDecimal id) {
+        id = id.subtract(ELEM_ID_PREF_MIN_DIST);
+        return id.scale() > ELEM_ID_PREF_MAX_SCALE ?
+            id.setScale(ELEM_ID_PREF_MAX_SCALE, RoundingMode.FLOOR) : id;
+    }
+
+    // Same as above, but shift right.
+    private static BigDecimal reindexShiftRight(BigDecimal id) {
+        id = id.add(ELEM_ID_PREF_MIN_DIST);
+        return id.scale() > ELEM_ID_PREF_MAX_SCALE ?
+            id.setScale(ELEM_ID_PREF_MAX_SCALE, RoundingMode.CEILING) : id;
+    }
+
+    // Reindexing 1st pass.
+    // This returns both updated lower and upper bounds (or vice versa if
+    // going to the left). The updated lower bound may shorten reindexing
+    // interval in the beginning to avoid reindexing where it is not necessary
+    // (because the ids are already sufficiently spread apart).
+    private BigDecimal[] findReindexInterval(RedisKeyInfo keyInfo,
+        BigDecimal fromId, BigDecimal toId, boolean isLeft)
+        throws RedisResponseException {
+        assert (isLeft && toId.compareTo(fromId) < 0) ||
+            (!isLeft && toId.compareTo(fromId) > 0);
+
+        // reindex interval
+        BigDecimal [] ri = { fromId, fromId };
+        // state[0] - 2nd iteration and after. We choose the first id iterated
+        // as the starting point and only shift after it.
+        // state[1] - whether we already started to shift - after this moving
+        // the lower bound is not possible.
+        boolean[] state = { false, false };
+
+        boolean res = processQuery(keyInfo,
+            isLeft ? SQL_ELEM_IDS_LEFT : SQL_ELEM_IDS_RIGHT, row -> {
+                BigDecimal elemId = rowToElemId(row);
+                if (state[0]) {
+                    if (isLeft && (ri[1].subtract(elemId)
+                        .compareTo(ELEM_ID_PREF_MIN_DIST) < 0)) {
+                        ri[1] = reindexShiftLeft(ri[1]);
+                        state[1] = true;
+                        return false;
+                    }
+                    if (!isLeft && (elemId.subtract(ri[1])
+                        .compareTo(ELEM_ID_PREF_MIN_DIST) < 0)) {
+                        ri[1] = reindexShiftRight(ri[1]);
+                        state[1] = true;
+                        return false;
+                    }
+                }
+
+                state[0] = true;
+                if (!state[1]) {
+                    ri[0] = elemId;
+                }
+                ri[1] = elemId;
+                
+                // Even if no shift was required, if we haven't passed toId,
+                // we still keep going.
+                return isLeft ? ri[1].compareTo(toId) <= 0 :
+                    ri[1].compareTo(toId) >= 0;
+            }, new NumberValue(fromId));
+
+        // If res = false, we are at one of the ends of the list without
+        // finding an id at sufficient distance. Since the end boundary is
+        // exclusive, we add another preferred min distance to it. We could
+        // expand it further.
+        if (!res) {
+            ri[1] = isLeft ? reindexShiftLeft(ri[1]) :
+                reindexShiftRight(ri[1]);
+        }
+
+        return ri;
+    }
+
+    // Note that the 2nd pass is going in the opposite direction to the 1st
+    // pass. isLeft, fromId and toId are relative to the 2nd pass,
+    // isLeft = true would mean our 1st pass was from left to right and now
+    // we are going back. fromId is the id after which we start each batch of
+    // the 2nd pass and is equal to the last processed id of the previous
+    // batch. toId is the id at which we stop, which is the same id we have
+    // started with at the 1st pass (note that both fromId and toId are
+    // exclusive).
+    // Return value:
+    // rbRes.isDone is true if we are done (there are no more values to
+    // reindex) or the list no longer exists. Otherwise, rbRes.nextFromId used
+    // to start the next batch. If rbRes.nextFromId is null, the batch was
+    // aborted because a new element was inserted concurrently so that the
+    // interval computed in pass 1 is no longer valid (see below).
+    private ReindexBatchResult doReindexBatch(RedisKeyInfo keyInfo,
+        BigDecimal fromId, BigDecimal toId, boolean isLeft)
+        throws RedisResponseException {
+        final ReindexBatchResult rbRes = new ReindexBatchResult();
+
+        ListHeader muRes = doMultiUpdate(keyInfo, (ki) -> {
+            List<MapValue> rows = doQuery(ki,
+                isLeft ? SQL_ELEMS_BEFORE : SQL_ELEMS_AFTER,
+                new NumberValue(fromId), new NumberValue(toId));
+            if (rows.isEmpty()) {
+                // We are done with reindexing or the list no longer exists.
+                return CollectionValueInfo.none();
+            }
+            
+            MapValue row0 = rows.get(0);
+            CollectionValueInfo<ListHeader, ElemInfo> res =
+                new CollectionValueInfo<>(new ListHeader(rowToValue(row0)),
+                oracle.nosql.driver.Version.createVersion(rowToVer(row0)),
+                getExpTime(rowToKey(row0)));
+
+            for(MapValue row : rows) {
+                res.elems.add(new ElemInfo(row));
+            }
+
+            return res;
+        },
+        (ki, oldVal) -> {
+            ListHeader header = oldVal.val;
+            if (header == null) {
+                return null;
+            }
+            assert !oldVal.elems.isEmpty();
+            CollectionUpdateInfo<ListHeader> opInfo =
+                new CollectionUpdateInfo<>(header);
+            opInfo.addPutKeyReq(ki, oldVal);
+
+            int cnt = oldVal.elems.size();
+            BigDecimal currId = fromId;
+            
+            // We need additional iteration to determine where to add delete
+            // requests for the old element ids. This is because new element
+            // ids could coinside with old element ids and we cannot add both
+            // put and delete request for the same key.
+            int delIdx = 0;
+            
+            for(int putIdx = 0; putIdx < cnt; putIdx++) {
+                ElemInfo elem = oldVal.elems.get(putIdx);
+
+                currId = isLeft ?
+                    reindexShiftLeft(currId) : reindexShiftRight(currId);
+                
+                // Note that we must always shift forward if going back
+                // (isBefore = true) or backward if going forward
+                // (isBefore = false).
+                if ((isLeft && (currId.compareTo(elem.elemId) < 0)) ||
+                    (!isLeft && (currId.compareTo(elem.elemId) > 0))) {
+                    // This can only happen if some other client has inserted
+                    // new element with elemId after we have done the 1st
+                    // pass. In this case, our interval is no longer valid
+                    // and we have to abort.
+
+                    // Since we still do partial reindex in this case, make
+                    // sure we add delete requests for elements already
+                    // processed.
+                    for(; delIdx < putIdx; delIdx++) {
+                        opInfo.addElemReq(makeDeleteElemReq(ki,
+                            oldVal.elems.get(delIdx).elemId, false));
+                    }
+
+                    return opInfo;
+                }
+
+                opInfo.addElemReq(makePutElemReq(ki, currId, header.cid,
+                    elem.elemVal));
+
+                for(; delIdx < cnt; delIdx++) {
+                    ElemInfo elem2 = oldVal.elems.get(delIdx);
+                    int cmpRes = elem2.elemId.compareTo(currId);
+
+                    // We can increment delIdx and avoid next iteration if
+                    // ids are equal.
+                    if ((cmpRes == 0 && delIdx++ >= 0) ||
+                        (isLeft && cmpRes < 0) || (!isLeft && cmpRes > 0)) {
+                        break;
+                    }
+
+                    // We know ids are not equal here.
+                    opInfo.addElemReq(makeDeleteElemReq(ki, elem2.elemId,
+                        false));
+                }
+            }
+
+            // Complete adding delete requests (we are now past last put
+            // element id, so id clash is no longer possible).
+            for(; delIdx < cnt; delIdx++) {
+                opInfo.addElemReq(makeDeleteElemReq(ki,
+                    oldVal.elems.get(delIdx).elemId, false));
+            }
+
+            rbRes.nextFromId = currId;
+            return opInfo;
+        },
+        (header, res) -> header);
+
+        if (muRes == null) {
+            rbRes.isDone = true;
+        }
+
+        return rbRes;
+    }
+
+    private void doReindex(RedisKeyInfo keyInfo, BigDecimal startId)
+        throws RedisResponseException {
+        // It is likely there are a lot of elements with ids near the
+        // problematic id within the preferred minumum distance (at least in
+        // one direction from problematic id, that's why we have to reindex in
+        // the first place). It may be best to reindex within the whole radius
+        // of preferred minumum distance in order to avoid repeated reindexing
+        // if more inserts fall into the same area.
+        BigDecimal leftId = reindexShiftLeft(startId);
+        BigDecimal rightId = reindexShiftRight(startId);
+
+        // As a heuristic, we reindex in the direction of more distant whole
+        // number, hoping that there is more space to spread reindexed ids in
+        // that interval. This may need to be reconsidered. We start with
+        // leftId to reindex to the right and vice versa, in order to make more
+        // room for the problematic id.
+        boolean isLeft = startId.subtract(
+            startId.setScale(0, RoundingMode.FLOOR)).compareTo(HALF) > 0;
+        
+        for(int i = 0; i < MAX_REINDEX_ATTEMPTS; i++) {
+            // 1st pass
+            BigDecimal fromId1 = isLeft ? rightId : leftId;
+            BigDecimal toId1 = isLeft ? leftId : rightId;
+
+            // 2nd pass is in the opposite direction of 1st pass
+            BigDecimal [] pass1Res = findReindexInterval(keyInfo, fromId1,
+                toId1, isLeft);
+
+            BigDecimal fromId2 = pass1Res[1];
+            BigDecimal toId2 = pass1Res[0];
+            ReindexBatchResult res;
+
+            for(;;) {
+                res = doReindexBatch(keyInfo, fromId2, toId2, !isLeft);
+                if (res.isDone) {
+                    // No more ids to process or the list no longer exists, so
+                    // we are done.
+                    return;
+                }
+                fromId2 = res.nextFromId;
+                if (fromId2 == null) {
+                    // The batch was aborted because another client inserted
+                    // a new element which invalidated the interval computed
+                    // in step 1. In this case, we recompute the interval
+                    // and retry, up to MAX_REINDEX_ATTEMPTS.
+                    break;
+                }
+            }
+        }
+    }
+
+    private InsertResult doLInsert(RedisKeyInfo keyInfo, ByteBuf pivot,
+        ByteBuf val, boolean isBefore) throws RedisResponseException {
+        // Use array to allow lambda to modify outside state.
+        BigDecimal[] reindexStartId = { null };
+
+        RedisMessage muRes = doMultiUpdate(keyInfo, (ki) -> {
+            CollectionValueInfo<ListHeader, BigDecimal> res =
+                queryListElems(ki, SQL_LINSERT_PIVOT, true,
+                new StringValue(makeStrVal(pivot)));
+            if (res.elems.isEmpty()) {
+                // either the list itself or the pivot is not found
+                return res;
+            }
+            List<MapValue> rows = doQuery(ki,
+                isBefore ? SQL_LINSERT_BEFORE : SQL_LINSERT_AFTER,
+                new NumberValue(res.elems.get(0)));
+            if (!rows.isEmpty()) {
+                chkSingleResult(rows);
+                res.elems.add(rowToElemId(rows.get(0)));
+            }
+            // res should have at most 2 elements - the pivot and the
+            // element before/after if exists.
+            return res;
+        }, (ki, oldVal) -> {
+            ListHeader header = oldVal.val;
+            if (header == null) { // list is not found
+                return null;
+            }
+            
+            header.len++;
+
+            CollectionUpdateInfo<ListHeader> opInfo =
+                new CollectionUpdateInfo<>(header);
+            if (oldVal.elems.isEmpty()) {
+                return opInfo; // pivot is not found
+            }
+            
+            BigDecimal pivotId = oldVal.elems.get(0);
+            BigDecimal newId;
+
+            if (oldVal.elems.size() == 1) {
+                // Inserting at either end of the list, same as for
+                // LPUSH/RPUSH.
+                newId = isBefore ?
+                    pivotId.setScale(0, RoundingMode.HALF_DOWN)
+                        .subtract(BigDecimal.ONE) :
+                    pivotId.setScale(0, RoundingMode.HALF_UP)
+                        .add(BigDecimal.ONE);
+            } else {
+                // Inserting between 2 elements. Try to insert at the
+                // mid-point, appropriately rounded.
+                BigDecimal otherId = oldVal.elems.get(1);
+                newId = pivotId.add(otherId).divide(VALUE_TWO);
+                if (newId.scale() > ELEM_ID_MAX_SCALE) {
+                    // Rounding mode shouldn't matter here, we only aim to
+                    // get a value distinct from the 2 elements.
+                    BigDecimal roundedNewId = newId.setScale(
+                        ELEM_ID_MAX_SCALE, RoundingMode.HALF_EVEN);
+                    if (roundedNewId.compareTo(pivotId) == 0 ||
+                        roundedNewId.compareTo(otherId) == 0) {
+                        // We cannot fit the id between these two, so we
+                        // reindex and retry.
+                        reindexStartId[0] = newId;
+                        return null;
+                    }
+                    newId = roundedNewId;
+                }
+            }
+
+            opInfo.addPutKeyReq(ki, oldVal);
+            opInfo.addElemReq(makePutElemReq(ki, newId, header.cid, val));
+            return opInfo;
+        }, (header, res) -> {
+            if (res == null) {
+                if (reindexStartId[0] != null) {
+                    return null;
+                }
+                // header == null - list not found
+                // header != null - pivot not found
+                return header == null ? zeroReply : minusOneReply; 
+            }
+            assert header != null;
+            // On success return list length after insert.
+            return new IntegerRedisMessage(header.len);
+        });
+
+        if (muRes != null) {
+            return new InsertResult(muRes);
+        }
+
+        assert reindexStartId[0] != null;
+        return new InsertResult(reindexStartId[0]);
+    }
+
+    public void registerCommands(HashMap<String, CommandHandler> cmdMap) {
+        cmdMap.put(CMD_LSET, this::handleLSet);
+        cmdMap.put(CMD_LINSERT, this::handleLInsert);
+    }
+
+    public RedisMessage handleLSet(RedisClientContext client, RawCommand cmd)
+        throws RedisResponseException {
+        chkExactNumArgs(cmd, 3);
+        long idx = Utils.byteBufToLong(cmd.args[1]);
+
+        return doMultiUpdate(makeRedisKeyInfo(cmd.args[0]), (ki) -> {
+            List<MapValue> rows = doQuery(ki,
+                idx >= 0 ? SQL_LSET : SQL_LSET_DESC,
+                new LongValue(Math.abs(idx)));
+
+            if (rows.isEmpty()) {
+                throw new RedisResponseException(ErrorPrefix.ERR,
+                    "index out of range");
+            }
+            chkSingleResult(rows);
+
+            MapValue row0 = rows.get(0);
+            CollectionValueInfo<ListHeader, BigDecimal> res =
+                new CollectionValueInfo<>(new ListHeader(rowToValue(row0)),
+                oracle.nosql.driver.Version.createVersion(rowToVer(row0)),
+                getExpTime(rowToKey(row0)));
+            BigDecimal elemId = rowToElemId(row0);
+            assert elemId != null;
+            res.elems.add(elemId);
+
+            return res;
+            }, (ki, oldVal) -> {
+                ListHeader header = oldVal.val;
+                // This may happen if the list has expired.
+                if (header == null) {
+                    throw new RedisResponseException(ErrorPrefix.ERR,
+                        "index out of range");
+                }
+                
+                CollectionUpdateInfo<ListHeader> opInfo =
+                    new CollectionUpdateInfo<>(header);
+                opInfo.addPutKeyReq(ki, oldVal);
+                assert oldVal.elems.size() == 1;
+                opInfo.addElemReq(makePutElemReq(ki, oldVal.elems.get(0),
+                    header.cid, cmd.args[2]));
+                return opInfo;
+            }, (header, res) -> okReply);
+    }
+
+    public RedisMessage handleLInsert(RedisClientContext client,
+        RawCommand cmd) throws RedisResponseException {
+        chkExactNumArgs(cmd, 4);
+        String beforeAfter = Utils.byteBufToString(cmd.args[1]);
+        boolean isBefore = beforeAfter.equalsIgnoreCase("BEFORE");
+        if (!isBefore && !beforeAfter.equalsIgnoreCase("AFTER")) {
+            throw RedisResponseException.syntaxError();
+        }
+
+        RedisKeyInfo keyInfo = makeRedisKeyInfo(cmd.args[0]);
+        ByteBuf pivot = cmd.args[2];
+        ByteBuf val = cmd.args[3];
+
+        for(int i = 0; i < MAX_LINSERT_ATTEMPS; i++) {
+            InsertResult res = doLInsert(keyInfo, pivot, val, isBefore);
+            if (res.res != null) {
+                return res.res;
+            }
+            // If we fail to insert because elemId could not fit, we try to
+            // reindex at that place and retry the insert. Note that it is
+            // possible for retry to also fail if there are concurrent
+            // clients inserting elemIds near that location. In this case,
+            // we retry the same couple of times and throw if not successful.
+            // This should be very rare.
+            assert res.reindexStartId != null;
+            doReindex(keyInfo, res.reindexStartId);
+        }
+
+        throw RedisResponseException.nosql(
+            "Failed to reindex list after multiple attempts");
+    }
+
+}

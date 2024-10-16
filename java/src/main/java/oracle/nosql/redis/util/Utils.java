@@ -28,6 +28,11 @@ public class Utils {
         R apply(T1 t1, T2 t2) throws E;
     }
 
+    @FunctionalInterface
+    public interface ThrowingRunnable {
+        void run() throws Exception;
+    }
+
     private static final String SHA256_ALG = "SHA-256";
 
     public static String byteBufToString(ByteBuf buf)

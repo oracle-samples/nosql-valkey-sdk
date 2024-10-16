@@ -29,7 +29,6 @@ import oracle.nosql.driver.values.MapValue;
 import oracle.nosql.driver.values.StringValue;
 import oracle.nosql.redis.NoSQLRedisServer;
 import oracle.nosql.redis.RedisResponseException;
-import oracle.nosql.redis.RedisResponseException.ErrorPrefix;
 import oracle.nosql.redis.util.PreparedStatementCache;
 import oracle.nosql.redis.util.Utils.ThrowingBiFunction;
 import oracle.nosql.redis.util.Utils.ThrowingFunction;
@@ -220,7 +219,7 @@ abstract class CollectionCommandsBase extends CommandsBase {
         nosqlHandle.writeMultiple(wmReq);
         if (!wmRes.getSuccess()) {
             // this should not happen but just in case
-            throw RedisResponseException.corrupt(
+            throw RedisResponseException.nosql(
                 "Unsuccessful writeMultiple when updating " +
                 "elements TTL");
         }
@@ -238,7 +237,7 @@ abstract class CollectionCommandsBase extends CommandsBase {
 
     static void chkSingleResult(List<?> res) throws RedisResponseException {
         if (res.size() != 1) {
-            throw RedisResponseException.corrupt(
+            throw RedisResponseException.nosql(
                 "Expected single result, got multiple");
         }
     }
@@ -276,8 +275,10 @@ abstract class CollectionCommandsBase extends CommandsBase {
 
     // Have to change name because of ambiguity with doQuery() that uses
     // ThrowingFunction above.
-    // applyRow will return true if we are done, false otherwise.
-    void processQuery(RedisKeyInfo keyInfo, String sql,
+    // applyRow() will return true if we are done and should not process
+    // remaining rows, false otherwise.
+    // Return value - true if applyRow() returned true, false otherwise.
+    boolean processQuery(RedisKeyInfo keyInfo, String sql,
         ThrowingFunction<MapValue, Boolean, RedisResponseException> applyRow,
         FieldValue... vars) throws RedisResponseException {
         PreparedStatement pStmt = pstmtCache.get(sql);
@@ -295,11 +296,13 @@ abstract class CollectionCommandsBase extends CommandsBase {
             try(QueryIterableResult qir = nosqlHandle.queryIterable(qReq)) {
                 for(MapValue row : qir) {
                     if (applyRow.apply(row)) {
-                        return;
+                        return true;
                     }
                 }
             }
         }
+
+        return false;
     }
 
     <V extends CollectionHeader, E, R> R doMultiUpdate(RedisKeyInfo keyInfo,
@@ -328,7 +331,7 @@ abstract class CollectionCommandsBase extends CommandsBase {
             // If the old key has expired, we treat this as creating a new
             // key, but since we are overwriting existing row, we have to
             // remove any expiration time that may have been previously set.
-            if (!oldVal.isExpired(currTime)) {
+            if (oldVal.isExpired(currTime)) {
                 opInfo.unexpireKey();
             }
 
@@ -345,7 +348,7 @@ abstract class CollectionCommandsBase extends CommandsBase {
             } catch(InterruptedException iex) {}
         }
 
-        throw new RedisResponseException(ErrorPrefix.NOSQL,
+        throw RedisResponseException.nosql(
             "Failed to perform atomic read-update sequence after "
                 + ATOMIC_SET_TRIES + " tries");
     }

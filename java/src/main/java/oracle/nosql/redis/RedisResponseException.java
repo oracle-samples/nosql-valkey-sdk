@@ -53,6 +53,10 @@ import oracle.nosql.driver.NoSQLException;
         return new RedisResponseException(ErrorPrefix.ERR, "syntax error");
     }
 
+    public static RedisResponseException nosql(String msg) {
+        return new RedisResponseException(ErrorPrefix.NOSQL, msg);
+    }
+
     public static RedisResponseException nosql(NoSQLException ex) {
         return new RedisResponseException(ErrorPrefix.NOSQL, ex.toString(),
             ex);

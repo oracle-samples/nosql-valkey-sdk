@@ -8,21 +8,12 @@
 package oracle.nosql.redis.util;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
 
 import oracle.nosql.driver.AuthorizationProvider;
-import oracle.nosql.driver.NoSQLHandle;
-import oracle.nosql.driver.ReadThrottlingException;
 import oracle.nosql.driver.Region;
 import oracle.nosql.driver.iam.SignatureProvider;
 import oracle.nosql.driver.kv.StoreAccessTokenProvider;
-import oracle.nosql.driver.ops.PrepareRequest;
-import oracle.nosql.driver.ops.PrepareResult;
-import oracle.nosql.driver.ops.QueryRequest;
-import oracle.nosql.driver.ops.QueryResult;
 import oracle.nosql.driver.ops.Request;
-import oracle.nosql.driver.values.MapValue;
 
 /*
  * Common is a companion class to the Oracle NoSQL Cloud Service examples. It
