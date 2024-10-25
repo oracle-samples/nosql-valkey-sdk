@@ -14,6 +14,7 @@ import oracle.nosql.driver.NoSQLHandle;
 import oracle.nosql.redis.commands.CommandsBase;
 import oracle.nosql.redis.commands.ConnectionCommands;
 import oracle.nosql.redis.commands.GenericCommands;
+import oracle.nosql.redis.commands.HashCommands;
 import oracle.nosql.redis.commands.ListCommands;
 import oracle.nosql.redis.commands.StringCommands;
 import oracle.nosql.redis.util.PreparedStatementCache;
@@ -35,6 +36,7 @@ public class CommandHandlers {
     private GenericCommands genericCommands;
     private StringCommands stringCommands;
     private ListCommands listCommands;
+    private HashCommands hashCommands;
     
     CommandHandlers(NoSQLHandle nosqlHandle) {
         this.nosqlHandle = nosqlHandle;
@@ -46,11 +48,13 @@ public class CommandHandlers {
         genericCommands = new GenericCommands(nosqlHandle, pstmtCache, this);
         stringCommands = new StringCommands(nosqlHandle, pstmtCache);
         listCommands = new ListCommands(nosqlHandle, pstmtCache);
+        hashCommands = new HashCommands(nosqlHandle, pstmtCache);
 
         connCommands.registerCommands(cmdMap);
         genericCommands.registerCommands(cmdMap);
         stringCommands.registerCommands(cmdMap);
         listCommands.registerCommands(cmdMap);
+        hashCommands.registerCommands(cmdMap);
     }
 
     CommandHandler getHandler(String name) {

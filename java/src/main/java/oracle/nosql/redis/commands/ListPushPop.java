@@ -32,6 +32,14 @@ import oracle.nosql.redis.util.Utils;
 
 public class ListPushPop extends ListCommandsBase {
 
+    private static final String LEFT = "LEFT";
+    private static final String RIGHT = "RIGHT";
+    private static final String COUNT = "COUNT";
+
+    private static final int MIN_DELAY_MS = 200;
+    private static final int MAX_ADD_RND_DELAY_MS = 50;
+    private static final int MAX_DELAY_MS = 5000;
+
     public ListPushPop(NoSQLHandle nosqlHandle,
         PreparedStatementCache pstmtCache) {
         super(nosqlHandle, pstmtCache);
@@ -43,18 +51,18 @@ public class ListPushPop extends ListCommandsBase {
         assert cnt > 0;
         return doMultiUpdate(keyInfo, (ki) -> queryListElems(ki,
                 isLeft ? SQL_LPUSH : SQL_RPUSH),
-            (ki, oldVal) -> {
-                ListHeader header = oldVal.val;
+            (ki, lvi, upInfo) -> {
+                ListHeader header = lvi != null ? lvi.header : null;
 
                 BigDecimal startId;
                 if (header != null) {
-                    assert oldVal.elems.size() == 1;
+                    assert lvi.elemIds.size() == 1;
                     if (isLeft) {
-                        startId = oldVal.elems.get(0)
+                        startId = lvi.elemIds.get(0)
                             .setScale(0, RoundingMode.HALF_DOWN)
                             .subtract(BigDecimal.ONE);
                     } else {
-                        startId = oldVal.elems.get(0)
+                        startId = lvi.elemIds.get(0)
                             .setScale(0, RoundingMode.HALF_UP)
                             .add(BigDecimal.ONE);
                     }
@@ -68,20 +76,18 @@ public class ListPushPop extends ListCommandsBase {
                     header = new ListHeader(cnt);
                 }
 
-                CollectionUpdateInfo<ListHeader> opInfo =
-                    new CollectionUpdateInfo<>(header);
-                opInfo.addPutKeyReq(keyInfo, oldVal);
+                upInfo.addPutKeyReq(header);
                 
                 int end = off + cnt;
                 for(int i = off; i < end; i++) {
-                    opInfo.addElemReq(makePutElemReq(ki, startId, header.cid,
+                    upInfo.addElemReq(makePutElemReq(ki, startId, header.cid,
                         elems[i]));
                     startId = isLeft ? startId.subtract(BigDecimal.ONE) :
                         startId.add(BigDecimal.ONE);
                 }
 
-                return opInfo;
-            }, (val, res) -> val);
+                return header;
+            }, (header, res) -> header);
     }
 
     private RedisMessage handleLRPush(RedisClientContext client,
@@ -117,7 +123,7 @@ public class ListPushPop extends ListCommandsBase {
         return doMultiUpdate(keyInfo,
             (ki) -> queryListElems(ki, isLeft ? SQL_LPOP : SQL_RPOP,
                 new LongValue(cnt)),
-            (ki, oldVal) -> makeDeleteListElems(ki, oldVal, true),
+            (ki, lvi, upInfo) -> makeDeleteListElems(ki, lvi, upInfo, true),
             (header, res) -> {
                 if (res == null) {
                     return null;
@@ -169,7 +175,8 @@ public class ListPushPop extends ListCommandsBase {
                     ArrayRedisMessage.EMPTY_INSTANCE;
             }
 
-            List<RedisMessage> res = doLRPop(keyInfo, cnt, isLeft);
+            List<RedisMessage> res = doLRPop(keyInfo, cnt == -1 ? 1 : cnt,
+                isLeft);
             if (res == null) {
                 return FullBulkStringRedisMessage.NULL_INSTANCE;
             }
@@ -206,14 +213,141 @@ public class ListPushPop extends ListCommandsBase {
     private RedisMessage handleLRPop(RedisClientContext client,
         RawCommand cmd, boolean isLeft) throws RedisResponseException {
         chkNumArgs(cmd, 1, 2);
-        int cnt = cmd.args.length == 2 ?
-            (int)Utils.byteBufToLong(cmd.args[1]) : 1;
-        if (cnt < 0) {
-            throw new RedisResponseException(ErrorPrefix.ERR,
-                "value out of range, must be positive");
+
+        int cnt = -1;
+        if (cmd.args.length == 2) {
+            cnt = (int)Utils.byteBufToLong(cmd.args[1]);
+            if (cnt < 0) {
+                throw new RedisResponseException(ErrorPrefix.ERR,
+                    "value out of range, must be positive");
+            }
         }
 
         return handleLRPop(client, cmd.args[0], cnt, isLeft);
+    }
+
+    private RedisMessage doNonBlockingPop(RedisClientContext client,
+        ByteBuf[] keys, int keyOff, int keyCnt, int cnt,
+        boolean isLeft) throws RedisResponseException {
+        // TODO: we can optimize this to query elements of multiple lists in a
+        // single query using IN operator with an array of list keys. Same
+        // applies to BLPOP, BRPOP and BLMPOP.
+
+        for(int i = 0; i < keyCnt; i++) {
+            ByteBuf keyBuf = keys[i + keyOff];
+            RedisMessage res = handleLRPop(client, keyBuf, (int)cnt, isLeft);
+            if (res != FullBulkStringRedisMessage.NULL_INSTANCE) {
+                assert res instanceof ArrayRedisMessage;
+                return new ArrayRedisMessage(Arrays.asList(
+                    new FullBulkStringRedisMessage(keyBuf.retain()), res));
+            }
+        }
+
+        return FullBulkStringRedisMessage.NULL_INSTANCE;
+    }
+
+    // We do exponential backoff until delay reaches MAX_DELAY_MS, then we
+    // retry with constant delay until timeout expires.
+    private RedisMessage doBlockingPop(RedisClientContext client,
+        ByteBuf[] keys, int keyOff, int keyCnt, double timeout, int cnt,
+        boolean isLeft) throws RedisResponseException {
+        long timeoutMs = (long)Math.ceil(timeout * 1000);
+        long delay = MIN_DELAY_MS +
+            (int)(Math.random() * MAX_ADD_RND_DELAY_MS);
+
+        long expTime = timeout != 0 ?
+            System.currentTimeMillis() + timeoutMs : Long.MAX_VALUE;
+
+        while(true) {
+            RedisMessage res = doNonBlockingPop(client, keys, keyOff, keyCnt,
+                cnt, isLeft);
+            if (res != FullBulkStringRedisMessage.NULL_INSTANCE) {
+                return res;
+            }
+
+            long remaining = expTime - System.currentTimeMillis();
+            if (remaining < MIN_DELAY_MS) {
+                return FullBulkStringRedisMessage.NULL_INSTANCE;
+            }
+
+            if (delay < MAX_DELAY_MS) {
+                delay = Math.min(MAX_DELAY_MS, delay * 2 +
+                    (int)(Math.random() * MAX_ADD_RND_DELAY_MS));
+            }
+
+            delay = Math.min(delay, remaining);
+
+            try {
+                Thread.sleep(delay);
+            } catch(InterruptedException ex) {
+                return FullBulkStringRedisMessage.NULL_INSTANCE;
+            }
+        }
+    }
+
+    private RedisMessage handleBLRPop(RedisClientContext client,
+        RawCommand cmd, boolean isLeft) throws RedisResponseException {
+        chkMinNumArgs(cmd, 2);
+        int keyCnt = cmd.args.length - 1;
+        double timeout = Utils.byteBufToDouble(cmd.args[cmd.args.length - 1]);
+        return doBlockingPop(client, cmd.args, 0, keyCnt, timeout, 1,
+            isLeft);
+    }
+
+    private RedisMessage handleLMPop(RedisClientContext client,
+        RawCommand cmd, boolean isBlocking) throws RedisResponseException {
+        int nkOff = isBlocking ? 1 : 0;
+        chkMinNumArgs(cmd, 3 + nkOff);
+
+        double timeout = 0;
+        if (isBlocking) {
+            timeout = Utils.byteBufToDouble(cmd.args[0]);
+            if (timeout < 0) {
+                throw new RedisResponseException(ErrorPrefix.ERR,
+                    "timeout is negative");
+            }
+        }
+
+        long numKeys = Utils.byteBufToLong(cmd.args[nkOff]);
+        if (numKeys <= 0) {
+            throw new RedisResponseException(ErrorPrefix.ERR,
+                "numkeys should be greater than 0");
+        }
+
+        // Total count also includes timout (for blocking), numkeys and
+        // LEFT/RIGHT. Incidentally, this will also check that
+        // numKeys <= Integer.MAX_VALUE.
+        if (cmd.args.length < numKeys + nkOff + 2) {
+            throw RedisResponseException.numArgs(cmd.name);
+        }
+
+        String leftRight = Utils.byteBufToString(
+            cmd.args[(int)numKeys + nkOff + 1]);
+        boolean isLeft = leftRight.equalsIgnoreCase(LEFT);
+        if (!isLeft && !leftRight.equalsIgnoreCase(RIGHT)) {
+            throw RedisResponseException.syntaxError();
+        }
+
+        long cnt = 1;
+        // The only args following LEFT/RIGHT can be: COUNT <count_value>.
+        if (cmd.args.length > numKeys + nkOff + 2) {
+            if (cmd.args.length != numKeys + nkOff + 4 ||
+                !Utils.byteBufToString(cmd.args[(int)numKeys + nkOff + 2])
+                    .equalsIgnoreCase(COUNT)) {
+                throw RedisResponseException.syntaxError();
+            }
+            cnt = Utils.byteBufToLong(cmd.args[(int)numKeys + nkOff + 3]);
+            if (cnt <= 0) {
+                throw new RedisResponseException(ErrorPrefix.ERR,
+                    "count should be greater than 0");
+            }
+    }
+
+        return isBlocking ?
+            doBlockingPop(client, cmd.args, 2, (int)numKeys, timeout,
+                (int)cnt, isLeft) :
+            doNonBlockingPop(client, cmd.args, 1, (int)numKeys, (int)cnt,
+                isLeft);
     }
 
     public void registerCommands(HashMap<String, CommandHandler> cmdMap) {
@@ -224,6 +358,9 @@ public class ListPushPop extends ListCommandsBase {
         cmdMap.put(CMD_LPOP, this::handleLPop);
         cmdMap.put(CMD_RPOP, this::handleRPop);
         cmdMap.put(CMD_LMPOP, this::handleLMPop);
+        cmdMap.put(CMD_BLPOP, this::handleBLPop);
+        cmdMap.put(CMD_BRPOP, this::handleBRPop);
+        cmdMap.put(CMD_BLMPOP, this::handleBLMPop);
     }
 
     public RedisMessage handleLPush(RedisClientContext client,
@@ -258,53 +395,22 @@ public class ListPushPop extends ListCommandsBase {
 
     public RedisMessage handleLMPop(RedisClientContext client,
         RawCommand cmd) throws RedisResponseException {
-        chkMinNumArgs(cmd, 3);
-        long numKeys = Utils.byteBufToLong(cmd.args[0]);
-        if (numKeys <= 0) {
-            throw new RedisResponseException(ErrorPrefix.ERR,
-                "numkeys should be greater than 0");
-        }
+        return handleLMPop(client, cmd, false);
+    }
 
-        // Total count also includes numkeys and LEFT/RIGHT. Incidentally,
-        // this will also check that numKeys <= Integer.MAX_VALUE.
-        if (cmd.args.length < numKeys + 2) {
-            throw RedisResponseException.syntaxError();
-        }
+    public RedisMessage handleBLPop(RedisClientContext client,
+        RawCommand cmd) throws RedisResponseException {
+        return handleBLRPop(client, cmd, true);
+    }
 
-        String leftRight = Utils.byteBufToString(cmd.args[(int)numKeys + 1]);
-        boolean isLeft = leftRight.equalsIgnoreCase("LEFT");
-        if (!isLeft && !leftRight.equalsIgnoreCase("RIGHT")) {
-            throw RedisResponseException.syntaxError();
-        }
+    public RedisMessage handleBRPop(RedisClientContext client,
+        RawCommand cmd) throws RedisResponseException {
+        return handleBLRPop(client, cmd, false);
+    }
 
-        long cnt = 1;
-        // The only args following LEFT/RIGHT can be: COUNT <count_value>.
-        if (cmd.args.length > numKeys + 2) {
-            if (cmd.args.length != numKeys + 4 ||
-                !Utils.byteBufToString(cmd.args[(int)numKeys + 2])
-                    .equalsIgnoreCase("COUNT")) {
-                throw RedisResponseException.syntaxError();
-            }
-            cnt = Utils.byteBufToLong(cmd.args[(int)numKeys + 3]);
-            if (cnt <= 0) {
-                throw new RedisResponseException(ErrorPrefix.ERR,
-                    "count should be greater than 0");
-            }
-        }
-
-        // Note that we cannot have atomicity across different list keys
-        // (since they could be on different shards).
-        for(int i = 0; i < numKeys; i++) {
-            ByteBuf keyBuf = cmd.args[i + 1];
-            RedisMessage res = handleLRPop(client, keyBuf, (int)cnt, isLeft);
-            if (res != FullBulkStringRedisMessage.NULL_INSTANCE) {
-                assert res instanceof ArrayRedisMessage;
-                return new ArrayRedisMessage(Arrays.asList(
-                    new FullBulkStringRedisMessage(keyBuf), res));
-            }
-        }
-
-        return FullBulkStringRedisMessage.NULL_INSTANCE;
+    public RedisMessage handleBLMPop(RedisClientContext client,
+        RawCommand cmd) throws RedisResponseException {
+        return handleLMPop(client, cmd, true);
     }
 
 }

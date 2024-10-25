@@ -7,7 +7,6 @@
  
  package oracle.nosql.redis.commands;
 
-import java.math.BigDecimal;
 import java.util.HashMap;
 import java.util.List;
 import io.netty.buffer.ByteBuf;
@@ -31,12 +30,13 @@ public class ListTrimRemove extends ListCommandsBase {
     private static final String SQL_LREM_DESC = String.format(SQL_ELEMS_FMT,
         VAR2_STR_VAR3_INT, "", ELEM_VAL_VAR2, DESC, DESC, LIMIT_VAR3, "");
 
-    private static class ListTrimInfo extends ListHeader {
+    private static class ListTrimInfo extends ListValueInfo {
         long start;
         long stop;
 
-        ListTrimInfo(String cid, long len, long start, long stop) {
-            super(cid, len);
+        ListTrimInfo(ListValueInfo valInfo, long start, long stop)
+            throws RedisResponseException {
+            super(valInfo.header);
             this.start = start;
             this.stop = stop;
         }
@@ -52,7 +52,7 @@ public class ListTrimRemove extends ListCommandsBase {
         return doMultiUpdate(keyInfo,
             (ki) -> queryListElems(ki, isDesc ? SQL_LREM_DESC : SQL_LREM,
                 new StringValue(makeStrVal(val)), new LongValue(cnt)),
-            (ki, oldVal) -> makeDeleteListElems(ki, oldVal, false),
+            (ki, lvi, upInfo) -> makeDeleteListElems(ki, lvi, upInfo, false),
             (header, res) -> {
                 if (header == null) {
                     return 0;
@@ -98,13 +98,16 @@ public class ListTrimRemove extends ListCommandsBase {
     // don't need to worry about list changing concurrently during operations
     // below. If it does change, the update performed by doMultiUpdate() will
     // fail with version mismatch and we retry on the next iteration.
-    private CollectionValueInfo<ListTrimInfo, BigDecimal> queryElemsForTrim(
+    private CollectionValueResult<ListTrimInfo> queryElemsForTrim(
         RedisKeyInfo keyInfo, long start, long stop)
         throws RedisResponseException {
-        CollectionValueInfo<ListHeader, BigDecimal> leftRes = null;
-        CollectionValueInfo<ListHeader, BigDecimal> rightRes = null;
+        CollectionValueResult<ListValueInfo> leftRes = null;
+        CollectionValueResult<ListValueInfo> rightRes = null;
+        ListValueInfo leftVal = null;
+        ListValueInfo rightVal = null;
+
         long remaining = MAX_TXN_ELEM_CNT;
-        RedisValueInfoBase<ListHeader> listVal = null;
+        CollectionValueResult<ListValueInfo> listRes = null;
 
         // If start < 0 or stop >= 0, we cannot do either left or right
         // query without knowing the length of the list. If start >= 0 or
@@ -116,23 +119,23 @@ public class ListTrimRemove extends ListCommandsBase {
         if (start <= 0 && stop >= -1) {
             // Special case where no trimming on either side is needed.
             if (start == 0 && stop == -1) {
-                return CollectionValueInfo.none();
+                return null;
             }
             
-            listVal = doGetList(keyInfo);
-            if (listVal.val == null) {
-                return CollectionValueInfo.none();
+            listRes = doGetList(keyInfo);
+            if (listRes.data == null) {
+                return null;
             }
 
             if (start < 0) {
-                start = Math.max(start + listVal.val.len, 0);
+                start = Math.max(start + listRes.data.header.len, 0);
             }
             if (stop >= 0) {
-                stop = Math.min(stop - listVal.val.len, -1);
+                stop = Math.min(stop - listRes.data.header.len, -1);
             }
             // check again after conversion of start and stop
             if (start == 0 && stop == -1) {
-                return CollectionValueInfo.none();
+                return null;
             }
         }
 
@@ -141,20 +144,22 @@ public class ListTrimRemove extends ListCommandsBase {
             // Last arg is the number of elements to be deleted.
             rightRes = queryListElems(keyInfo, SQL_RPOP,
                 new LongValue(Math.min(-stop - 1, remaining)));
-            if (rightRes.val == null) {
-                return CollectionValueInfo.none();
+            rightVal = rightRes.data;
+            if (rightVal == null) {
+                return null;
             }
-            if (listVal == null) {
-                listVal = rightRes;
+
+            if (listRes == null) {
+                listRes = rightRes;
             }
-            remaining -= rightRes.elems.size();
+            remaining -= rightVal.elemIds.size();
             // Update value of stop for next invocation.
-            stop = Math.max(stop, -rightRes.val.len) +
-                rightRes.elems.size();
+            stop = Math.max(stop, -rightVal.header.len) +
+                rightVal.elemIds.size();
 
             // Convert start to canonical form.
             if (start < 0) {
-                start = Math.max(start + rightRes.val.len, 0);
+                start = Math.max(start + rightRes.data.header.len, 0);
             }
         }
 
@@ -164,51 +169,52 @@ public class ListTrimRemove extends ListCommandsBase {
         if (start > 0 && remaining != 0) {
             leftRes = queryListElems(keyInfo, SQL_LPOP,
                 new LongValue(Math.min(start, remaining)));
-            if (leftRes.val == null) {
-                return CollectionValueInfo.none();
+            leftVal = leftRes.data;
+            if (leftVal == null) {
+                return null;
             }
-            if (listVal == null) {
-                listVal = leftRes;
+
+            if (listRes == null) {
+                listRes = leftRes;
             }
-            remaining -= leftRes.elems.size();
+            remaining -= leftVal.elemIds.size();
             // Update value of start for next invocation.
-            start = Math.min(start, leftRes.val.len - 1) -
-                leftRes.elems.size();
+            start = Math.min(start, leftVal.header.len - 1) -
+            leftVal.elemIds.size();
 
             // Convert stop to canonical form.
             // If we could not do the right side before, we can do it now.
             if (stop >= 0) {
-                stop = Math.min(stop - leftRes.val.len, -1);
+                stop = Math.min(stop - leftVal.header.len, -1);
                 assert rightRes == null;
                 if (stop < -1 && remaining != 0) {
                     rightRes = queryListElems(keyInfo, SQL_RPOP,
                         new LongValue(Math.min(-stop - 1, remaining)));
-                    if (rightRes.val == null) {
-                        return CollectionValueInfo.none();
+                    rightVal = rightRes.data;
+                    if (rightVal == null) {
+                        return null;
                     }
+
                     // Update value of stop for next invocation.
-                    stop = Math.max(stop, -rightRes.val.len) +
-                        rightRes.elems.size();
+                    stop = Math.max(stop, -rightVal.header.len) +
+                        rightVal.elemIds.size();
                 }
             }
         }
 
         // Case of start == 0 and stop == -1 is already handled above.
-        assert listVal != null;
+        assert listRes != null;
 
-        CollectionValueInfo<ListTrimInfo, BigDecimal> res =
-            new CollectionValueInfo<>(
-                new ListTrimInfo(listVal.val.cid, listVal.val.len, start,
-                stop), listVal.ver, listVal.exp);
+        ListTrimInfo res = new ListTrimInfo(listRes.data, start, stop);
         
         if (leftRes != null) {
-            res.elems.addAll(leftRes.elems);
+            res.elemIds.addAll(leftVal.elemIds);
         }
         if (rightRes != null) {
-            res.elems.addAll(rightRes.elems);
+            res.elemIds.addAll(rightVal.elemIds);
         }
         
-        return res;
+        return new CollectionValueResult<>(listRes.val, res);
     }
 
     private boolean doTrim(RedisKeyInfo keyInfo, long start, long stop)
@@ -222,8 +228,9 @@ public class ListTrimRemove extends ListCommandsBase {
         do {
             ListTrimInfo trimRes = doMultiUpdate(keyInfo,
                 (ki) -> queryElemsForTrim(keyInfo, bounds[0], bounds[1]),
-                (ki, oldVal) -> makeDeleteListElems(keyInfo, oldVal, false),
-                (trimInfo, res) -> trimInfo);
+                (ki, lvi, upInfo) -> makeDeleteListElems(keyInfo, lvi, upInfo,
+                    false),
+                (trimInfo, header, res) -> trimInfo);
 
             if (trimRes == null) {
                 return success;

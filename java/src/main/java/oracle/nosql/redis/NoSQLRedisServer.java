@@ -48,6 +48,11 @@ public class NoSQLRedisServer {
         "cid STRING AS UUID, value STRING, PRIMARY KEY(elemId))";
     public static final String CREATE_LISTID_IDX =
         "CREATE INDEX IF NOT EXISTS listIdIdx ON redis.lists(cid)";
+    public static final String CREATE_HASH_TABLE =
+        "CREATE TABLE IF NOT EXISTS redis.hashes(keyId STRING, " +
+        "cid STRING AS UUID, key JSON, value STRING, PRIMARY KEY(keyId))";
+    public static final String CREATE_HASHID_IDX =
+        "CREATE INDEX IF NOT EXISTS hashIdIdx ON redis.hashes(cid)";
     
     private final ServerBootstrap serverBootstrap = new ServerBootstrap();
     private Channel serverChannel;
@@ -68,6 +73,10 @@ public class NoSQLRedisServer {
             .setStatement(CREATE_LIST_TABLE), 30000, 500);
         nosqlHandle.doTableRequest(new TableRequest()
             .setStatement(CREATE_LISTID_IDX), 30000, 500);
+        nosqlHandle.doTableRequest(new TableRequest()
+            .setStatement(CREATE_HASH_TABLE), 30000, 500);
+        nosqlHandle.doTableRequest(new TableRequest()
+            .setStatement(CREATE_HASHID_IDX), 30000, 500);
     }
 
     public NoSQLRedisServer(String host, int port, NoSQLHandle nosqlHandle) {

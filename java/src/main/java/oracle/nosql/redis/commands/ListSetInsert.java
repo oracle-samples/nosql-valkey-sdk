@@ -15,6 +15,7 @@ import io.netty.buffer.ByteBuf;
 import io.netty.handler.codec.redis.IntegerRedisMessage;
 import io.netty.handler.codec.redis.RedisMessage;
 import oracle.nosql.driver.NoSQLHandle;
+import oracle.nosql.driver.values.ArrayValue;
 import oracle.nosql.driver.values.FieldValue;
 import oracle.nosql.driver.values.LongValue;
 import oracle.nosql.driver.values.MapValue;
@@ -39,10 +40,10 @@ public class ListSetInsert extends ListCommandsBase {
     private static final int MAX_REINDEX_ATTEMPTS = 3;
     private static final int MAX_LINSERT_ATTEMPS = 3;
 
-    private static final String FLD_ELEM_VAL = "elemValue";
+    private static final String FLD_ELEM_VAL = "elemVal";
     private static final String VAR2_NUM_VAR3_NUM =
         "$var2 NUMBER; $var3 NUMBER; ";
-    private static final String ELEM_VAL = ", $l.value AS elemValue";
+    private static final String ELEM_VAL = ", $l.value AS elemVal";
     private static final String REINDEX_LIMIT = " LIMIT " + REINDEX_STEP_CNT;
 
     private static final String SQL_LSET = String.format(SQL_ELEMS_FMT,
@@ -123,36 +124,62 @@ public class ListSetInsert extends ListCommandsBase {
         BigDecimal.ONE.movePointLeft(ELEM_ID_PREF_MAX_SCALE);
     private static final BigDecimal HALF = new BigDecimal(0.5);
 
-    private static class ElemInfo {
-        final BigDecimal elemId;
-        final FieldValue elemVal;
-        ElemInfo(MapValue elemRow) throws RedisResponseException {
-            elemId = rowToElemId(elemRow);
-            elemVal = elemRow.get(FLD_ELEM_VAL);
+    private static class ListReindexInfo extends ListValueInfo {
+        final ArrayValue elemVals = new ArrayValue();
+
+        ListReindexInfo(RedisValueInfo val) throws RedisResponseException {
+            super(val);
+        }
+
+        void addElemRow(MapValue elemRow) throws RedisResponseException {
+            BigDecimal elemId = rowToElemId(elemRow);
+            FieldValue elemVal = elemRow.get(FLD_ELEM_VAL);
             if (elemVal == null || !elemVal.isString()) {
                 throw RedisResponseException.corrupt(
                     "Missing or invalid elemVal field");
             }
+
+            elemIds.add(elemId);
+            elemVals.add(elemVal);
         }
     }
 
+    // We use this class to distinguish between 3 cases:
+    // 1) Reindex finished, we return null.
+    // 2) To continue reindexing we return new ReindexBatchResult(nextFromId).
+    // 3) If we have to abort reindexing due to concurrent insert of new
+    // elemId in the reindex interval, we return ReindexBatchResult.ABORT.
     private static class ReindexBatchResult {
-        BigDecimal nextFromId;
-        boolean isDone;
+        final BigDecimal nextFromId;
+
+        static final ReindexBatchResult ABORT = new ReindexBatchResult(null);
+
+        ReindexBatchResult(BigDecimal nextFromId) {
+            this.nextFromId = nextFromId;
+        }
     }
 
     private static class InsertResult {
         final RedisMessage res;
         final BigDecimal reindexStartId;
 
-        InsertResult(RedisMessage res) {
-            this.res = res;
-            reindexStartId = null;
+        static final InsertResult LIST_NOT_FOUND =
+            new InsertResult(zeroReply, null);
+        static final InsertResult PIVOT_NOT_FOUND =
+            new InsertResult(minusOneReply, null);
+
+        private InsertResult(RedisMessage res, BigDecimal reindexRestartId) {
+                this.res = res;
+                this.reindexStartId = reindexRestartId;
+            }
+
+        static InsertResult success(ListHeader header) {
+            return new InsertResult(new IntegerRedisMessage(header.len),
+                null);
         }
-        
-        InsertResult(BigDecimal reindexStartId) {
-            this.reindexStartId = reindexStartId;
-            this.res = null;
+
+        static InsertResult needReindex(BigDecimal reindexStartId) {
+            return new InsertResult(null, reindexStartId);
         }
     }
 
@@ -254,40 +281,37 @@ public class ListSetInsert extends ListCommandsBase {
     private ReindexBatchResult doReindexBatch(RedisKeyInfo keyInfo,
         BigDecimal fromId, BigDecimal toId, boolean isLeft)
         throws RedisResponseException {
-        final ReindexBatchResult rbRes = new ReindexBatchResult();
-
-        ListHeader muRes = doMultiUpdate(keyInfo, (ki) -> {
+        return doMultiUpdate(keyInfo, (ki) -> {
             List<MapValue> rows = doQuery(ki,
                 isLeft ? SQL_ELEMS_BEFORE : SQL_ELEMS_AFTER,
                 new NumberValue(fromId), new NumberValue(toId));
             if (rows.isEmpty()) {
                 // We are done with reindexing or the list no longer exists.
-                return CollectionValueInfo.none();
+                return CollectionValueResult.none();
             }
             
             MapValue row0 = rows.get(0);
-            CollectionValueInfo<ListHeader, ElemInfo> res =
-                new CollectionValueInfo<>(new ListHeader(rowToValue(row0)),
-                oracle.nosql.driver.Version.createVersion(rowToVer(row0)),
-                getExpTime(rowToKey(row0)));
+            RedisValueInfo val = new RedisValueInfo(rowToValue(row0),
+                rowToVer(row0), getExpTime(rowToKey(row0)));
+            ListReindexInfo res = new ListReindexInfo(val);
 
             for(MapValue row : rows) {
-                res.elems.add(new ElemInfo(row));
+                res.addElemRow(row);
             }
 
-            return res;
+            return new CollectionValueResult<>(val, res);
         },
-        (ki, oldVal) -> {
-            ListHeader header = oldVal.val;
-            if (header == null) {
+        (ki, lvi, upInfo) -> {
+            if (lvi == null) {
                 return null;
             }
-            assert !oldVal.elems.isEmpty();
-            CollectionUpdateInfo<ListHeader> opInfo =
-                new CollectionUpdateInfo<>(header);
-            opInfo.addPutKeyReq(ki, oldVal);
+            ListHeader header = lvi.header;
+            assert !lvi.elemIds.isEmpty();
+            assert lvi.elemIds.size() == lvi.elemVals.size();
 
-            int cnt = oldVal.elems.size();
+            upInfo.addPutKeyReq(header);
+
+            int cnt = lvi.elemIds.size();
             BigDecimal currId = fromId;
             
             // We need additional iteration to determine where to add delete
@@ -297,7 +321,8 @@ public class ListSetInsert extends ListCommandsBase {
             int delIdx = 0;
             
             for(int putIdx = 0; putIdx < cnt; putIdx++) {
-                ElemInfo elem = oldVal.elems.get(putIdx);
+                BigDecimal elemId = lvi.elemIds.get(putIdx);
+                FieldValue elemVal = lvi.elemVals.get(putIdx);
 
                 currId = isLeft ?
                     reindexShiftLeft(currId) : reindexShiftRight(currId);
@@ -305,8 +330,8 @@ public class ListSetInsert extends ListCommandsBase {
                 // Note that we must always shift forward if going back
                 // (isBefore = true) or backward if going forward
                 // (isBefore = false).
-                if ((isLeft && (currId.compareTo(elem.elemId) < 0)) ||
-                    (!isLeft && (currId.compareTo(elem.elemId) > 0))) {
+                if ((isLeft && (currId.compareTo(elemId) < 0)) ||
+                    (!isLeft && (currId.compareTo(elemId) > 0))) {
                     // This can only happen if some other client has inserted
                     // new element with elemId after we have done the 1st
                     // pass. In this case, our interval is no longer valid
@@ -316,19 +341,19 @@ public class ListSetInsert extends ListCommandsBase {
                     // sure we add delete requests for elements already
                     // processed.
                     for(; delIdx < putIdx; delIdx++) {
-                        opInfo.addElemReq(makeDeleteElemReq(ki,
-                            oldVal.elems.get(delIdx).elemId, false));
+                        upInfo.addElemReq(makeDeleteElemReq(ki,
+                            lvi.elemIds.get(delIdx), false));
                     }
 
-                    return opInfo;
+                    return ReindexBatchResult.ABORT;
                 }
 
-                opInfo.addElemReq(makePutElemReq(ki, currId, header.cid,
-                    elem.elemVal));
+                upInfo.addElemReq(makePutElemReq(ki, currId, header.cid,
+                    elemVal));
 
                 for(; delIdx < cnt; delIdx++) {
-                    ElemInfo elem2 = oldVal.elems.get(delIdx);
-                    int cmpRes = elem2.elemId.compareTo(currId);
+                    BigDecimal elemId2 = lvi.elemIds.get(delIdx);
+                    int cmpRes = elemId2.compareTo(currId);
 
                     // We can increment delIdx and avoid next iteration if
                     // ids are equal.
@@ -338,28 +363,20 @@ public class ListSetInsert extends ListCommandsBase {
                     }
 
                     // We know ids are not equal here.
-                    opInfo.addElemReq(makeDeleteElemReq(ki, elem2.elemId,
-                        false));
+                    upInfo.addElemReq(makeDeleteElemReq(ki, elemId2, false));
                 }
             }
 
             // Complete adding delete requests (we are now past last put
             // element id, so id clash is no longer possible).
             for(; delIdx < cnt; delIdx++) {
-                opInfo.addElemReq(makeDeleteElemReq(ki,
-                    oldVal.elems.get(delIdx).elemId, false));
+                upInfo.addElemReq(makeDeleteElemReq(ki,
+                    lvi.elemIds.get(delIdx), false));
             }
 
-            rbRes.nextFromId = currId;
-            return opInfo;
+            return new ReindexBatchResult(currId);
         },
-        (header, res) -> header);
-
-        if (muRes == null) {
-            rbRes.isDone = true;
-        }
-
-        return rbRes;
+        (rbr, res) -> rbr);
     }
 
     private void doReindex(RedisKeyInfo keyInfo, BigDecimal startId)
@@ -396,7 +413,7 @@ public class ListSetInsert extends ListCommandsBase {
 
             for(;;) {
                 res = doReindexBatch(keyInfo, fromId2, toId2, !isLeft);
-                if (res.isDone) {
+                if (res == null) {
                     // No more ids to process or the list no longer exists, so
                     // we are done.
                     return;
@@ -415,45 +432,40 @@ public class ListSetInsert extends ListCommandsBase {
 
     private InsertResult doLInsert(RedisKeyInfo keyInfo, ByteBuf pivot,
         ByteBuf val, boolean isBefore) throws RedisResponseException {
-        // Use array to allow lambda to modify outside state.
-        BigDecimal[] reindexStartId = { null };
-
-        RedisMessage muRes = doMultiUpdate(keyInfo, (ki) -> {
-            CollectionValueInfo<ListHeader, BigDecimal> res =
+        return doMultiUpdate(keyInfo, (ki) -> {
+            CollectionValueResult<ListValueInfo> res =
                 queryListElems(ki, SQL_LINSERT_PIVOT, true,
                 new StringValue(makeStrVal(pivot)));
-            if (res.elems.isEmpty()) {
+            if (res.data.elemIds.isEmpty()) {
                 // either the list itself or the pivot is not found
                 return res;
             }
             List<MapValue> rows = doQuery(ki,
                 isBefore ? SQL_LINSERT_BEFORE : SQL_LINSERT_AFTER,
-                new NumberValue(res.elems.get(0)));
+                new NumberValue(res.data.elemIds.get(0)));
             if (!rows.isEmpty()) {
                 chkSingleResult(rows);
-                res.elems.add(rowToElemId(rows.get(0)));
+                res.data.elemIds.add(rowToElemId(rows.get(0)));
             }
             // res should have at most 2 elements - the pivot and the
             // element before/after if exists.
             return res;
-        }, (ki, oldVal) -> {
-            ListHeader header = oldVal.val;
-            if (header == null) { // list is not found
-                return null;
+        }, (ki, lvi, upInfo) -> {
+            if (lvi == null) { // list is not found
+                return InsertResult.LIST_NOT_FOUND;
             }
+            ListHeader header = lvi.header;
             
             header.len++;
 
-            CollectionUpdateInfo<ListHeader> opInfo =
-                new CollectionUpdateInfo<>(header);
-            if (oldVal.elems.isEmpty()) {
-                return opInfo; // pivot is not found
+            if (lvi.elemIds.isEmpty()) {
+                return InsertResult.PIVOT_NOT_FOUND; // pivot is not found
             }
             
-            BigDecimal pivotId = oldVal.elems.get(0);
+            BigDecimal pivotId = lvi.elemIds.get(0);
             BigDecimal newId;
 
-            if (oldVal.elems.size() == 1) {
+            if (lvi.elemIds.size() == 1) {
                 // Inserting at either end of the list, same as for
                 // LPUSH/RPUSH.
                 newId = isBefore ?
@@ -464,7 +476,7 @@ public class ListSetInsert extends ListCommandsBase {
             } else {
                 // Inserting between 2 elements. Try to insert at the
                 // mid-point, appropriately rounded.
-                BigDecimal otherId = oldVal.elems.get(1);
+                BigDecimal otherId = lvi.elemIds.get(1);
                 newId = pivotId.add(otherId).divide(VALUE_TWO);
                 if (newId.scale() > ELEM_ID_MAX_SCALE) {
                     // Rounding mode shouldn't matter here, we only aim to
@@ -475,36 +487,16 @@ public class ListSetInsert extends ListCommandsBase {
                         roundedNewId.compareTo(otherId) == 0) {
                         // We cannot fit the id between these two, so we
                         // reindex and retry.
-                        reindexStartId[0] = newId;
-                        return null;
+                        return InsertResult.needReindex(newId);
                     }
                     newId = roundedNewId;
                 }
             }
 
-            opInfo.addPutKeyReq(ki, oldVal);
-            opInfo.addElemReq(makePutElemReq(ki, newId, header.cid, val));
-            return opInfo;
-        }, (header, res) -> {
-            if (res == null) {
-                if (reindexStartId[0] != null) {
-                    return null;
-                }
-                // header == null - list not found
-                // header != null - pivot not found
-                return header == null ? zeroReply : minusOneReply; 
-            }
-            assert header != null;
-            // On success return list length after insert.
-            return new IntegerRedisMessage(header.len);
-        });
-
-        if (muRes != null) {
-            return new InsertResult(muRes);
-        }
-
-        assert reindexStartId[0] != null;
-        return new InsertResult(reindexStartId[0]);
+            upInfo.addPutKeyReq(header);
+            upInfo.addElemReq(makePutElemReq(ki, newId, header.cid, val));
+            return InsertResult.success(header);
+        }, (insRes, wmRes) -> insRes);
     }
 
     public void registerCommands(HashMap<String, CommandHandler> cmdMap) {
@@ -529,30 +521,26 @@ public class ListSetInsert extends ListCommandsBase {
             chkSingleResult(rows);
 
             MapValue row0 = rows.get(0);
-            CollectionValueInfo<ListHeader, BigDecimal> res =
-                new CollectionValueInfo<>(new ListHeader(rowToValue(row0)),
-                oracle.nosql.driver.Version.createVersion(rowToVer(row0)),
-                getExpTime(rowToKey(row0)));
+            RedisValueInfo val = new RedisValueInfo(rowToValue(row0),
+                rowToVer(row0), getExpTime(rowToKey(row0)));
+            ListValueInfo res = new ListValueInfo(val);
             BigDecimal elemId = rowToElemId(row0);
             assert elemId != null;
-            res.elems.add(elemId);
-
-            return res;
-            }, (ki, oldVal) -> {
-                ListHeader header = oldVal.val;
+            res.elemIds.add(elemId);
+            return new CollectionValueResult<>(val, res);
+            }, (ki, lvi, upInfo) -> {
+                ListHeader header = lvi.header;
                 // This may happen if the list has expired.
                 if (header == null) {
                     throw new RedisResponseException(ErrorPrefix.ERR,
                         "index out of range");
                 }
                 
-                CollectionUpdateInfo<ListHeader> opInfo =
-                    new CollectionUpdateInfo<>(header);
-                opInfo.addPutKeyReq(ki, oldVal);
-                assert oldVal.elems.size() == 1;
-                opInfo.addElemReq(makePutElemReq(ki, oldVal.elems.get(0),
+                upInfo.addPutKeyReq(header);
+                assert lvi.elemIds.size() == 1;
+                upInfo.addElemReq(makePutElemReq(ki, lvi.elemIds.get(0),
                     header.cid, cmd.args[2]));
-                return opInfo;
+                return header;
             }, (header, res) -> okReply);
     }
 

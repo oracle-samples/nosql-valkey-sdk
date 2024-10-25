@@ -116,8 +116,8 @@ public abstract class CommandsBase {
         }
     }
 
-    static class RedisValueInfoBase<V> {
-        final V val;
+    static class RedisValueInfo {
+        final MapValue val;
         final oracle.nosql.driver.Version ver;
         final long exp;
 
@@ -126,7 +126,7 @@ public abstract class CommandsBase {
         static final RedisValueInfo NONE = new RedisValueInfo(null, null,
             NO_EXP);
 
-        RedisValueInfoBase(V val, oracle.nosql.driver.Version ver,
+        RedisValueInfo(MapValue val, oracle.nosql.driver.Version ver,
             long exp) {
             this.val = val;
             this.ver = ver;
@@ -150,19 +150,9 @@ public abstract class CommandsBase {
         boolean isExpired(long currTime) {
             return val != null && exp != NO_EXP && currTime > exp;
         }
-    }
 
-    // Used mostly when reading key-value pair.
-    static class RedisValueInfo extends RedisValueInfoBase<MapValue> {
-
-        // Represents non-existing row or when we want to unconditionally
-        // overwrite existing row.
-        static final RedisValueInfo NONE = new RedisValueInfo(null, null,
-            NO_EXP);
-
-        RedisValueInfo(MapValue val, oracle.nosql.driver.Version ver,
-            long exp) {
-            super(val, ver, exp);
+        boolean isExpired() {
+            return isExpired(System.currentTimeMillis());
         }
     }
 
@@ -237,7 +227,7 @@ public abstract class CommandsBase {
         return makeRedisKeyInfo(buf, NO_EXP);
     }
 
-    static String makeId(ByteBuf buf) {
+    static String makeKeyId(ByteBuf buf) {
         return makeRedisKeyInfo(buf).id;
     }
 
@@ -265,6 +255,25 @@ public abstract class CommandsBase {
         return makeRedisKey(keyInfo, keyInfo.exp);
     }
 
+    static String getStringField(MapValue mapVal, String fieldName,
+        boolean allowNull) throws RedisResponseException {
+        FieldValue fldVal = mapVal.get(fieldName);
+        if (allowNull && fldVal != null && fldVal.isAnyNull()) {
+            return null;
+        }
+        if (fldVal == null || !fldVal.isString()) {
+            throw RedisResponseException.corrupt(
+                "Missing or invalid field " + fieldName);
+        }
+
+        return fldVal.getString();
+    }
+
+    static String getStringField(MapValue mapVal, String fieldName)
+        throws RedisResponseException {
+        return getStringField(mapVal, fieldName, false);
+    }
+
     static MapValue rowToKey(MapValue row) throws RedisResponseException {
         FieldValue key = row.get(FLD_KEY);
         if (key == null || !key.isMap()) {
@@ -282,13 +291,9 @@ public abstract class CommandsBase {
     }
 
     static String getValueType(MapValue val) throws RedisResponseException {
-        FieldValue typeFld = val.get(VALUE_TYPE);
-        if (typeFld == null || !typeFld.isString()) {
-            throw RedisResponseException.corrupt("Invalid value type");
-        }
-        return typeFld.asString().getValue();
+        return getStringField(val, VALUE_TYPE);
     }
-
+    
     static String getData(MapValue val) throws RedisResponseException {
         FieldValue fldData = val.get(KEY_DATA);
         if (fldData == null || !fldData.isString()) {
