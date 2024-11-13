@@ -39,6 +39,12 @@ class RedisServerHandler extends SimpleChannelInboundHandler<RedisMessage> {
             res = handler.apply(client, cmd);
         } catch(RedisResponseException rrex) {
             res = new ErrorRedisMessage(rrex.getMessage());
+        } catch(RuntimeException ex) {
+            Throwable cause = ex.getCause();
+            if (!(cause instanceof RedisResponseException)) {
+                throw ex;
+            }
+            res = new ErrorRedisMessage(cause.getMessage());
         } finally {
             if (cmd != null) {
                 cmd.releaseBuffers();

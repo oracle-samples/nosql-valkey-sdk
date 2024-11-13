@@ -14,7 +14,7 @@ public class ListCommands extends ListCommandsBase {
 
     public ListCommands(NoSQLHandle nosqlHandle,
         PreparedStatementCache pstmtCache) {
-        // Technically we don't to store nosqlHandle, pstmtCache in this
+        // Technically we don't want to store nosqlHandle, pstmtCache in this
         // class, but its possible some implementations will be added here
         // that will use these fields.
         super(nosqlHandle, pstmtCache);

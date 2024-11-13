@@ -39,15 +39,15 @@ abstract class CollectionCommandsBase extends CommandsBase {
     protected static final String FLD_VER = "ver";
     protected static final String FLD_LEN = "len";
 
-    protected static final String NOT_EXPIRED =
-        "AND (NOT EXISTS $r.key.exp OR $r.key.exp > current_time_millis()) ";
-
     protected static final String SQL_SEL_ELEMS_FMT =
         "DECLARE $var1 STRING; $var2 STRING; SELECT * FROM %s " +
         "WHERE id = $var1 AND cid = $var2";
     protected static final String SQL_DEL_ELEMS_FMT =
         "DECLARE $var1 STRING; $var2 STRING; DELETE FROM %s WHERE " +
         "id = $var1 AND cid = $var2";
+
+    protected static final String ERR_NO_SINGLE_RES =
+        "Expected single result, got multiple";
 
     protected static class CollectionHeader {
 
@@ -247,8 +247,7 @@ abstract class CollectionCommandsBase extends CommandsBase {
 
     static void chkSingleResult(List<?> res) throws RedisResponseException {
         if (res.size() != 1) {
-            throw RedisResponseException.nosql(
-                "Expected single result, got multiple");
+            throw RedisResponseException.nosql(ERR_NO_SINGLE_RES);
         }
     }
 

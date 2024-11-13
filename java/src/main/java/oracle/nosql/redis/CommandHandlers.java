@@ -68,6 +68,8 @@ public class CommandHandlers {
                 return stringCommands;
             case CommandsBase.TYPE_LIST:
                 return listCommands;
+            case CommandsBase.TYPE_HASH:
+                return hashCommands;
             default:
                 throw RedisResponseException.corrupt(
                     "Value of unknown type " + type);

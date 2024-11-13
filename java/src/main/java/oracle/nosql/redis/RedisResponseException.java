@@ -69,4 +69,11 @@ import oracle.nosql.driver.NoSQLException;
             "Unknown command: " + cmd.name);
     }
 
+    // In some cases it is not possible to throw checked
+    // RedisResponseException, e.g. when implementing an iterator, in which
+    // case we use this workaround. RedisServerHandler will check for this.
+    public static RuntimeException unchecked(RedisResponseException ex) {
+        return new RuntimeException(ex);
+    }
+
 }

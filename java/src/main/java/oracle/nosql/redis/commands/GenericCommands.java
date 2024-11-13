@@ -9,6 +9,7 @@
 
 import static oracle.nosql.redis.util.Utils.millisToSeconds;
 
+import java.util.List;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.function.LongBinaryOperator;
@@ -29,6 +30,7 @@ import oracle.nosql.redis.RedisResponseException;
 import oracle.nosql.redis.RedisResponseException.ErrorPrefix;
 import oracle.nosql.redis.util.PreparedStatementCache;
 import oracle.nosql.redis.util.Utils;
+import oracle.nosql.redis.util.Utils.ThrowingPredicate;
 
 public class GenericCommands extends CommandsBase {
 
@@ -38,8 +40,6 @@ public class GenericCommands extends CommandsBase {
         GT,
         LT
     }
-
-    private static final long SCAN_DEF_COUNT = 10;
 
     public static final String CMD_COPY = "COPY";
     public static final String CMD_DEL = "DEL";
@@ -59,8 +59,38 @@ public class GenericCommands extends CommandsBase {
     public static final String CMD_RENAME = "RENAME";
     public static final String CMD_RENAMENX = "RENAMENX";
 
+    private static class KeyScan extends QueryScan {
+
+        private static final String SQL_SCAN =
+            "DECLARE $var1 LONG; SELECT $r.key, $r.value.type AS type FROM " +
+            "redis $r WHERE $r.key.scanId >= $var1 " + NOT_EXPIRED +
+            "ORDER BY $r.key.scanId";
+
+        KeyScan(CommandsBase cmds) {
+            super(cmds);
+        }
+
+        private static ThrowingPredicate<MapValue,RedisResponseException>
+            typePred(String type) {
+            return type != null ?
+                row -> type.equalsIgnoreCase(getStringField(row, VALUE_TYPE)) :
+                null;
+        }
+    
+        String getSQLScan() { return SQL_SCAN; }
+
+        long scan(long cursor, ByteBuf match, long count, String type,
+            List<RedisMessage> results) throws RedisResponseException {
+            return scan(null, cursor, match, count, typePred(type), results);
+        }
+
+        RedisMessage scan(long cursor, ByteBuf match, long count, String type)
+            throws RedisResponseException {
+            return scan(null, cursor, match, count, typePred(type));
+        }
+    }
+
     private final CommandHandlers cmdHandlers;
-    private final Scan scan;
 
     private static int compExp(long exp1, long exp2) {
         assert exp1 >= NO_EXP;
@@ -148,6 +178,7 @@ public class GenericCommands extends CommandsBase {
     // elements with old cid.
     private boolean doDel(ByteBuf keyBuf) throws RedisResponseException {
         RedisKeyInfo keyInfo = makeRedisKeyInfo(keyBuf);
+        // This will delete the row and get old value in a single request.
         RedisValueInfo oldVal = doDelGetVal(keyInfo);
         if (oldVal.val == null) {
             // the key didn't exist or expired
@@ -200,7 +231,6 @@ public class GenericCommands extends CommandsBase {
         PreparedStatementCache pstmtCache, CommandHandlers cmdHandlers) {
         super(nosqlHandle, pstmtCache);
         this.cmdHandlers = cmdHandlers;
-        scan = new Scan(nosqlHandle, pstmtCache);
     }
 
     public void registerCommands(HashMap<String, CommandHandler> cmdMap) {
@@ -370,7 +400,7 @@ public class GenericCommands extends CommandsBase {
 
         ByteBuf match = null;
         String type = null;
-        long count = SCAN_DEF_COUNT;
+        long count = Scan.DEFAULT_COUNT;
 
         for(int i = 1; i < cmd.args.length; i += 2) {
             String arg = Utils.byteBufToString(cmd.args[i]);
@@ -388,7 +418,9 @@ public class GenericCommands extends CommandsBase {
             }
         }
 
-        return scan.scan(cursor, match, count, type);
+        try(KeyScan scan = new KeyScan(this)) {
+            return scan.scan(cursor, match, count, type);
+        }
     }
 
     public RedisMessage handleKeys(RedisClientContext client, RawCommand cmd)
@@ -398,7 +430,9 @@ public class GenericCommands extends CommandsBase {
         ArrayList<RedisMessage> results = new ArrayList<>();
         long cursor = 0;
         do {
-            cursor = scan.scan(cursor, cmd.args[0], 10, null, results);
+            try(KeyScan scan = new KeyScan(this)) {
+                cursor = scan.scan(cursor, cmd.args[0], 1024, null, results);
+            }
         } while (cursor != 0);
 
         return new ArrayRedisMessage(results);

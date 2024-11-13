@@ -251,8 +251,15 @@ abstract class ListCommandsBase extends CollectionCommandsBase {
 
         assert elemId0 != null;
         res.elemIds.add(elemId0);
+        int cnt = rows.size();
 
-        for(int i = 1; i < rows.size(); i++) {
+        // The query should not return more elements that are in the list.
+        if (cnt > res.header.len) {
+            throw RedisResponseException.corrupt(
+                "Invalid list header or query result");
+        }
+
+        for(int i = 1; i < cnt; i++) {
             res.elemIds.add(rowToElemId(rows.get(i)));
         }
 

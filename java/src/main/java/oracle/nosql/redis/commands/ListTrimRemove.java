@@ -82,6 +82,15 @@ public class ListTrimRemove extends ListCommandsBase {
             });
     }
     
+    // Note that we have to select the elements to trim on the left size using
+    // ascending query and the elements to trim on the right side using
+    // descending query. This is because of Redis requirement that the cost of
+    // LTRIM has to be proportional to number of elements trimmed and not the
+    // whole length of the list. If, e.g. we were to select only one last
+    // element to trim on the right side but used ascending query, the query
+    // engine would have to iterate through the whole list before reaching
+    // this element (even if using OFFSET clause), thus violating this
+    // requirement.
     // We prefer to trim both ends of the list in one transaction, if
     // possible (number of elements to remove <= MAX_TXN_ELEM_CNT). If not,
     // we do the right side first then left (this choice is arbitrary).
@@ -109,7 +118,7 @@ public class ListTrimRemove extends ListCommandsBase {
         long remaining = MAX_TXN_ELEM_CNT;
         CollectionValueResult<ListValueInfo> listRes = null;
 
-        // If start < 0 or stop >= 0, we cannot do either left or right
+        // If start < 0 and stop >= 0, we cannot do either left or right
         // query without knowing the length of the list. If start >= 0 or
         // stop < 0, we can do at least one of left/right queries and which
         // will give us the length of the list to do the other (if start == 0
@@ -119,12 +128,12 @@ public class ListTrimRemove extends ListCommandsBase {
         if (start <= 0 && stop >= -1) {
             // Special case where no trimming on either side is needed.
             if (start == 0 && stop == -1) {
-                return null;
+                return CollectionValueResult.none();
             }
             
             listRes = doGetList(keyInfo);
             if (listRes.data == null) {
-                return null;
+                return CollectionValueResult.none();
             }
 
             if (start < 0) {
@@ -135,7 +144,7 @@ public class ListTrimRemove extends ListCommandsBase {
             }
             // check again after conversion of start and stop
             if (start == 0 && stop == -1) {
-                return null;
+                return CollectionValueResult.none();
             }
         }
 
@@ -146,21 +155,37 @@ public class ListTrimRemove extends ListCommandsBase {
                 new LongValue(Math.min(-stop - 1, remaining)));
             rightVal = rightRes.data;
             if (rightVal == null) {
-                return null;
+                return CollectionValueResult.none();
             }
 
             if (listRes == null) {
                 listRes = rightRes;
             }
             remaining -= rightVal.elemIds.size();
-            // Update value of stop for next invocation.
-            stop = Math.max(stop, -rightVal.header.len) +
-                rightVal.elemIds.size();
 
             // Convert start to canonical form.
             if (start < 0) {
                 start = Math.max(start + rightRes.data.header.len, 0);
             }
+
+            // If start is past stop, (e.g start > stop if both are positive),
+            // the result should be empty list. However, if start exceeds stop
+            // by more than 1 (because trimming ends before start and begins
+            // after stop), left and right queries will have overlapping
+            // (duplicate) results, so we adjust start accordingly.
+            // Note that the Math.max() below is used because the expression
+            // that calculates 1 past stop could still be negative if stop is
+            // before the beginning of the list (e.g. list len = 5,
+            // stop = -10, 1 past stop = -4). In this case the result should
+            // be empty list and the query above will get all list elements
+            // and the "if" block below will not be executed.
+            start = Math.min(start,
+                Math.max(rightRes.data.header.len + stop + 1, 0));
+
+            // Update value of stop for next invocation.
+            stop = Math.max(stop, -rightVal.header.len) +
+                rightVal.elemIds.size();
+            assert stop < 0;
         }
 
         // Do the left side, either because start was already in canonical
@@ -171,28 +196,29 @@ public class ListTrimRemove extends ListCommandsBase {
                 new LongValue(Math.min(start, remaining)));
             leftVal = leftRes.data;
             if (leftVal == null) {
-                return null;
+                return CollectionValueResult.none();
             }
 
             if (listRes == null) {
                 listRes = leftRes;
             }
             remaining -= leftVal.elemIds.size();
-            // Update value of start for next invocation.
-            start = Math.min(start, leftVal.header.len - 1) -
-            leftVal.elemIds.size();
 
-            // Convert stop to canonical form.
             // If we could not do the right side before, we can do it now.
             if (stop >= 0) {
-                stop = Math.min(stop - leftVal.header.len, -1);
+                // Convert stop to canonical form. Math.max below shifts stop
+                // if necessary to avoid overlapping results, same logic as
+                // for start above.
+                stop = Math.min(
+                    Math.max(stop, start - 1) - leftVal.header.len, -1);
+                
                 assert rightRes == null;
                 if (stop < -1 && remaining != 0) {
                     rightRes = queryListElems(keyInfo, SQL_RPOP,
                         new LongValue(Math.min(-stop - 1, remaining)));
                     rightVal = rightRes.data;
                     if (rightVal == null) {
-                        return null;
+                        return CollectionValueResult.none();
                     }
 
                     // Update value of stop for next invocation.
@@ -200,6 +226,10 @@ public class ListTrimRemove extends ListCommandsBase {
                         rightVal.elemIds.size();
                 }
             }
+
+            // Update value of start for next invocation.
+            start = Math.min(start, leftVal.header.len - 1) -
+                leftVal.elemIds.size();
         }
 
         // Case of start == 0 and stop == -1 is already handled above.

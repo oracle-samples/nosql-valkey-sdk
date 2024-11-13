@@ -7,8 +7,8 @@
  
 package oracle.nosql.redis.commands;
 
+import java.util.HashMap;
 import java.util.function.Predicate;
-
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
@@ -23,10 +23,16 @@ import oracle.nosql.driver.ops.DeleteRequest;
 import oracle.nosql.driver.ops.DeleteResult;
 import oracle.nosql.driver.ops.GetRequest;
 import oracle.nosql.driver.ops.GetResult;
+import oracle.nosql.driver.ops.PreparedStatement;
 import oracle.nosql.driver.ops.PutRequest;
 import oracle.nosql.driver.ops.PutResult;
+import oracle.nosql.driver.ops.QueryIterableResult;
+import oracle.nosql.driver.ops.QueryRequest;
 import oracle.nosql.driver.values.FieldValue;
+import oracle.nosql.driver.values.LongValue;
 import oracle.nosql.driver.values.MapValue;
+import oracle.nosql.driver.values.StringValue;
+import oracle.nosql.redis.CommandHandlers.CommandHandler;
 import oracle.nosql.redis.NoSQLRedisServer;
 import oracle.nosql.redis.RawCommand;
 import oracle.nosql.redis.RedisResponseException;
@@ -69,6 +75,9 @@ public abstract class CommandsBase {
     static final String KEY_EXP = "exp";
     static final String VALUE_TYPE = "type";
     static final String VALUE_DATA = FLD_DATA;
+
+    static final String NOT_EXPIRED =
+        "AND (NOT EXISTS $r.key.exp OR $r.key.exp > current_time_millis()) ";
 
     public static final String TYPE_STRING = "string";
     public static final String TYPE_LIST = "list";
@@ -156,10 +165,53 @@ public abstract class CommandsBase {
         }
     }
 
+    // Scan that uses query, all current scans will extend this.
+    static abstract class QueryScan extends Scan {
+        private QueryRequest qReq;
+        private QueryIterableResult qir;
+
+        QueryScan(CommandsBase cmds) {
+            super(cmds);
+        }
+
+        abstract String getSQLScan();
+
+        // Suppress resource leak warning because qReq.set... methods
+        // below return the same instance.
+        @SuppressWarnings("resource")
+        Iterable<MapValue> scanIterable(RedisKeyInfo keyInfo, long cursor,
+            int limit) throws RedisResponseException {
+            PreparedStatement pStmt = pstmtCache.get(getSQLScan());
+            if (keyInfo != null) {
+                pStmt.setVariable("$var1", new StringValue(keyInfo.id));
+                pStmt.setVariable("$var2", new LongValue(cursor));
+            } else {
+                pStmt.setVariable("$var1", new LongValue(cursor));
+            }
+
+            qReq = new QueryRequest().setPreparedStatement(pStmt)
+                .setLimit(limit);
+            qir = nosqlHandle.queryIterable(qReq);
+            return qir;
+        }
+
+        public void close() {
+            if (qir != null) {
+                qir.close();
+                qir = null;
+            }
+            if (qReq != null) {
+                qReq.close();
+                qReq = null;
+            }
+        }
+
+    }
+
     protected NoSQLHandle nosqlHandle;
     protected PreparedStatementCache pstmtCache;
 
-    CommandsBase(NoSQLHandle nosqlHandle,
+    public CommandsBase(NoSQLHandle nosqlHandle,
         PreparedStatementCache pstmtCache) {
         this.nosqlHandle = nosqlHandle;
         this.pstmtCache = pstmtCache;
@@ -274,33 +326,43 @@ public abstract class CommandsBase {
         return getStringField(mapVal, fieldName, false);
     }
 
-    static MapValue rowToKey(MapValue row) throws RedisResponseException {
-        FieldValue key = row.get(FLD_KEY);
-        if (key == null || !key.isMap()) {
-            throw RedisResponseException.corrupt("Invalid key");
+    static MapValue getMapField(MapValue mapVal, String fieldName,
+        boolean allowNull) throws RedisResponseException {
+        FieldValue fldVal = mapVal.get(fieldName);
+        if (allowNull && fldVal != null && fldVal.isAnyNull()) {
+            return null;
         }
-        return key.asMap();
+        if (fldVal == null || !fldVal.isMap()) {
+            throw RedisResponseException.corrupt(
+                "Missing or invalid field " + fieldName);
+        }
+
+        return fldVal.asMap();
+    }
+
+    static MapValue getMapField(MapValue mapVal, String fieldName)
+        throws RedisResponseException {
+        return getMapField(mapVal, fieldName, false);
+    }
+
+    static MapValue rowToKey(MapValue row) throws RedisResponseException {
+        return getMapField(row, FLD_KEY);
     }
 
     static MapValue rowToValue(MapValue row) throws RedisResponseException {
-        FieldValue val = row.get(FLD_VALUE);
-        if (val == null || !val.isMap()) {
-            throw RedisResponseException.corrupt("Invalid value");
-        }
-        return val.asMap();
+        return getMapField(row, FLD_VALUE);
     }
 
     static String getValueType(MapValue val) throws RedisResponseException {
         return getStringField(val, VALUE_TYPE);
     }
-    
+
     static String getData(MapValue val) throws RedisResponseException {
-        FieldValue fldData = val.get(KEY_DATA);
-        if (fldData == null || !fldData.isString()) {
-            throw RedisResponseException.corrupt(
-                "Missing or invalid data field");
-        }
-        return fldData.asString().getValue();
+        return getStringField(val, KEY_DATA);
+    }
+
+    static ByteBuf keyToKeyBuf(MapValue key) throws RedisResponseException {
+        return getStrVal(getData(key));
     }
 
     static long getExpTime(MapValue key) {
@@ -637,5 +699,7 @@ public abstract class CommandsBase {
         throws RedisResponseException {
         return srcValInfo.val;
     }
+
+    public void registerCommands(HashMap<String, CommandHandler> cmdMap) {}
 
 }

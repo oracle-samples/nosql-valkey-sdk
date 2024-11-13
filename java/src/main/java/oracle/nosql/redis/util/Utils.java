@@ -38,6 +38,11 @@ public class Utils {
         void run() throws Exception;
     }
 
+    @FunctionalInterface
+    public interface ThrowingPredicate<T, E extends Exception> {
+        boolean test(T t) throws E;
+    }
+
     private static final String SHA256_ALG = "SHA-256";
 
     public static String byteBufToString(ByteBuf buf)
