@@ -94,6 +94,7 @@ public class CommandLine {
     private static final String USER_FLAG = "-user";
     private static final String PASSWORD_FLAG = "-password";
     private static final String CONFIG_FLAG = "-configFile";
+    private static final String COMPARTMENT_FLAG = "-compartment";
 
     private String endpoint;
     private boolean useCloudService;
@@ -102,6 +103,7 @@ public class CommandLine {
     private String user;
     private char[] password;
     private String configFile;
+    private String compartment;
 
     public CommandLine(String [] args) {
         validate(args);
@@ -131,7 +133,8 @@ public class CommandLine {
         if (region != null) {
             useCloudService = true;
             endpoint = region.endpoint();
-        } else if (endpoint.startsWith("nosql.")) {
+        } else if (endpoint.startsWith("nosql.") ||
+            endpoint.startsWith("https://ndcs.")) {
             /* a cloud service endpoint */
             useCloudService = true;
         }
@@ -175,6 +178,12 @@ public class CommandLine {
                           "cloud simulator");
                 }
                 configFile = args[currentArg++];
+            } else if (COMPARTMENT_FLAG.equals(nextArg)) {
+                if (!useCloudService) {
+                    usage("Cannot use " + COMPARTMENT_FLAG + " with the " +
+                          "cloud simulator");
+                }
+                compartment = args[currentArg++];
             } else {
                 usage("Unknown flag: " + nextArg);
             }
@@ -230,6 +239,10 @@ public class CommandLine {
 
     public char[] getPassword() {
         return password;
+    }
+
+    public String getCompartment() {
+        return compartment;
     }
 
     /**

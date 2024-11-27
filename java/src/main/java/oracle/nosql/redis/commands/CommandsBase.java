@@ -89,7 +89,7 @@ public abstract class CommandsBase {
     static final int NO_EXP = -1;
     static final int KEEP_TTL = -2;
 
-    //static final int ATOMIC_SET_TRIES = 10;
+    //static final int ATOMIC_SET_TRIES = 20;
     static final int ATOMIC_SET_TRIES = 10000000;
 
     static final SimpleStringRedisMessage okReply =

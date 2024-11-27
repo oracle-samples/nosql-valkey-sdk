@@ -10,6 +10,7 @@ package oracle.nosql.redis.commands;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.Random;
 
 import oracle.nosql.driver.NoSQLException;
 import oracle.nosql.driver.NoSQLHandle;
@@ -34,6 +35,8 @@ import oracle.nosql.redis.util.Utils.ThrowingFunction;
 import oracle.nosql.redis.util.Utils.ThrowingTriFunction;
 
 abstract class CollectionCommandsBase extends CommandsBase {
+
+    private Random rnd = new Random();
 
     protected static final String FLD_CID = "cid";
     protected static final String FLD_VER = "ver";
@@ -322,7 +325,7 @@ abstract class CollectionCommandsBase extends CommandsBase {
         ThrowingTriFunction<V, U, WriteMultipleResult, R,
             RedisResponseException> getResult) throws RedisResponseException {
 
-        long ms = 20;
+        long ms = 1;
         for(int i = 0; i < ATOMIC_SET_TRIES; i++) {
             CollectionValueResult<V> vi = getOldVal.apply(keyInfo);
 
@@ -348,7 +351,7 @@ abstract class CollectionCommandsBase extends CommandsBase {
                 if (res.getSuccess()) {
                     return getResult.apply(vi.data, opInfo, res);
                 }
-                Thread.sleep(ms);
+                Thread.sleep(ms, rnd.nextInt(1000000));
                 ms *= 2;
             } catch(NoSQLException ex) {
                 throw RedisResponseException.nosql(ex);

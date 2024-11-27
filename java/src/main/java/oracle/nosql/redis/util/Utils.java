@@ -8,6 +8,8 @@
 package oracle.nosql.redis.util;
 
 import java.security.MessageDigest;
+import java.util.function.Predicate;
+
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;

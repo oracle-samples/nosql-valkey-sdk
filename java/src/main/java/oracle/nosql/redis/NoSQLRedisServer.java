@@ -38,7 +38,7 @@ public class NoSQLRedisServer {
     public static final String MAIN_TABLE_NAME = "redis";
     public static final String CREATE_MAIN_TABLE =
         "CREATE TABLE IF NOT EXISTS redis(id STRING, key JSON, value JSON, " +
-        "PRIMARY KEY(id))";
+        "PRIMARY KEY(SHARD(id)))";
     public static final String CREATE_SCANID_IDX =
         "CREATE INDEX IF NOT EXISTS scanIdIdx ON redis(key.scanId AS LONG)";
     private static final TableLimits DEFAULT_TABLE_LIMITS =
@@ -63,7 +63,6 @@ public class NoSQLRedisServer {
     private final int port;
     private final NoSQLHandle nosqlHandle;
     private final CommandHandlers cmdHandlers;
-    private static boolean useCloudSim;
 
     private void initDB() {
         nosqlHandle.doTableRequest(new TableRequest()
@@ -141,7 +140,9 @@ public class NoSQLRedisServer {
         CommandLine cmdLine = new CommandLine(args);
         NoSQLHandleConfig nosqlConfig = new NoSQLHandleConfig(
             cmdLine.getEndpoint());
-        useCloudSim = cmdLine.useCloudSim();
+        if (cmdLine.getCompartment() != null) {
+            nosqlConfig.setDefaultCompartment(cmdLine.getCompartment());
+        }
         nosqlConfig.setAuthorizationProvider(cmdLine.getAuthProvider());
         NoSQLHandle nosqlHandle = NoSQLHandleFactory.createNoSQLHandle(
             nosqlConfig);

@@ -2,7 +2,6 @@ package oracle.nosql.redis.commands;
 
 import java.util.Arrays;
 import java.util.List;
-import java.util.ArrayList;
 import oracle.nosql.driver.NoSQLHandle;
 import oracle.nosql.driver.values.ArrayValue;
 import oracle.nosql.driver.values.FieldValue;
@@ -10,6 +9,7 @@ import oracle.nosql.driver.values.MapValue;
 import oracle.nosql.driver.values.StringValue;
 import oracle.nosql.redis.RedisResponseException;
 import oracle.nosql.redis.util.PreparedStatementCache;
+import oracle.nosql.redis.util.Utils.ThrowingBiFunction;
 
 public class HashCommandsBase extends CollectionCommandsBase {
 
@@ -20,36 +20,38 @@ public class HashCommandsBase extends CollectionCommandsBase {
     // than 1 if config changes), but must never be greater than the one
     // specified below.
 
-    //protected static final int MAX_SMALL_HASH_SIZE = MAX_TXN_ELEM_CNT - 2;
-    //protected static final int MAX_SMALL_HASH_ENT_SIZE = 10 * 1024;
-    protected static final int MAX_SMALL_HASH_SIZE = 5;
-    protected static final int MAX_SMALL_HASH_ENT_SIZE = 10;
+    protected static final int MAX_SMALL_HASH_SIZE = MAX_TXN_ELEM_CNT - 2;
+    protected static final int MAX_SMALL_HASH_ENT_SIZE = 10 * 1024;
+    //protected static final int MAX_SMALL_HASH_SIZE = 5;
+    //protected static final int MAX_SMALL_HASH_ENT_SIZE = 10;
 
     protected static final String HASH_TABLE_NAME = "redis.hashes";
     protected static final String FLD_KEY_ID = "keyId";
     protected static final String FLD_SMALL_VAL = "smallVal";
     protected static final String FLD_FLD_KEY = "fldKey";
+    protected static final String FLD_FLD_VAL = "fldVal";
 
     protected static String VAR2_STRING = " $var2 STRING;";
     protected static String VAR2_STRING_ARRAY = " $var2 ARRAY(STRING);";
-    protected static final String HKEYID_COND =
-        " AND ($h.keyId IS NULL OR $h.keyId %s)";
-    protected static String HKEYID_IN_ARRAY_VAR2 = String.format(HKEYID_COND,
-        "IN $var2[]");
-    protected static String HKEYID_EQ_VAL_VAR2 = String.format(HKEYID_COND,
-        "= $var2");
+    protected static final String HKEYID_COND = " AND $h.keyId ";
+    protected static final String SEL_HKEYID = ", $h.keyId";
+    protected static final String SEL_FLDVAL = ", $h.value AS fldVal";
+    protected static String HKEYID_IN_ARRAY_VAR2 = HKEYID_COND + "IN $var2[]";
+    protected static String HKEYID_EQ_VAL_VAR2 = HKEYID_COND + "= $var2";
 
     protected static final String FROM_LOJ =
         "FROM redis $r LEFT OUTER JOIN redis.hashes $h ON $r.id = $h.id " +
         "AND $r.value.cid = $h.cid";
 
-    protected static final String SQL_ENTRY_IDS_FMT =
+    protected static final String SQL_ENTRIES_FMT =
         "DECLARE $var1 STRING;%s SELECT row_version($r) AS ver, $r.key, " +
-        "$r.value, $h.keyId " + FROM_LOJ + "%s WHERE $r.id = $var1 ";
+        "$r.value%s " + FROM_LOJ + "%s WHERE $r.id = $var1 ";
     protected static final String SQL_ENTRY_IDS = String.format(
-        SQL_ENTRY_IDS_FMT, VAR2_STRING_ARRAY, HKEYID_IN_ARRAY_VAR2);
+        SQL_ENTRIES_FMT, VAR2_STRING_ARRAY, SEL_HKEYID, HKEYID_IN_ARRAY_VAR2);
     protected static final String SQL_ENTRY_ID = String.format(
-            SQL_ENTRY_IDS_FMT, VAR2_STRING, HKEYID_EQ_VAL_VAR2);
+        SQL_ENTRIES_FMT, VAR2_STRING, SEL_HKEYID, HKEYID_EQ_VAL_VAR2);
+    protected static final String SQL_ENTRY_VAL = String.format(
+        SQL_ENTRIES_FMT, VAR2_STRING, SEL_FLDVAL, HKEYID_EQ_VAL_VAR2);
 
     protected static final String SQL_SEL_ELEMS = String.format(
         SQL_SEL_ELEMS_FMT, HASH_TABLE_NAME);
@@ -58,6 +60,8 @@ public class HashCommandsBase extends CollectionCommandsBase {
 
     protected static final String ERR_INVALID_SMALLVAL_ENTRY =
         "Invalid entry in smallVal";
+    protected static final String ERR_INVALID_HASH_HEADER =
+        "Invalid hash header in query result";
     
     public static final String CMD_HSET = "HSET";
     public static final String CMD_HDEL = "HDEL";
@@ -70,6 +74,9 @@ public class HashCommandsBase extends CollectionCommandsBase {
     public static final String CMD_HGETALL = "HGETALL";
     public static final String CMD_HEXISTS = "HEXISTS";
     public static final String CMD_HSTRLEN = "HSTRLEN";
+    public static final String CMD_HINCRBY = "HINCRBY";
+    public static final String CMD_HINCRBYFLOAT = "HINCRBYFLOAT";
+    public static final String CMD_HSETNX = "HSETNX";
 
     // Because small hashes are used often, we use an optimization: before
     // a hash reaches certain size, we store it as single MapValue inside the
@@ -146,23 +153,36 @@ public class HashCommandsBase extends CollectionCommandsBase {
 
     }
 
-    protected static class HashValueInfo {
+    protected static class HSetInfo {
         final HashHeader header;
-        // existingIds and existingCnt are used exclusively (for HDEL and HSET
-        // respectively).
-        final ArrayList<String> existingIds;
+        // This need to be changed to a list of RedisKeyInfo when we add
+        // per-entry expiration.
         final int existingCnt;
 
-        HashValueInfo(HashHeader header, int existingCnt) {
+        HSetInfo(HashHeader header, int existingCnt) {
             this.header = header;
             this.existingCnt = existingCnt;
-            existingIds = null;
         }
+    }
 
-        HashValueInfo(HashHeader header, ArrayList<String> keyIds) {
+    protected static class HDelInfo {
+        final HashHeader header;
+        final List<String> existingIds;
+
+        HDelInfo(HashHeader header, List<String> keyIds) {
             this.header = header;
             this.existingIds = keyIds;
-            existingCnt = keyIds.size();
+        }
+    }
+
+    protected static class HValInfo {
+        final HashHeader header;
+        final String fldVal;
+
+        HValInfo(HashHeader header, String fldVal)
+            throws RedisResponseException {
+            this.header = header;
+            this.fldVal = fldVal;
         }
     }
 
@@ -189,7 +209,7 @@ public class HashCommandsBase extends CollectionCommandsBase {
 
     protected static String rowToKeyId(MapValue row, boolean allowNull)
         throws RedisResponseException {
-        return getStringField(row, FLD_KEY_ID, true);
+        return getStringField(row, FLD_KEY_ID, allowNull);
     }
 
     protected static String rowToFldVal(MapValue row, boolean allowNull)
@@ -204,8 +224,10 @@ public class HashCommandsBase extends CollectionCommandsBase {
             valInfo.isValid() ? new HashHeader(valInfo.val) : null);
     }
 
-    protected CollectionValueResult<HashValueInfo> getExistingVal(
-        RedisKeyInfo keyInfo, String[] fKeyIds, boolean toGetIds)
+    protected <T> CollectionValueResult<T> getExistingVal(
+        RedisKeyInfo keyInfo, String[] fKeyIds,
+        ThrowingBiFunction<HashHeader, List<MapValue>, T,
+        RedisResponseException> getValInfo)
         throws RedisResponseException {
         // For HSET, we don't really need the actual field ids, only the
         // count of matching entries to find how many new fields are added.
@@ -231,34 +253,21 @@ public class HashCommandsBase extends CollectionCommandsBase {
         HashHeader header = new HashHeader(val.val);
     
         String keyId0 = rowToKeyId(row0, true);
-        ArrayList<String> existingIds = null;
-        int existingCnt;
 
+        T res;
         if (keyId0 == null) {
             // No matching entries or hash stored in smallVal format.
             chkSingleResult(rows);
-            existingCnt = 0;
+            res = getValInfo.apply(header, null);
         } else {
             if (header.smallVal != null) {
-                throw RedisResponseException.corrupt(
-                    "Invalid hash header in query result");
+                throw RedisResponseException.corrupt(ERR_INVALID_HASH_HEADER);
             }
 
-            existingCnt = rows.size();
-
-            if (toGetIds) {
-                existingIds = new ArrayList<>(existingCnt);
-                existingIds.add(keyId0);
-                for(int i = 1; i < existingCnt; i++) {
-                    existingIds.add(rowToKeyId(rows.get(i), false));
-                }
-            }
+            res = getValInfo.apply(header, rows);
         }
 
-        return new CollectionValueResult<>(val,
-            existingIds == null ?
-                new HashValueInfo(header, existingCnt) :
-                new HashValueInfo(header, existingIds));
+        return new CollectionValueResult<>(val, res);
     }
 
     protected String getElemsTblName() { return HASH_TABLE_NAME; }

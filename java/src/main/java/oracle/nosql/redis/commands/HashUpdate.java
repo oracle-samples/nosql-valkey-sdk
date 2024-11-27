@@ -1,9 +1,14 @@
 package oracle.nosql.redis.commands;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.HashSet;
+import java.util.List;
+
+import io.netty.buffer.ByteBuf;
+import io.netty.handler.codec.redis.FullBulkStringRedisMessage;
 import io.netty.handler.codec.redis.IntegerRedisMessage;
 import io.netty.handler.codec.redis.RedisMessage;
 import oracle.nosql.driver.NoSQLHandle;
@@ -11,11 +16,14 @@ import oracle.nosql.driver.ops.DeleteRequest;
 import oracle.nosql.driver.ops.PutRequest;
 import oracle.nosql.driver.values.FieldValue;
 import oracle.nosql.driver.values.MapValue;
+import oracle.nosql.driver.values.StringValue;
 import oracle.nosql.redis.CommandHandlers.CommandHandler;
 import oracle.nosql.redis.RawCommand;
 import oracle.nosql.redis.RedisClientContext;
 import oracle.nosql.redis.RedisResponseException;
 import oracle.nosql.redis.util.PreparedStatementCache;
+import oracle.nosql.redis.util.Utils;
+import oracle.nosql.redis.util.Utils.ThrowingFunction;
 
 public class HashUpdate extends HashCommandsBase {
     
@@ -26,6 +34,14 @@ public class HashUpdate extends HashCommandsBase {
         HSetResult(int addedCnt, int processedCnt) {
             this.addedCnt = addedCnt;
             this.processedCnt = processedCnt;
+        }
+    }
+
+    private static void chkHeaderLength(HashHeader header)
+        throws RedisResponseException{
+        if (header.len <= 0) {
+            throw RedisResponseException.corrupt(
+                "Invalid hash header len field");
         }
     }
 
@@ -56,9 +72,9 @@ public class HashUpdate extends HashCommandsBase {
     }
 
     private HSetResult prepareHSet(RedisKeyInfo keyInfo, MapValue fvMap,
-        String[] fKeyIds, HashValueInfo hvi, CollectionUpdateInfo upInfo,
+        String[] fKeyIds, HSetInfo hsi, CollectionUpdateInfo upInfo,
         boolean hasLargeEntry) throws RedisResponseException {
-        HashHeader header = hvi != null ? hvi.header : null;
+        HashHeader header = hsi != null ? hsi.header : null;
         boolean isNew = false;
 
         if (header == null) {
@@ -98,17 +114,13 @@ public class HashUpdate extends HashCommandsBase {
 
         // The hash is in multi-row format. The value must have already
         // existed (otherwise we would be using smallVal above).
-        assert hvi != null;
-
-        if (header.len <= 0) {
-            throw RedisResponseException.corrupt(
-                "Invalid hash header len field");
-        }
+        assert hsi != null;
+        chkHeaderLength(header);
 
         // addedCnt is number of fields set (no duplicates) minus number
         // of fields already existing (set in previous callback).
         processedCnt = fKeyIds.length;
-        addedCnt = processedCnt - hvi.existingCnt;
+        addedCnt = processedCnt - hsi.existingCnt;
         header.len += addedCnt;
         
         upInfo.addPutKeyReq(header);
@@ -134,8 +146,9 @@ public class HashUpdate extends HashCommandsBase {
             .limit(MAX_TXN_ELEM_CNT).toArray(String[]::new);
 
         return doMultiUpdate(keyInfo,
-            ki -> getExistingVal(ki, keyIds, false),
-            (ki, hvi, upInfo) -> prepareHSet(ki, fvMap, keyIds, hvi, upInfo,
+            ki -> getExistingVal(ki, keyIds, (header, rows) ->
+                new HSetInfo(header, rows != null ? rows.size() : 0)),
+            (ki, hsi, upInfo) -> prepareHSet(ki, fvMap, keyIds, hsi, upInfo,
                 hasLargeEntry),
             (hsr, wmRes) -> {
                 // We must have WM results either from keyIds or
@@ -155,14 +168,14 @@ public class HashUpdate extends HashCommandsBase {
     }
 
     private int prepareHDel(RedisKeyInfo keyInfo, String[] fKeyIds,
-        HashValueInfo hvi, CollectionUpdateInfo upInfo)
+        HDelInfo hdi, CollectionUpdateInfo upInfo)
         throws RedisResponseException {
-        if (hvi == null) {
+        if (hdi == null) {
             // Hash does not exist.
             return 0;
         }
 
-        HashHeader header = hvi.header;
+        HashHeader header = hdi.header;
         assert header != null;
 
         if (header.smallVal != null) {
@@ -184,14 +197,13 @@ public class HashUpdate extends HashCommandsBase {
             return delCnt;
         }
 
-        if (hvi.existingCnt == 0) {
+        int existingCnt = hdi.existingIds != null ? hdi.existingIds.size() : 0;
+        if (existingCnt == 0) {
             // Nothing to delete.
             return 0;
         }
 
-        assert hvi.existingIds != null;
-        assert hvi.existingIds.size() == hvi.existingCnt;
-        header.len -= hvi.existingCnt;
+        header.len -= existingCnt;
 
         if (header.len > 0) {
             upInfo.addPutKeyReq(header);
@@ -203,14 +215,14 @@ public class HashUpdate extends HashCommandsBase {
         }
         
         // We only add delete requests for existing fields.
-        for(int i = 0; i < hvi.existingCnt; i++) {
+        for(int i = 0; i < existingCnt; i++) {
             upInfo.addElemReq(new DeleteRequest()
                 .setTableName(HASH_TABLE_NAME)
                 .setKey(new MapValue().put(FLD_ID, keyInfo.id)
-                .put(FLD_KEY_ID, hvi.existingIds.get(i))));
+                .put(FLD_KEY_ID, hdi.existingIds.get(i))));
         }
 
-        return hvi.existingCnt;
+        return existingCnt;
     }
 
     private int doHDel(RedisKeyInfo keyInfo, Set<String> fSet)
@@ -219,8 +231,18 @@ public class HashUpdate extends HashCommandsBase {
             .toArray(String[]::new);
 
         return doMultiUpdate(keyInfo,
-            ki -> getExistingVal(ki, keyIds, true),
-            (ki, hvi, upInfo) -> prepareHDel(keyInfo, keyIds, hvi, upInfo),
+            ki -> getExistingVal(ki, keyIds, (header, rows) -> {
+                if (rows == null) {
+                    return new HDelInfo(header, null);
+                }
+                int cnt = rows.size();
+                ArrayList<String> ids = new ArrayList<>(cnt);
+                for(int i = 0; i < cnt; i++) {
+                    ids.add(rowToKeyId(rows.get(i), false));
+                }
+                return new HDelInfo(header, ids);
+            }),
+            (ki, hdi, upInfo) -> prepareHDel(keyInfo, keyIds, hdi, upInfo),
             (delCnt, wmRes) -> {
                 // Unlike for HSET, here all elements of keyIds should be
                 // processed on successful request.
@@ -231,6 +253,90 @@ public class HashUpdate extends HashCommandsBase {
             });
     }
 
+    private CollectionValueResult<HValInfo> getExistingFldVal(RedisKeyInfo ki,
+        RedisKeyInfo hki) throws RedisResponseException {
+            List<MapValue> rows = doQuery(ki, SQL_ENTRY_VAL,
+            new StringValue(hki.id));
+        if (rows.isEmpty()) {
+            // Hash does not exist.
+            return CollectionValueResult.none();
+        }
+        chkSingleResult(rows);
+        MapValue row0 = rows.get(0);
+        RedisValueInfo val = new RedisValueInfo(rowToValue(row0),
+            rowToVer(row0), getExpTime(rowToKey(row0)));
+        HashHeader header = new HashHeader(val.val);
+        String fldVal = getStringField(row0, FLD_FLD_VAL, true);
+        if (fldVal == null && header.smallVal != null) {
+            fldVal = getValFromSmallVal(header.smallVal, hki.id);
+        }
+        return new CollectionValueResult<>(val,
+            new HValInfo(header, fldVal));
+    }
+
+    // Somewhat like prepareHSet but simpler, since we are only updating one
+    // field.
+    private void prepareUpdVal(RedisKeyInfo keyInfo, RedisKeyInfo hki,
+        HValInfo hvi, CollectionUpdateInfo upInfo, ByteBuf newVal)
+        throws RedisResponseException {
+        HashHeader header = hvi != null ? hvi.header : new HashHeader();
+    
+        String newValStr = makeStrVal(newVal);
+        MapValue mapVal = new MapValue()
+            .put(FLD_KEY, makeRedisKey(hki)).put(FLD_VALUE, newValStr);
+        
+        if (header.smallVal != null) {
+            header.smallVal.put(hki.id, mapVal);
+            // Convert to multi-row format if new value is big.
+            if (hki.data.length() + newValStr.length() >
+                MAX_SMALL_HASH_ENT_SIZE) {
+                convertToMultiRow(keyInfo, header, upInfo);
+            } else {
+                // The hash is still in smallVal format.
+                upInfo.addPutKeyReq(header);
+            }
+            return;
+        }
+
+        // The hash is in multi-row format. The hash must have already
+        // existed. (otherwise we would be using smallVal above).
+        assert hvi != null;
+        chkHeaderLength(header);
+
+        if (hvi.fldVal == null) {
+            // The field was not in the hash, so we are adding new field.
+            header.len++;
+        }
+        
+        upInfo.addPutKeyReq(header);
+        // The values in the map already contain key and value, we
+        // only need to add id, keyId and cid.
+        upInfo.addElemReq(new PutRequest()
+            .setTableName(HASH_TABLE_NAME)
+            .setValue(mapVal.put(FLD_ID, keyInfo.id).put(FLD_KEY_ID, hki.id)
+                .put(FLD_CID, header.cid)));
+    }
+
+    private RedisMessage doUpdateVal(RedisKeyInfo keyInfo, RedisKeyInfo hki,
+        ThrowingFunction<ByteBuf,ByteBuf,RedisResponseException> getNewVal,
+        ThrowingFunction<ByteBuf,RedisMessage,RedisResponseException>
+            getResult) throws RedisResponseException {
+        return doMultiUpdate(keyInfo, ki -> getExistingFldVal(ki, hki),
+            (ki, hvi, upInfo) -> {
+            ByteBuf newVal = getNewVal.apply(
+                hvi != null && hvi.fldVal != null ?
+                    getStrVal(hvi.fldVal) : null);
+            // We use newVal = null to indicate that the value should not be
+            // updated. This works for existing commands, but may need to be
+            // reconsidered.
+            if (newVal != null) {
+                prepareUpdVal(ki, hki, hvi, upInfo, newVal);
+            }
+            return newVal;
+        },
+        (newVal, wmRes) -> getResult.apply(newVal));
+    }
+
     public HashUpdate(NoSQLHandle nosqlHandle,
         PreparedStatementCache pstmtCache) {
         super(nosqlHandle, pstmtCache);
@@ -239,6 +345,9 @@ public class HashUpdate extends HashCommandsBase {
     public void registerCommands(HashMap<String, CommandHandler> cmdMap) {
         cmdMap.put(CMD_HSET, this::handleHSet);
         cmdMap.put(CMD_HDEL, this::handleHDel);
+        cmdMap.put(CMD_HINCRBY, this::handleHIncrBy);
+        cmdMap.put(CMD_HINCRBYFLOAT, this::handleHIncrByFloat);
+        cmdMap.put(CMD_HSETNX, this::handleHSetNX);
     }
 
     public RedisMessage handleHSet(RedisClientContext client, RawCommand cmd)
@@ -307,6 +416,36 @@ public class HashUpdate extends HashCommandsBase {
         }
 
         return new IntegerRedisMessage(delCnt);
+    }
+
+    public RedisMessage handleHIncrBy(RedisClientContext client,
+        RawCommand cmd) throws RedisResponseException {
+        chkExactNumArgs(cmd, 3);
+        final long arg = Utils.byteBufToLong(cmd.args[2]);
+        return doUpdateVal(makeRedisKeyInfo(cmd.args[0]),
+            makeRedisKeyInfo(cmd.args[1]), oldVal -> Utils.longToByteBuf(
+                (oldVal != null ? Utils.byteBufToLong(oldVal) : 0) + arg),
+                newVal -> new IntegerRedisMessage(
+                    Utils.byteBufToLong(newVal)));
+    }
+
+    public RedisMessage handleHIncrByFloat(RedisClientContext client,
+        RawCommand cmd) throws RedisResponseException {
+        chkExactNumArgs(cmd, 3);
+        final double arg = Utils.byteBufToDouble(cmd.args[2]);
+        return doUpdateVal(makeRedisKeyInfo(cmd.args[0]),
+            makeRedisKeyInfo(cmd.args[1]), oldVal -> Utils.doubleToByteBuf(
+                (oldVal != null ? Utils.byteBufToDouble(oldVal) : 0) + arg),
+                newVal -> new FullBulkStringRedisMessage(newVal));
+    }
+
+    public RedisMessage handleHSetNX(RedisClientContext client,
+        RawCommand cmd) throws RedisResponseException {
+        chkExactNumArgs(cmd, 3);
+        return doUpdateVal(makeRedisKeyInfo(cmd.args[0]),
+            makeRedisKeyInfo(cmd.args[1]),
+            oldVal -> oldVal == null ? cmd.args[2] : null,
+            newVal -> newVal != null ? oneReply : zeroReply);        
     }
 
 }
