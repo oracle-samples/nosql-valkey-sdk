@@ -7,6 +7,9 @@
 
 package oracle.nosql.redis;
 
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelInitializer;
@@ -63,6 +66,8 @@ public class NoSQLRedisServer {
     private final int port;
     private final NoSQLHandle nosqlHandle;
     private final CommandHandlers cmdHandlers;
+    private final ExecutorService cmdWorkerPool =
+        Executors.newCachedThreadPool();
 
     private void initDB() {
         nosqlHandle.doTableRequest(new TableRequest()
@@ -93,7 +98,7 @@ public class NoSQLRedisServer {
 
         initDB();
 
-        EventLoopGroup bossGroup = new NioEventLoopGroup(1);
+        EventLoopGroup bossGroup = new NioEventLoopGroup();
         EventLoopGroup workerGroup = new NioEventLoopGroup();
 
         serverBootstrap.group(bossGroup, workerGroup)
@@ -110,7 +115,8 @@ public class NoSQLRedisServer {
                     p.addLast(new RedisBulkStringAggregator());
                     p.addLast(new RedisArrayAggregator());
                     p.addLast(new RedisEncoder());
-                    p.addLast(new RedisServerHandler(cmdHandlers));
+                    p.addLast(new RedisServerHandler(cmdHandlers,
+                        cmdWorkerPool));
                 }
             });
     }

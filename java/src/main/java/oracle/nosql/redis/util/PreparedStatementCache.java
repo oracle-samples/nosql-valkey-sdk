@@ -8,6 +8,7 @@
 package oracle.nosql.redis.util;
 
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.Map;
 
@@ -18,15 +19,18 @@ import oracle.nosql.driver.ops.PreparedStatement;
 public class PreparedStatementCache {
 	
     private final NoSQLHandle handle;
-    private Map<String,PreparedStatement> map;
+    private final Map<String,PreparedStatement> refMap;
+    private final Map<String,PreparedStatement> valMap;
 
     public PreparedStatementCache(NoSQLHandle handle)
     {
         this.handle = handle;
-        map = Collections.synchronizedMap(new IdentityHashMap<>());
+        refMap = Collections.synchronizedMap(new IdentityHashMap<>());
+        valMap = Collections.synchronizedMap(new HashMap<>());
     }
 
-    public PreparedStatement get(String stmt) {
+    private PreparedStatement get(String stmt, boolean byRef) {
+        Map<String,PreparedStatement> map = byRef ? refMap : valMap;
         PreparedStatement pStmt = map.get(stmt);
         if (pStmt == null) {
             pStmt = handle.prepare(new PrepareRequest().setStatement(stmt))
@@ -37,6 +41,14 @@ public class PreparedStatementCache {
         // How much faster would using ThreadLocal be rather than copying
         // every time?
         return pStmt.copyStatement();
+    }
+
+    public PreparedStatement getByRef(String stmt) {
+        return get(stmt, true);
+    }
+
+    public PreparedStatement getByVal(String stmt) {
+        return get(stmt, false);
     }
 
 }

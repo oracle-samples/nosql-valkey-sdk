@@ -8,8 +8,6 @@
 package oracle.nosql.redis.util;
 
 import java.security.MessageDigest;
-import java.util.function.Predicate;
-
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
@@ -112,4 +110,22 @@ public class Utils {
         }
     }
 
+    // Used when by JSON Path parser and visitor.
+    public static RuntimeException parseException(String input, int pos,
+        String msg, Throwable cause) {
+        // Sometimes position is reported past the end of the path string.
+        int adjPos = Math.min(pos, input.length());
+        return RedisResponseException.unchecked(
+            new RedisResponseException(String.format(
+                // Same format as in Redis Stack.
+                "Error occurred on position %d, \"%s  ---->>>> %s\", %s",
+                pos, input.substring(0, adjPos),
+                input.substring(adjPos), msg), cause));
+    }
+
+    public static RuntimeException parseException(String input, int pos,
+        String msg) {
+        return parseException(input, pos, msg, null);
+    }
+    
 }

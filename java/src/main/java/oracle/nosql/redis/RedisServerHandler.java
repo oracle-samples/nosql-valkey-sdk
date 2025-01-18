@@ -7,27 +7,30 @@
 
 package oracle.nosql.redis;
 
+import java.util.concurrent.ExecutorService;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.codec.redis.ErrorRedisMessage;
 import io.netty.handler.codec.redis.RedisMessage;
+import io.netty.util.ReferenceCountUtil;
 import oracle.nosql.redis.CommandHandlers.CommandHandler;
 
 class RedisServerHandler extends SimpleChannelInboundHandler<RedisMessage> {
+    
+    private final CommandHandlers handlers;
+    private final ExecutorService cmdWorkerPool;
+    private final RedisClientContext client;
 
-    private CommandHandlers handlers;
-    private RedisClientContext client;
-
-    RedisServerHandler(CommandHandlers handlers) {
+    RedisServerHandler(CommandHandlers handlers,
+        ExecutorService cmdWorkerPool) {
         this.handlers = handlers;
+        this.cmdWorkerPool = cmdWorkerPool;
         this.client = new RedisClientContext();
     }
-    
-    @Override
-    public void channelRead0(ChannelHandlerContext ctx, RedisMessage msg)
-        throws Exception {
+
+    private void executeCommand(ChannelHandlerContext ctx, RedisMessage msg) {
         RawCommand cmd = null;
         RedisMessage res;
         try {
@@ -49,6 +52,8 @@ class RedisServerHandler extends SimpleChannelInboundHandler<RedisMessage> {
             if (cmd != null) {
                 cmd.releaseBuffers();
             }
+            // Release msg because it was retained in channelRead0.
+            ReferenceCountUtil.release(msg);
         }
 
         ChannelFuture f = ctx.writeAndFlush(res);
@@ -56,6 +61,15 @@ class RedisServerHandler extends SimpleChannelInboundHandler<RedisMessage> {
         if (cmd.name == "QUIT") {
             f.addListener(ChannelFutureListener.CLOSE);
         }
+    }
+    
+    @Override
+    public void channelRead0(ChannelHandlerContext ctx, RedisMessage msg)
+        throws Exception {
+        // msg will be released when channelRead0 exits, so we have to retain
+        // it for execution in different thread.
+        ReferenceCountUtil.retain(msg);
+        cmdWorkerPool.execute(() -> executeCommand(ctx, msg));
     }
     
     @Override

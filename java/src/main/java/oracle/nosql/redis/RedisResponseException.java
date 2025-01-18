@@ -19,6 +19,10 @@ import oracle.nosql.driver.NoSQLException;
         NOSQL
     }
 
+    public RedisResponseException(String message) {
+        super(message);
+    }
+
     public RedisResponseException(String message, Throwable cause) {
         super(message, cause);
     }

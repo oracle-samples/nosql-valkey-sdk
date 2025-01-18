@@ -49,9 +49,6 @@ abstract class CollectionCommandsBase extends CommandsBase {
         "DECLARE $var1 STRING; $var2 STRING; DELETE FROM %s WHERE " +
         "id = $var1 AND cid = $var2";
 
-    protected static final String ERR_NO_SINGLE_RES =
-        "Expected single result, got multiple";
-
     protected static class CollectionHeader {
 
         String cid;
@@ -248,16 +245,10 @@ abstract class CollectionCommandsBase extends CommandsBase {
         return len;
     }
 
-    static void chkSingleResult(List<?> res) throws RedisResponseException {
-        if (res.size() != 1) {
-            throw RedisResponseException.nosql(ERR_NO_SINGLE_RES);
-        }
-    }
-
     <R> List<R> doQuery(RedisKeyInfo keyInfo, String sql,
         ThrowingFunction<MapValue, R, RedisResponseException> getResult,
         FieldValue... vars) throws RedisResponseException {
-        PreparedStatement pStmt = pstmtCache.get(sql);
+        PreparedStatement pStmt = pstmtCache.getByRef(sql);
         
         // The first variable is always the key id.
         pStmt.setVariable("$var1", new StringValue(keyInfo.id));
@@ -293,7 +284,7 @@ abstract class CollectionCommandsBase extends CommandsBase {
     boolean processQuery(RedisKeyInfo keyInfo, String sql,
         ThrowingFunction<MapValue, Boolean, RedisResponseException> applyRow,
         FieldValue... vars) throws RedisResponseException {
-        PreparedStatement pStmt = pstmtCache.get(sql);
+        PreparedStatement pStmt = pstmtCache.getByRef(sql);
         
         // The first variable is always the key id.
         pStmt.setVariable("$var1", new StringValue(keyInfo.id));
@@ -387,7 +378,7 @@ abstract class CollectionCommandsBase extends CommandsBase {
     protected void doDelElems(RedisKeyInfo keyInfo, RedisValueInfo valInfo)
         throws RedisResponseException{
         String cid = CollectionHeader.getCid(valInfo.val);
-        PreparedStatement pStmt = pstmtCache.get(getSQLDelElems());
+        PreparedStatement pStmt = pstmtCache.getByRef(getSQLDelElems());
         
         pStmt.setVariable("$var1", new StringValue(keyInfo.id));
         pStmt.setVariable("$var2", new StringValue(cid));
@@ -406,7 +397,7 @@ abstract class CollectionCommandsBase extends CommandsBase {
     protected void doSetElemsExp(RedisKeyInfo keyInfo, RedisValueInfo valInfo,
         TimeToLive ttl) throws RedisResponseException {
         String cid = CollectionHeader.getCid(valInfo.val);
-        PreparedStatement pStmt = pstmtCache.get(getSQLSelElems());
+        PreparedStatement pStmt = pstmtCache.getByRef(getSQLSelElems());
 
         pStmt.setVariable("$var1", new StringValue(keyInfo.id));
         pStmt.setVariable("$var2", new StringValue(cid));
@@ -439,7 +430,7 @@ abstract class CollectionCommandsBase extends CommandsBase {
         RedisValueInfo srcValInfo, RedisKeyInfo dstKeyInfo)
         throws RedisResponseException {
         String cid = CollectionHeader.getCid(srcValInfo.val);
-        PreparedStatement pStmt = pstmtCache.get(getSQLSelElems());
+        PreparedStatement pStmt = pstmtCache.getByRef(getSQLSelElems());
 
         pStmt.setVariable("$var1", new StringValue(srcKeyInfo.id));
         pStmt.setVariable("$var2", new StringValue(cid));

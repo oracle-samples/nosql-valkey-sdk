@@ -8,6 +8,7 @@
 package oracle.nosql.redis.commands;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.function.Predicate;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
@@ -79,12 +80,16 @@ public abstract class CommandsBase {
     static final String NOT_EXPIRED =
         "AND (NOT EXISTS $r.key.exp OR $r.key.exp > current_time_millis()) ";
 
+    static final String ERR_NO_SINGLE_RES =
+        "Expected single result, got multiple";
+
     public static final String TYPE_STRING = "string";
     public static final String TYPE_LIST = "list";
     public static final String TYPE_SET = "set";
     public static final String TYPE_ZSET = "zset";
     public static final String TYPE_HASH = "hash";
     public static final String TYPE_STREAM = "stream";
+    public static final String TYPE_JSON = "ReJSON-RL";
 
     static final int NO_EXP = -1;
     static final int KEEP_TTL = -2;
@@ -181,7 +186,7 @@ public abstract class CommandsBase {
         @SuppressWarnings("resource")
         Iterable<MapValue> scanIterable(RedisKeyInfo keyInfo, long cursor,
             int limit) throws RedisResponseException {
-            PreparedStatement pStmt = pstmtCache.get(getSQLScan());
+            PreparedStatement pStmt = pstmtCache.getByRef(getSQLScan());
             if (keyInfo != null) {
                 pStmt.setVariable("$var1", new StringValue(keyInfo.id));
                 pStmt.setVariable("$var2", new LongValue(cursor));
@@ -244,6 +249,12 @@ public abstract class CommandsBase {
     static void chkNotSet(Object o) throws RedisResponseException {
         if (o != null) {
             throw RedisResponseException.syntaxError();
+        }
+    }
+    
+    static void chkSingleResult(List<?> res) throws RedisResponseException {
+        if (res.size() != 1) {
+            throw RedisResponseException.nosql(ERR_NO_SINGLE_RES);
         }
     }
 
@@ -459,6 +470,7 @@ public abstract class CommandsBase {
                 throw new RedisResponseException(ErrorPrefix.CORRUPT,
                     "null version for existing row");
             }
+
             return new RedisValueInfo(rowToValue(row), getRes.getVersion(),
                 getExpTime(rowToKey(row)));
         } catch(NoSQLException ex) {
