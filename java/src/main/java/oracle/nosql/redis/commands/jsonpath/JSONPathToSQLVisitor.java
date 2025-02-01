@@ -68,6 +68,10 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 	private String input; // for error reporting
 	private String sqlPath;
 	private String putFieldsSQLStr;
+	// Additional filter to apply to every resulting value. Currently used
+	// for array operations to filter only values that are arrays. The format
+	// is the same as for SQL map filter expressions.
+	private String endValueFilter;
 
 	// Note that since filter can contain arbitrary JSON Path expressions, it
 	// is possible for filters to be nested.
@@ -125,12 +129,33 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 		return parseException(ctx, msg, null);
 	}
 
+	private String applyWildcard() {
+		return (inEndSegment && endValueFilter != null) ?
+			String.format("values(%s)", endValueFilter) : "values()";
+	}
+
+	// Just for completeness. More efficient to bypass visitor entirely for
+	// for this case.
+	private String getRootEndValueFilter() {
+		assert endValueFilter != null;
+		int i = root.lastIndexOf('.');
+		assert i >= 0;
+		String rootPar = root.substring(0, i);
+		String rootField = root.substring(i + 1);
+		return String.format("%s.values($key = '%s' AND (%s))", rootPar,
+			rootField, endValueFilter);
+	}
+
 	protected String aggregateResult(String aggr, String res) {
 		return aggr + res;
 	}
 
 	protected String defaultResult() {
 		return "";
+	}
+
+	public void setEndValueFilter(String endValueFilter) {
+		this.endValueFilter = endValueFilter;
 	}
 
 	public Map<String, FieldValue> getVariables() {
@@ -169,6 +194,9 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 
 	@Override
 	public String visitRootPath(JSONPathParser.RootPathContext ctx) {
+		if (endValueFilter != null && ctx.getChildCount() == 1) {
+			return getRootEndValueFilter();
+		}
 		return root + visitChildren(ctx);
 	}
 	
@@ -186,10 +214,12 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 	@Override
 	public String visitDotSegment(JSONPathParser.DotSegmentContext ctx) {
 		assert(!inEndSegment && putFieldsSQLStr == null);
-		if (putFields != null && !inFilter() && ctx.getChildCount() < 3) {
+		if (!inFilter() && ctx.getChildCount() < 3) {
 			assert ctx.getChildCount() == 2;
 			inEndSegment = true;
-			putFields.clear();
+			if (putFields != null) {
+				putFields.clear();
+			}
 		}
 		String res = '.' + visitChildren(ctx);
 		if (inEndSegment) {
@@ -225,25 +255,37 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 	@Override
 	public String visitFieldId(JSONPathParser.FieldIdContext ctx) {
 		String res = ctx.getText();
-		if (inEndSegment) {
-			putFields.add(addVariable(new StringValue(res)));
+		if (inEndSegment && (putFields != null || endValueFilter != null)) {
+			String fieldVar = addVariable(new StringValue(res));
+			if (putFields != null) {
+				putFields.add(fieldVar);
+			}
+			if (endValueFilter != null) {
+				return String.format("values($key = %s AND (%s))", fieldVar,
+					endValueFilter);
+			}
 		}
 		return res;
 	}
 	
 	@Override
 	public String visitWildcard(JSONPathParser.WildcardContext ctx) {
-		return "values()";
+		return applyWildcard();
 	}
 	
 	@Override
 	public String visitArraySelectors(
 		JSONPathParser.ArraySelectorsContext ctx) {
+		String selSfx = inEndSegment && endValueFilter != null ?
+			String.format("].values($key = 'v' AND (%s))", endValueFilter) :
+			"].v";
+
 		List<ArraySelectorContext> selectors = ctx.arraySelector();
 		int cnt = selectors.size();
+		
 		if (cnt == 1) {
 			isSingleSelector.push(true);
-			String res = '[' + visit(selectors.get(0)) + "].v";
+			String res = '[' + visit(selectors.get(0)) + selSfx;
 			isSingleSelector.pop();
 			return res;
 		}
@@ -259,7 +301,7 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 				sb.append(" OR ");
 			}
 		}
-		sb.append("].v");
+		sb.append(selSfx);
 
 		isSingleSelector.pop();
 		return sb.toString();
@@ -269,7 +311,9 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 	public String visitMapSelectors(JSONPathParser.MapSelectorsContext ctx) {
 		List<MapSelectorContext> selectors = ctx.mapSelector();
 		int cnt = selectors.size();
-		if (cnt == 1) {
+		boolean applyEndValueFilter = inEndSegment && endValueFilter != null;
+
+		if (cnt == 1 && !applyEndValueFilter) {
 			isSingleSelector.push(true);
 			// Use field step if possible since it is faster than map filter,
 			// see visitMapSelector().
@@ -281,6 +325,9 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 		isSingleSelector.push(false);
 		StringBuilder sb = new StringBuilder();
 		sb.append(".values(");
+		if (applyEndValueFilter) {
+			sb.append('(');
+		}
 		for(int i = 0; i < cnt; i++) {
 			sb.append('(');
 			sb.append(visit(selectors.get(i)));
@@ -288,6 +335,12 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 			if (i < cnt - 1) {
 				sb.append(" OR ");
 			}
+		}
+		if (applyEndValueFilter) {
+			// If endValueFilter filter is applied, we get this kind of result:
+			// .values(($key = ... OR $key = ... OR ...) AND (<endValueFilter>))
+			// so the same filter is applied to all map selectors.
+			sb.append(String.format(") AND (%s)", endValueFilter));
 		}
 		sb.append(')');
 
@@ -298,14 +351,19 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 	@Override
 	public String visitWildcardSelector(
 		JSONPathParser.WildcardSelectorContext ctx) {
-		return ".values()";
+		return '.' + applyWildcard();
 	}
 
 	@Override
 	public String visitFilterSelector(
 		JSONPathParser.FilterSelectorContext ctx) {
 		inFilterCnt++;
-		String res = ".values(" + visit(ctx.filterExpr()) + ")";
+		String filterRes = visit(ctx.filterExpr());
+		if (inEndSegment && endValueFilter != null) {
+			filterRes = String.format("(%s) AND (%s)", filterRes,
+				endValueFilter);
+		}
+		String res = ".values(" + filterRes + ")";
 		inFilterCnt--;
 		return res;
 	}
@@ -447,7 +505,9 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 			ctx.getText() : addVariable(new StringValue(unquote(
 				ctx.getText())));
 		if (inEndSegment) {
-			putFields.add(key);
+			if (putFields != null) {
+				putFields.add(key);
+			}
 		}
 		return isSingleSelector.peek() ? key : "$key = " + key;
 	}

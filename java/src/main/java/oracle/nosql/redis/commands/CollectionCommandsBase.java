@@ -39,7 +39,6 @@ abstract class CollectionCommandsBase extends CommandsBase {
     private Random rnd = new Random();
 
     protected static final String FLD_CID = "cid";
-    protected static final String FLD_VER = "ver";
     protected static final String FLD_LEN = "len";
 
     protected static final String SQL_SEL_ELEMS_FMT =
@@ -217,17 +216,6 @@ abstract class CollectionCommandsBase extends CommandsBase {
             // this should not happen but just in case
             throw RedisResponseException.nosql("Unsuccessful writeMultiple");
         }
-    }
-
-    // Retrieves row version from the query result row, where it is returned
-    // as "ver" field.
-    static oracle.nosql.driver.Version rowToVer(MapValue row)
-        throws RedisResponseException {
-        FieldValue val = row.get(FLD_VER);
-        if (val == null || !val.isBinary()) {
-            throw RedisResponseException.corrupt("Invalid row version");
-        }
-        return oracle.nosql.driver.Version.createVersion(val.getBinary());
     }
 
     static long fvToLen(FieldValue fldLen) throws RedisResponseException {

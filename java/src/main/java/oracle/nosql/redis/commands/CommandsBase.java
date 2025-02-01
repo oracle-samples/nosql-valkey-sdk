@@ -71,6 +71,8 @@ public abstract class CommandsBase {
     static final String FLD_KEY = "key";
     static final String FLD_VALUE = "value";
     static final String FLD_DATA = "data";
+    // Used to retrieve row version in query.
+    static final String FLD_VER = "ver";
     static final String KEY_DATA = FLD_DATA;
     static final String KEY_SCAN_ID = "scanId";
     static final String KEY_EXP = "exp";
@@ -364,6 +366,23 @@ public abstract class CommandsBase {
         return getMapField(row, FLD_VALUE);
     }
 
+    // To avoid creating Version object when we only need FieldValue.
+    static FieldValue rowToVerVal(MapValue row) throws RedisResponseException {
+        FieldValue val = row.get(FLD_VER);
+        if (val == null || !val.isBinary()) {
+            throw RedisResponseException.corrupt("Invalid row version");
+        }
+        return val;
+    }
+
+    // Retrieves row version from the query result row, where it is returned
+    // as "ver" field.
+    static oracle.nosql.driver.Version rowToVer(MapValue row)
+        throws RedisResponseException {
+        return oracle.nosql.driver.Version.createVersion(
+            rowToVerVal(row).getBinary());
+    }
+
     static String getValueType(MapValue val) throws RedisResponseException {
         return getStringField(val, VALUE_TYPE);
     }
@@ -455,6 +474,12 @@ public abstract class CommandsBase {
                 assert false;
                 return 0;
         }
+    }
+
+    static RedisResponseException failedAtomicRetries() {
+        return new RedisResponseException(ErrorPrefix.NOSQL,
+            "Failed to perform atomic read-update sequence after " +
+            ATOMIC_SET_TRIES + " tries");
     }
 
     RedisValueInfo doGet(RedisKeyInfo keyInfo) throws RedisResponseException {
@@ -602,10 +627,7 @@ public abstract class CommandsBase {
             }
         }
 
-        throw new RedisResponseException(ErrorPrefix.NOSQL,
-            "Failed to perform atomic get-set sequence after "
-                + ATOMIC_SET_TRIES + " tries");
-        
+        throw failedAtomicRetries();
     }
 
     <R> R doGetSet(
