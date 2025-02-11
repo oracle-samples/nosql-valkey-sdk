@@ -2,6 +2,8 @@ package oracle.nosql.redis.commands;
 
 import static oracle.nosql.redis.util.Utils.byteBufToString;
 
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -15,6 +17,10 @@ import org.antlr.v4.runtime.Recognizer;
 import org.antlr.v4.runtime.tree.ParseTree;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.handler.codec.redis.ArrayRedisMessage;
+import io.netty.handler.codec.redis.FullBulkStringRedisMessage;
+import io.netty.handler.codec.redis.IntegerRedisMessage;
+import io.netty.handler.codec.redis.RedisMessage;
 import oracle.nosql.driver.JsonParseException;
 import oracle.nosql.driver.NoSQLException;
 import oracle.nosql.driver.NoSQLHandle;
@@ -23,6 +29,7 @@ import oracle.nosql.driver.ops.QueryRequest;
 import oracle.nosql.driver.ops.QueryResult;
 import oracle.nosql.driver.values.ArrayValue;
 import oracle.nosql.driver.values.FieldValue;
+import oracle.nosql.driver.values.JsonNullValue;
 import oracle.nosql.driver.values.MapValue;
 import oracle.nosql.driver.values.StringValue;
 import oracle.nosql.redis.RedisResponseException;
@@ -40,24 +47,32 @@ abstract class JSONCommandsBase extends CommandsBase {
     private static final String SQL_ROOT_FILTER_FMT =
         "$r.value.values($key = 'data' AND (%s))";
     protected static final String ARRAY_CONV_KEY = "v";
+    protected static final String VALUE_PAD = "pad";
     protected static final String FLD_NUM_UPD = "NumRowsUpdated";
+    protected static final String FLD_RES = "res";
+    protected static final String KEY_ID_COND = "$r.id = $keyId ";
     protected static final String IS_TYPE_JSON =
         String.format("AND ($r.value.type = '%s')", TYPE_JSON);
     protected static final String SQL_JSON_COND =
-        "$r.id = $keyId " + NOT_EXPIRED + IS_TYPE_JSON;
+        KEY_ID_COND + AND_NOT_EXPIRED + IS_TYPE_JSON;
     protected static final String SQL_VAL = "$val";
-    protected static final String DECL_KEY_ID = "$keyId STRING; ";
+    protected static final String SQL_DECLARE = "DECLARE ";
+    protected static final String DECL_KEY_ID = " $keyId STRING; ";
     protected static final String DECL_KEY_ID_VAL =
         DECL_KEY_ID + SQL_VAL + " JSON; ";
+    protected static final String SQL_RETURNING = " RETURNING ";
+    protected static final String SQL_RETURNING_PAD = SQL_RETURNING +
+        "$r.value.pad AS res";
+    protected static final String VAL_FILTER_FMT = "$value IS OF TYPE (%s)";
+    protected static final String MAP_FILTER = String.format(VAL_FILTER_FMT,
+        "Map(Any)");
+    protected static final String ARR_FILTER = String.format(VAL_FILTER_FMT,
+        "Array(Any)");
+    protected static final String NUM_FILTER = String.format(VAL_FILTER_FMT,
+        "Number");
 
-    protected static final String SQL_UPDATE_SET_FMT =
-        "UPDATE redis $r SET %s = $val WHERE " + SQL_JSON_COND;
-    protected static final String SQL_UPDATE_PUT_FMT =
-        "UPDATE redis $r PUT %s%s %s WHERE " + SQL_JSON_COND;
-
-    protected static final String SQL_GET_FMT =
-        "SELECT [%s] AS res FROM redis $r WHERE " + SQL_JSON_COND;
-
+    protected static final String ERR_KEY_NOT_EXISTS =
+        "key doesn't exist or of wrong type";
     protected static String ERR_NOT_ARRAY = "result is not an array";
 
     public static final String CMD_JSON_SET = "JSON.SET";
@@ -72,22 +87,32 @@ abstract class JSONCommandsBase extends CommandsBase {
     public static final String CMD_JSON_STRLEN = "JSON.STRLEN";
     public static final String CMD_JSON_NUMINCRBY = "JSON.NUMINCRBY";
     public static final String CMD_JSON_NUMMULTBY = "JSON.NUMMULTBY";
+    public static final String CMD_JSON_TOGGLE = "JSON.TOGGLE";
+    public static final String CMD_JSON_TYPE = "JSON.TYPE";
+    public static final String CMD_JSON_OBJKEYS = "JSON.OBJKEYS";
+    public static final String CMD_JSON_OBJLEN = "JSON.OBJLEN";
     public static final String CMD_JSON_DEL = "JSON.DEL";
+    public static final String CMD_JSON_FORGET = "JSON.FORGET";
+    public static final String CMD_JSON_CLEAR = "JSON.CLEAR";
 
     protected static class TranslateResult {
         final String sqlPath;
+        final String parentSQLPath;
         final Map<String, FieldValue> vars;
 
         static final TranslateResult ROOT_INSTANCE =
             new TranslateResult(SQL_ROOT);
 
-        TranslateResult(String sqlPath, Map<String, FieldValue> vars) {
-            this.sqlPath = sqlPath;
-            this.vars = vars;
+        // only for root path
+        private TranslateResult(String sqlPath) {
+            this(sqlPath, "", Collections.emptyMap());
         }
 
-        TranslateResult(String sqlPath) {
-            this(sqlPath, Collections.emptyMap());
+        TranslateResult(String sqlPath, String parentSQLPath,
+            Map<String, FieldValue> vars) {
+            this.sqlPath = sqlPath;
+            this.parentSQLPath = parentSQLPath;
+            this.vars = vars;
         }
 
         // var1 JSON; var2 JSON; ...; varN JSON;
@@ -98,24 +123,53 @@ abstract class JSONCommandsBase extends CommandsBase {
         }
     }
 
-    protected static class TranslateResultWithFilter extends TranslateResult {
-        final String sqlPathWithFilter;
+    protected static class TranslateResultWithFilters extends TranslateResult {
+        final String[] sqlPathsWithFilter;
+        final String[] parentSQLPathsWithFilter;
 
-        TranslateResultWithFilter(String sqlPath, String sqlPathWithFilter,
-            Map<String, FieldValue> vars) {
-            super(sqlPath, vars);
-            this.sqlPathWithFilter = sqlPathWithFilter;
+        // only for root path
+        private TranslateResultWithFilters(String sqlPath,
+            String[] sqlPathsWithFilter) {
+            this(sqlPath, "", sqlPathsWithFilter, null,
+            Collections.emptyMap());
         }
 
-        TranslateResultWithFilter(String sqlPath, String sqlPathWithFilter) {
-            this(sqlPath, sqlPathWithFilter, Collections.emptyMap());
+        TranslateResultWithFilters(String sqlPath, String parentSQLPath,
+            String[] sqlPathsWithFilter, String[] parentSQLPathsWithFilter,
+            Map<String, FieldValue> vars) {
+            super(sqlPath, parentSQLPath, vars);
+            this.sqlPathsWithFilter = sqlPathsWithFilter;
+            this.parentSQLPathsWithFilter = parentSQLPathsWithFilter;
+        }
+
+        static TranslateResultWithFilters rootPath(
+            String[] endValueFilters) {
+            return new TranslateResultWithFilters(SQL_ROOT,
+                Arrays.stream(endValueFilters).map(val -> String.format(
+                    SQL_ROOT_FILTER_FMT, val)).toArray(String[]::new));
+        }
+
+        // The following are used when using only one filter (which is in most
+        // of the cases).
+
+        String sqlPathWithFilter() {
+            assert(sqlPathsWithFilter != null &&
+                sqlPathsWithFilter.length == 1);
+            return sqlPathsWithFilter[0];
+        }
+
+        String parentSQLPathWithFilter() {
+            assert(parentSQLPathsWithFilter != null &&
+            parentSQLPathsWithFilter.length == 1);
+            return parentSQLPathsWithFilter[0];
         }
     }
 
     protected static class TranslateMultiResult extends TranslateResult {
         TranslateMultiResult(String[] parts, Map<String, FieldValue> vars) {
-            // TranslateMultiResult is only used for GET, so putFields is N/A
-            super(getSQLPath(parts), vars);
+            // TranslateMultiResult is only used for GET, so parentSQLPath is
+            // N/A.
+            super(getSQLPath(parts), "", vars);
         }
 
         private static String getSQLPath(String[] parts) {
@@ -124,13 +178,16 @@ abstract class JSONCommandsBase extends CommandsBase {
     }
 
     protected static class TranslateSetResult extends TranslateResult {
-        final String sqlPutPath;
         final List<String> putFields;
 
         TranslateSetResult(JSONPathToSQLVisitor visitor) {
-            super(visitor.getSQLPath(), visitor.getVariables());
-            this.sqlPutPath = visitor.getSQLPutPath();
+            super(visitor.getSQLPath(), visitor.getParentSQLPath(),
+                visitor.getVariables());
             this.putFields = visitor.getPutFields();
+        }
+
+        boolean isForPut() {
+            return putFields != null;
         }
 
         // Object with new fields to use in the PUT clause of the UPDATE
@@ -142,12 +199,6 @@ abstract class JSONCommandsBase extends CommandsBase {
                 .collect(Collectors.joining(", ", "{ ", " }"));
         }
 
-        // [NOT EXISTS $.values($key = field1 OR $key = field2 OR ...)]
-        String getSQLNXFilter() {
-            return String.format("[NOT EXISTS $.values(%s)]",
-                putFields.stream().map(field -> "$key = " + field)
-                    .collect(Collectors.joining(" OR ")));
-        }
     }
 
     public JSONCommandsBase(NoSQLHandle nosqlHandle,
@@ -168,7 +219,8 @@ abstract class JSONCommandsBase extends CommandsBase {
     protected static MapValue makeJSONValue(ByteBuf buf)
         throws RedisResponseException {
         return new MapValue().put(VALUE_TYPE, TYPE_JSON)
-            .put(VALUE_DATA, byteBufToJson(buf));
+            .put(VALUE_DATA, byteBufToJson(buf))
+            .put(VALUE_PAD, JsonNullValue.getInstance());
     }
 
     // Convert a relative path to absolute.
@@ -217,15 +269,14 @@ abstract class JSONCommandsBase extends CommandsBase {
         JSONPathToSQLVisitor visitor = new JSONPathToSQLVisitor(SQL_ROOT);
         visitor.run(parsePath(path), path);
         return new TranslateResult(visitor.getSQLPath(),
-            visitor.getVariables());
+            visitor.getParentSQLPath(), visitor.getVariables());
     }
 
-    protected static TranslateResultWithFilter translatePathWithFilter(
-        String path, String endValueFilter) {
+    protected static TranslateResultWithFilters translatePathWithFilters(
+        String path, String[] endValueFilters, String[] parentFilters) {
         // Optimization for common case.
         if (path == ROOT_PATH) {
-            return new TranslateResultWithFilter(SQL_ROOT,
-                String.format(SQL_ROOT_FILTER_FMT, endValueFilter));
+            return TranslateResultWithFilters.rootPath(endValueFilters);
         }
 
         ParseTree pt = parsePath(path);
@@ -235,14 +286,47 @@ abstract class JSONCommandsBase extends CommandsBase {
         // visitor to get both unfiltered and filtered SQL paths. This will
         // also avoid the issue of duplicating bound variables.
         visitor.run(pt, path);
+
         String sqlPath = visitor.getSQLPath();
+        String parentSQLPath = visitor.getParentSQLPath();
         
-        visitor.setEndValueFilter(endValueFilter);
-        visitor.run(pt, path);
-        String sqlPathWithFilter = visitor.getSQLPath();
+        String[] sqlPathsWithFilter = null;
+        String[] parentSQLPathsWithFilter = null;
         
-        return new TranslateResultWithFilter(sqlPath, sqlPathWithFilter,
+        if (endValueFilters != null) {
+            sqlPathsWithFilter = new String[endValueFilters.length];
+            for(int i = 0; i < endValueFilters.length; i++) {
+                visitor.setEndValueFilter(endValueFilters[i]);
+                visitor.run(pt, path);
+                sqlPathsWithFilter[i] = visitor.getSQLPath();    
+            }
+        }
+        
+        if (parentFilters != null) {
+            visitor.setEndValueFilter(null);
+            parentSQLPathsWithFilter = new String[parentFilters.length];
+            for(int i = 0; i < parentFilters.length; i++) {
+                visitor.setParentFilter(parentFilters[i]);
+                visitor.run(pt, path);
+                parentSQLPathsWithFilter[i] = visitor.getParentSQLPath();
+            }
+        }
+
+        return new TranslateResultWithFilters(sqlPath, parentSQLPath,
+            sqlPathsWithFilter, parentSQLPathsWithFilter,
             visitor.getVariables());
+    }
+
+    protected static TranslateResultWithFilters translatePathWithFilter(
+        String path, String endValueFilter, String parentFilter) {
+        return translatePathWithFilters(path,
+            endValueFilter != null ? new String[]{ endValueFilter } : null,
+            parentFilter != null ? new String[]{ parentFilter } : null);
+    }
+
+    protected static TranslateResultWithFilters translatePathWithFilter(
+        String path, String endValueFilter) {
+        return translatePathWithFilter(path, endValueFilter, null);
     }
 
     protected static TranslateMultiResult translatePaths(List<String> paths) {
@@ -257,8 +341,8 @@ abstract class JSONCommandsBase extends CommandsBase {
     }
 
     protected static TranslateSetResult translateSetPath(String path) {
-        JSONPathToSQLVisitor visitor = new JSONPathToSQLVisitor(SQL_ROOT,
-            true);
+        JSONPathToSQLVisitor visitor = new JSONPathToSQLVisitor(SQL_ROOT);
+        visitor.setIsForSet(true);
         visitor.run(parsePath(path), path);
         return new TranslateSetResult(visitor);
     }
@@ -381,14 +465,36 @@ abstract class JSONCommandsBase extends CommandsBase {
     // Returns array stored in field named "res".
     protected static ArrayValue getArrRes(MapValue row)
         throws RedisResponseException {
-        FieldValue val = row.get("res");
+        FieldValue val = row.get(FLD_RES);
         if (val == null) {
-            throw RedisResponseException.corrupt("Missing result field res");
+            throw RedisResponseException.nosql("Missing result field res");
         }
         if (!val.isArray()) {
-            throw RedisResponseException.corrupt(ERR_NOT_ARRAY);
+            throw RedisResponseException.nosql(ERR_NOT_ARRAY);
         }
         return val.asArray();
+    }
+
+    // Returns boolean stored in field named "res".
+    protected static boolean getBoolRes(MapValue row)
+        throws RedisResponseException {
+        FieldValue val = row.get(FLD_RES);
+        if (val == null || !val.isBoolean()) {
+            throw RedisResponseException.nosql(
+                "result missing or not boolean");
+        }
+        return val.getBoolean();
+    }
+
+    // Returns integer stored in field named "res".
+    protected static int getIntRes(MapValue row)
+        throws RedisResponseException {
+        FieldValue val = row.get(FLD_RES);
+        if (val == null || !val.isInteger()) {
+            throw RedisResponseException.nosql(
+                "result missing or not integer");
+        }
+        return val.getInt();
     }
 
     protected PreparedStatement getPrepStmt(RedisKeyInfo keyInfo, String sql,
@@ -400,11 +506,11 @@ abstract class JSONCommandsBase extends CommandsBase {
         return pStmt;
     }
 
-    protected MapValue doSQLUpdate(PreparedStatement pStmt,
+    // We need this overload when need to set additional options in
+    // QueryRequest.
+    protected MapValue doSQLUpdate(QueryRequest qReq,
         boolean allowEmpty) throws RedisResponseException {
-        try(QueryRequest qReq = new QueryRequest()) {
-            qReq.setPreparedStatement(pStmt);
-            
+        try {
             QueryResult qRes;
             do {
                 qRes = nosqlHandle.query(qReq);
@@ -424,6 +530,21 @@ abstract class JSONCommandsBase extends CommandsBase {
         } catch(NoSQLException ex) {
             throw RedisResponseException.nosql(ex);
         }
+        finally {
+            qReq.close();
+        }
+    }
+
+    protected MapValue doSQLUpdate(PreparedStatement pStmt,
+        boolean allowEmpty) throws RedisResponseException {
+        QueryRequest qReq = new QueryRequest();
+        qReq.setPreparedStatement(pStmt);
+        return doSQLUpdate(qReq, allowEmpty);
+    }
+
+    protected MapValue doSQLUpdate(PreparedStatement pStmt)
+        throws RedisResponseException {
+        return doSQLUpdate(pStmt, true);
     }
 
     protected MapValue doSQLGet(PreparedStatement pStmt)
@@ -444,6 +565,32 @@ abstract class JSONCommandsBase extends CommandsBase {
             // The key does not exist.
             return null;
         }
+    }
+
+    protected RedisMessage getIntArrayReply(MapValue row)
+        throws RedisResponseException {
+        if (row == null) {
+            throw new RedisResponseException(ERR_KEY_NOT_EXISTS);
+        }
+    
+        ArrayValue arrVal = getArrRes(row);
+
+        List<RedisMessage> res = new ArrayList<>();
+        for(FieldValue val : arrVal) {
+            if (val.isAnyNull()) {
+                res.add(FullBulkStringRedisMessage.NULL_INSTANCE);
+                continue;
+            }
+
+            if (!val.isInteger()) {
+                throw RedisResponseException.nosql(
+                    "result is not integer or null");
+            }
+
+            res.add(new IntegerRedisMessage(val.getInt()));
+        }
+
+        return new ArrayRedisMessage(res);
     }
 
 }

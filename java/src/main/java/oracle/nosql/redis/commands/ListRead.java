@@ -35,7 +35,7 @@ public class ListRead extends ListCommandsBase {
         "from redis $r LEFT OUTER JOIN redis.lists $l " +
         // "ON $r.id = $l.id WHERE $r.id = $var1 AND $l.cid = $r.value.cid " +
         "ON $r.id = $l.id AND $r.id = $var1 WHERE $l.cid = $r.value.cid " +
-        NOT_EXPIRED +
+        AND_NOT_EXPIRED +
         "ORDER BY $l.id%s, $l.elemId%s LIMIT $var2 OFFSET $var3";
 
     private static final String SQL_LRANGE = String.format(SQL_LRANGE_FMT,
@@ -49,7 +49,7 @@ public class ListRead extends ListCommandsBase {
         "LEFT OUTER JOIN redis.lists $l " +
         // "ON $r.id = $l.id WHERE $r.id = $var1 AND $l.cid = $r.value.cid " +
         "ON $r.id = $l.id AND $r.id = $var1 WHERE $l.cid = $r.value.cid " +
-        NOT_EXPIRED + "ORDER BY $l.id%s, $l.elemId%s%s";
+        AND_NOT_EXPIRED + "ORDER BY $l.id%s, $l.elemId%s%s";
     private static final String SQL_LPOS = String.format(SQL_LPOS_FMT, "", "",
         "", "", "");
     private static final String SQL_LPOS_MAXLEN = String.format(SQL_LPOS_FMT,

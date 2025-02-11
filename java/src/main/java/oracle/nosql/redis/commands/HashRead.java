@@ -41,7 +41,7 @@ public class HashRead extends HashCommandsBase {
     private static final String SQL_READ_FMT =
         "DECLARE $var1 STRING;%s SELECT (CASE WHEN $h.keyId IS NULL " +
         "THEN $r.value ELSE NULL END) AS hashVal%s " + FROM_LOJ +
-        " WHERE $r.id = $var1 " + NOT_EXPIRED + "%s";
+        " WHERE $r.id = $var1 " + AND_NOT_EXPIRED + "%s";
 
     private static final String SEL_FLD_KEY = ", $h.key.data AS fldKey";
     private static final String SEL_FLD_VAL = ", $h.value";

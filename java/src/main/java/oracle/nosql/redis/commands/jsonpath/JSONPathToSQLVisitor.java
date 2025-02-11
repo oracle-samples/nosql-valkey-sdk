@@ -1,4 +1,3 @@
-// Generated from JSONPath.g4 by ANTLR 4.13.2
 package oracle.nosql.redis.commands.jsonpath;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -10,6 +9,8 @@ import java.util.Map;
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
+
+import oracle.nosql.driver.JsonParseException;
 import oracle.nosql.driver.values.FieldValue;
 import oracle.nosql.driver.values.IntegerValue;
 import oracle.nosql.driver.values.StringValue;
@@ -18,7 +19,9 @@ import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser;
 import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.AndExprContext;
 import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.ArraySelectorContext;
 import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.BasicExprContext;
+import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.BracketsSegmentContext;
 import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.CompContext;
+import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.DotSegmentContext;
 import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.FilterExprContext;
 import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.MapSelectorContext;
 import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.PathOrValContext;
@@ -61,30 +64,32 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 	// Otherwise, new fields cannot be created and we use SET clause.
 	// Note that we also need to exclude cases when we are inside a filter
 	// since filter can contain arbitrary JSON Path expressions.
-	// To determine the parent path, in our limited case we can just trim
-	// the resulting path at the end by the length of SQL path for the last
-	// segment (which we save as endFieldsSfx).
-	private final ArrayList<String> putFields;
+	private ArrayList<String> putFields;
 	private String input; // for error reporting
 	private String sqlPath;
-	private String putFieldsSQLStr;
+
+	// lastSegment keeps track of the last segment in the sqlPath. Knowing
+	// last segment's length allows us to get the parent of the sqlPath.
+	private String lastSegment;
+
 	// Additional filter to apply to every resulting value. Currently used
 	// for array operations to filter only values that are arrays. The format
 	// is the same as for SQL map filter expressions.
 	private String endValueFilter;
 
+	// Additional filter to apply to parent nodes of resulting values.
+	// Currently used for JSON.DEL command where we need to perform cleanup
+	// on any parent array.
+	private String parentFilter;
+
 	// Note that since filter can contain arbitrary JSON Path expressions, it
 	// is possible for filters to be nested.
 	private int inFilterCnt;
-	private boolean inEndSegment;
-
-	public JSONPathToSQLVisitor(String root, boolean isForSet) {
-		this.root = root;
-		putFields = isForSet ? new ArrayList<>() : null;
-	}
+	private boolean inLastSegment;
+	private boolean inParentSegment;
 
 	public JSONPathToSQLVisitor(String root) {
-		this(root, false);
+		this.root = root;
 	}
 
 	private static String unquote(String s) {
@@ -105,6 +110,35 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 		assert !s.contains(quote);
 
 		return s;
+	}
+
+	private static boolean isLastSegment(DotSegmentContext seg) {
+		int cnt = seg.getChildCount();
+		assert(cnt == 3 || cnt == 2);
+		return cnt == 2;
+	}
+
+	private static boolean isLastSegment(BracketsSegmentContext seg) {
+		int cnt = seg.getChildCount();
+		assert(cnt == 2 || cnt == 1);
+		return cnt == 1;
+	}
+
+	private static boolean isLastSegment(ParseTree seg) {
+		if (seg instanceof DotSegmentContext) {
+			return isLastSegment((DotSegmentContext)seg);
+		}
+		if (seg instanceof BracketsSegmentContext) {
+			return isLastSegment((BracketsSegmentContext)seg);
+		}
+		assert(false);
+		return false;
+	}
+
+	private static boolean isParentSegment(ParseTree seg) {
+		int cnt = seg.getChildCount();
+		assert(cnt > 0);
+		return isLastSegment(seg.getChild(cnt - 1));
 	}
 
 	private String addVariable(FieldValue val) {
@@ -130,8 +164,9 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 	}
 
 	private String applyWildcard() {
-		return (inEndSegment && endValueFilter != null) ?
-			String.format("values(%s)", endValueFilter) : "values()";
+		String filter = getAdditionalFilter();
+		return filter != null ?
+			String.format("values(%s)", filter) : "values()";
 	}
 
 	// Just for completeness. More efficient to bypass visitor entirely for
@@ -146,6 +181,16 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 			rootField, endValueFilter);
 	}
 
+	private String getAdditionalFilter() {
+		if (inParentSegment) {
+			return parentFilter;
+		}
+		if (inLastSegment) {
+			return endValueFilter;
+		}
+		return null;
+	}
+
 	protected String aggregateResult(String aggr, String res) {
 		return aggr + res;
 	}
@@ -158,6 +203,14 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 		this.endValueFilter = endValueFilter;
 	}
 
+	public void setParentFilter(String parentFilter) {
+		this.parentFilter = parentFilter;
+	}
+
+	public void setIsForSet(boolean isForSet) {
+		putFields = isForSet ? new ArrayList<>() : null;
+	}
+
 	public Map<String, FieldValue> getVariables() {
 		return variables;
 	}
@@ -166,26 +219,30 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 		return sqlPath;
 	}
 
-	public String getSQLPutPath() {
-		if (putFields == null || putFields.isEmpty()) {
-			return null;
+	public String getParentSQLPath() {
+		if (lastSegment == null) {
+			return "";
 		}
-		assert(putFieldsSQLStr != null && sqlPath.endsWith(putFieldsSQLStr));
-		return sqlPath.substring(0,
-			sqlPath.length() - putFieldsSQLStr.length());
+
+		assert(sqlPath.endsWith(lastSegment));
+		return sqlPath.substring(0,	sqlPath.length() - lastSegment.length());
 	}
 
 	public List<String> getPutFields() {
 		return putFields != null && !putFields.isEmpty() ? putFields : null;
 	}
 
+	public String getSQLPutPath() {
+		return getPutFields() != null ? getParentSQLPath() : null;
+	}
+
 	public void run(ParseTree parseTree, String input) {
 		if (putFields != null) {
 			putFields.clear();
-			putFieldsSQLStr = null;
+			lastSegment = null;
 		}
 		assert(inFilterCnt == 0);
-		assert(!inEndSegment);
+		assert(!inLastSegment);
 
 		assert input != null;
 		this.input = input;
@@ -207,24 +264,33 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 	
 	@Override
 	public String visitJsonValue(JSONPathParser.JsonValueContext ctx) {
-		// Assume the same format for JSON in JSONPath and SQL.
-		return ctx.getText();
+        try {
+			return addVariable(FieldValue.createFromJson(ctx.getText(), null));
+        } catch(JsonParseException ex) {
+            throw parseException(ctx, "Invalid JSON value: " + ctx.getText(),
+				ex);
+        }
 	}
 
 	@Override
 	public String visitDotSegment(JSONPathParser.DotSegmentContext ctx) {
-		assert(!inEndSegment && putFieldsSQLStr == null);
-		if (!inFilter() && ctx.getChildCount() < 3) {
-			assert ctx.getChildCount() == 2;
-			inEndSegment = true;
-			if (putFields != null) {
-				putFields.clear();
+		assert(!inLastSegment && lastSegment == null);
+		if (!inFilter()) {
+			if (isLastSegment(ctx)) {
+				inLastSegment = true;
+				if (putFields != null) {
+					putFields.clear();
+				}
+			} else if (parentFilter != null && isParentSegment(ctx)) {
+				inParentSegment = true;
 			}
 		}
 		String res = '.' + visitChildren(ctx);
-		if (inEndSegment) {
-			putFieldsSQLStr = res;
-			inEndSegment = false;
+		if (inLastSegment) {
+			lastSegment = res;
+			inLastSegment = false;
+		} else {
+			inParentSegment = false;
 		}
 		return res;
 	}
@@ -232,16 +298,23 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 	@Override
 	public String visitBracketsSegment(
 		JSONPathParser.BracketsSegmentContext ctx) {
-		assert(!inEndSegment && putFieldsSQLStr == null);
-		if (putFields != null && !inFilter() && ctx.getChildCount() < 2) {
-			assert ctx.getChildCount() == 1;
-			inEndSegment = true;
-			putFields.clear();
+		assert(!inLastSegment && lastSegment == null);
+		if (!inFilter()) {
+			if (isLastSegment(ctx)) {
+				inLastSegment = true;
+				if (putFields != null) {
+					putFields.clear();
+				}
+			} else if (parentFilter != null && isParentSegment(ctx)) {
+				inParentSegment = true;
+			}
 		}
 		String res = visitChildren(ctx);
-		if (inEndSegment) {
-			putFieldsSQLStr = res;
-			inEndSegment = false;
+		if (inLastSegment) {
+			lastSegment = res;
+			inLastSegment = false;
+		} else {
+			inParentSegment = false;
 		}
 		return res;
 	}
@@ -255,14 +328,16 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 	@Override
 	public String visitFieldId(JSONPathParser.FieldIdContext ctx) {
 		String res = ctx.getText();
-		if (inEndSegment && (putFields != null || endValueFilter != null)) {
+		String filter = getAdditionalFilter();
+		boolean addPutField = inLastSegment && putFields != null;
+		if (filter != null || addPutField) {
 			String fieldVar = addVariable(new StringValue(res));
-			if (putFields != null) {
+			if (addPutField) {
 				putFields.add(fieldVar);
 			}
-			if (endValueFilter != null) {
+			if (filter != null) {
 				return String.format("values($key = %s AND (%s))", fieldVar,
-					endValueFilter);
+					filter);
 			}
 		}
 		return res;
@@ -276,8 +351,9 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 	@Override
 	public String visitArraySelectors(
 		JSONPathParser.ArraySelectorsContext ctx) {
-		String selSfx = inEndSegment && endValueFilter != null ?
-			String.format("].values($key = 'v' AND (%s))", endValueFilter) :
+		String filter = getAdditionalFilter();
+		String selSfx = filter != null ?
+			String.format("].values($key = 'v' AND (%s))", filter) :
 			"].v";
 
 		List<ArraySelectorContext> selectors = ctx.arraySelector();
@@ -311,9 +387,9 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 	public String visitMapSelectors(JSONPathParser.MapSelectorsContext ctx) {
 		List<MapSelectorContext> selectors = ctx.mapSelector();
 		int cnt = selectors.size();
-		boolean applyEndValueFilter = inEndSegment && endValueFilter != null;
+		String filter = getAdditionalFilter();
 
-		if (cnt == 1 && !applyEndValueFilter) {
+		if (cnt == 1 && filter == null) {
 			isSingleSelector.push(true);
 			// Use field step if possible since it is faster than map filter,
 			// see visitMapSelector().
@@ -325,7 +401,7 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 		isSingleSelector.push(false);
 		StringBuilder sb = new StringBuilder();
 		sb.append(".values(");
-		if (applyEndValueFilter) {
+		if (filter != null) {
 			sb.append('(');
 		}
 		for(int i = 0; i < cnt; i++) {
@@ -336,11 +412,11 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 				sb.append(" OR ");
 			}
 		}
-		if (applyEndValueFilter) {
-			// If endValueFilter filter is applied, we get this kind of result:
-			// .values(($key = ... OR $key = ... OR ...) AND (<endValueFilter>))
+		if (filter != null) {
+			// If filter filter is applied, we get this kind of result:
+			// .values(($key = ... OR $key = ... OR ...) AND (<filter>))
 			// so the same filter is applied to all map selectors.
-			sb.append(String.format(") AND (%s)", endValueFilter));
+			sb.append(String.format(") AND (%s)", filter));
 		}
 		sb.append(')');
 
@@ -359,9 +435,10 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 		JSONPathParser.FilterSelectorContext ctx) {
 		inFilterCnt++;
 		String filterRes = visit(ctx.filterExpr());
-		if (inEndSegment && endValueFilter != null) {
+		String extraFilter = getAdditionalFilter();
+		if (extraFilter != null) {
 			filterRes = String.format("(%s) AND (%s)", filterRes,
-				endValueFilter);
+				extraFilter);
 		}
 		String res = ".values(" + filterRes + ")";
 		inFilterCnt--;
@@ -504,10 +581,8 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 		String key = isSingleSelector.peek() ?
 			ctx.getText() : addVariable(new StringValue(unquote(
 				ctx.getText())));
-		if (inEndSegment) {
-			if (putFields != null) {
-				putFields.add(key);
-			}
+		if (inLastSegment && putFields != null) {
+			putFields.add(key);
 		}
 		return isSingleSelector.peek() ? key : "$key = " + key;
 	}
@@ -548,11 +623,11 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 		assert cnt >= 1 && cnt <= 2;
 		if (cnt == 1) {
 			assert ctx.comp() == null;
-			// Unfortunately there is no built-in conversion of value to
-			// boolean in SQL, so we use comparison to what would be
-			// considered false values in JavaScript.
-			return String.format("(!((%s) IN (null, false, 0, '')))",
-				visit(vals.get(0)));
+			// It seems that Redis JSON follows RFC 9535, which in this case
+			// only test the existence of the item designated by the embedded
+			// path rather than its Javascript boolean conversion, so the
+			// values such as null, false, 0 and "" will pass the test.
+			return String.format("(EXISTS (%s))", visit(vals.get(0)));
 		}
 
 		CompContext comp = ctx.comp();

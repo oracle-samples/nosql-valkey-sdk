@@ -74,6 +74,8 @@ public class CommandHandlers {
                 return listCommands;
             case CommandsBase.TYPE_HASH:
                 return hashCommands;
+            case CommandsBase.TYPE_JSON:
+                return jsonCommands;
             default:
                 throw RedisResponseException.corrupt(
                     "Value of unknown type " + type);

@@ -80,7 +80,8 @@ public abstract class CommandsBase {
     static final String VALUE_DATA = FLD_DATA;
 
     static final String NOT_EXPIRED =
-        "AND (NOT EXISTS $r.key.exp OR $r.key.exp > current_time_millis()) ";
+        "(NOT EXISTS $r.key.exp OR $r.key.exp > current_time_millis()) ";
+    static final String AND_NOT_EXPIRED = "AND " + NOT_EXPIRED;
 
     static final String ERR_NO_SINGLE_RES =
         "Expected single result, got multiple";

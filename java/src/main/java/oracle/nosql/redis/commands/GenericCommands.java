@@ -63,7 +63,7 @@ public class GenericCommands extends CommandsBase {
 
         private static final String SQL_SCAN =
             "DECLARE $var1 LONG; SELECT $r.key, $r.value.type AS type FROM " +
-            "redis $r WHERE $r.key.scanId >= $var1 " + NOT_EXPIRED +
+            "redis $r WHERE $r.key.scanId >= $var1 " + AND_NOT_EXPIRED +
             "ORDER BY $r.key.scanId";
 
         KeyScan(CommandsBase cmds) {

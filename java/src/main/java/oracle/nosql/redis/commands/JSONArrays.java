@@ -7,7 +7,6 @@ import java.util.List;
 import io.netty.buffer.ByteBuf;
 import io.netty.handler.codec.redis.ArrayRedisMessage;
 import io.netty.handler.codec.redis.FullBulkStringRedisMessage;
-import io.netty.handler.codec.redis.IntegerRedisMessage;
 import io.netty.handler.codec.redis.RedisMessage;
 import oracle.nosql.driver.NoSQLHandle;
 import oracle.nosql.driver.ops.PreparedStatement;
@@ -39,8 +38,6 @@ public class JSONArrays extends JSONCommandsBase {
         SQL_START_LONG + SQL_STOP_LONG;
     private static final String SQL_VAL_SEQ = String.format("(%s[])",
         SQL_VAL);
-    private static final String SQL_RETURNING = " RETURNING ";
-    private static final String ARR_FILTER = "$value IS OF TYPE (Array(Any))";
     private static final String SQL_ARR_LENS_FMT =
         "[seq_transform(%s, CASE WHEN $ IS OF TYPE (Array(Any)) " +
         "THEN size($) ELSE NULL END)] AS res";
@@ -79,9 +76,6 @@ public class JSONArrays extends JSONCommandsBase {
         String.format("$pos < %s OR $pos > %s", SQL_START_EXPR,
         SQL_STOP_EXPR);
 
-    private static final String ERR_KEY_NOT_EXISTS =
-        "key doesn't exist or of wrong type";
-
     public JSONArrays(NoSQLHandle nosqlHandle,
         PreparedStatementCache pstmtCache) {
         super(nosqlHandle, pstmtCache);
@@ -102,30 +96,6 @@ public class JSONArrays extends JSONCommandsBase {
     private static FieldValue byteBufToArrElem(ByteBuf buf)
         throws RedisResponseException {
         return wrapArrElem(transformValue(byteBufToJson(buf)));
-    }
-
-    private RedisMessage getIntArrayReply(MapValue row)
-        throws RedisResponseException {
-        if (row == null) {
-            throw new RedisResponseException(ERR_KEY_NOT_EXISTS);
-        }
-    
-        ArrayValue arrVal = getArrRes(row);
-
-        List<RedisMessage> res = new ArrayList<>();
-        for(FieldValue val : arrVal) {
-            if (val.isAnyNull()) {
-                res.add(FullBulkStringRedisMessage.NULL_INSTANCE);
-            } else {
-                if (!val.isInteger()) {
-                    throw RedisResponseException.nosql(
-                        "result is not integer or null");
-                }
-                res.add(new IntegerRedisMessage(val.getInt()));
-            }
-        }
-
-        return new ArrayRedisMessage(res);
     }
 
     private RedisMessage handleArrAppendInsert(RedisClientContext client,
@@ -161,7 +131,7 @@ public class JSONArrays extends JSONCommandsBase {
             pStmt.setVariable(SQL_POS, new LongValue(pos));
         }
 
-        return getIntArrayReply(doSQLUpdate(pStmt, true));
+        return getIntArrayReply(doSQLUpdate(pStmt));
     }
 
     // It seems that when using SQL UPDATE REMOVE clause, there is no way to
@@ -192,17 +162,14 @@ public class JSONArrays extends JSONCommandsBase {
             boolean hasUpdates = false;
             
             for(FieldValue val: arrVal) {
-                if (val.isEMPTY()) {
-                    throw RedisResponseException.corrupt(
-                        "Empty value in result set");
-                }
-                if (val.isNull()) {
+                if (val.isAnyNull()) {
                     res.add(FullBulkStringRedisMessage.NULL_INSTANCE);
-                } else {
-                    hasUpdates = true;
-                    res.add(new FullBulkStringRedisMessage(
-                        Utils.stringToByteBuf(val.toJson(null))));
+                    continue;
                 }
+
+                hasUpdates = true;
+                res.add(new FullBulkStringRedisMessage(
+                    Utils.stringToByteBuf(val.toJson(null))));
             }
 
             if (!hasUpdates) {
@@ -247,12 +214,12 @@ public class JSONArrays extends JSONCommandsBase {
             Utils.byteBufToLong(cmd.args[2]) : -1;
         LongValue posVal = new LongValue(pos);
 
-        TranslateResultWithFilter tr = translatePathWithFilter(path,
+        TranslateResultWithFilters tr = translatePathWithFilter(path,
             ARR_FILTER);
         String selSql = tr.getSQLDecl() + String.format(SQL_SEL_ARR_POP_FMT,
             tr.sqlPath, pos >= 0 ? SQL_POS : SQL_NEG_POS);
         String updSql = tr.getSQLDecl() + String.format(SQL_ARR_POP_FMT,
-            tr.sqlPathWithFilter, pos >= 0 ? SQL_POS : SQL_NEG_POS);
+            tr.sqlPathWithFilter(), pos >= 0 ? SQL_POS : SQL_NEG_POS);
         RedisKeyInfo keyInfo = makeRedisKeyInfo(cmd.args[0]);
         PreparedStatement pSelStmt = getPrepStmt(keyInfo, selSql, tr);
         PreparedStatement pUpdStmt = getPrepStmt(keyInfo, updSql, tr);
@@ -269,16 +236,16 @@ public class JSONArrays extends JSONCommandsBase {
         long start = Utils.byteBufToLong(cmd.args[2]);
         long stop = Utils.byteBufToLong(cmd.args[3]);
 
-        TranslateResultWithFilter tr = translatePathWithFilter(path,
+        TranslateResultWithFilters tr = translatePathWithFilter(path,
             ARR_FILTER);
         String sql = tr.getSQLDecl() + String.format(SQL_ARR_TRIM_FMT,
-            tr.sqlPathWithFilter, SQL_TRIM_FILTER, tr.sqlPath);
+            tr.sqlPathWithFilter(), SQL_TRIM_FILTER, tr.sqlPath);
         PreparedStatement pStmt = getPrepStmt(
             makeRedisKeyInfo(cmd.args[0]), sql, tr);
         pStmt.setVariable(SQL_START, new LongValue(start));
         pStmt.setVariable(SQL_STOP, new LongValue(stop));
 
-        return getIntArrayReply(doSQLUpdate(pStmt, true));
+        return getIntArrayReply(doSQLUpdate(pStmt));
     }
 
     public RedisMessage handleJSONArrLen(RedisClientContext client,
