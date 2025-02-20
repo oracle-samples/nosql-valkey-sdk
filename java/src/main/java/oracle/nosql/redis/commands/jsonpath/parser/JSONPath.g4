@@ -28,6 +28,7 @@ TRUE : 'true' ;
 FALSE : 'false' ;
 NULL : 'null' ;
 MINUS: '-';
+MATCH: '=~';
 
 SQSTRING
     : '\'' (ESC | SAFECODEPOINT)* '\''
@@ -87,8 +88,9 @@ andExpr
 
 basicExpr
    : NOT? LP filterExpr RP                    # ParenExpr
-   | pathOrVal ( comp pathOrVal )?            # ComparisonExpr   ;
+   | pathOrVal ( comp pathOrVal )?            # ComparisonExpr
+   ;
 
 comp
-   : EQ | NE | LT | GT | LE | GE
+   : EQ | NE | LT | GT | LE | GE | MATCH
    ;

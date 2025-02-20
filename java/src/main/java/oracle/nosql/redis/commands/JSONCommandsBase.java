@@ -22,7 +22,6 @@ import io.netty.handler.codec.redis.FullBulkStringRedisMessage;
 import io.netty.handler.codec.redis.IntegerRedisMessage;
 import io.netty.handler.codec.redis.RedisMessage;
 import oracle.nosql.driver.JsonParseException;
-import oracle.nosql.driver.NoSQLException;
 import oracle.nosql.driver.NoSQLHandle;
 import oracle.nosql.driver.ops.PreparedStatement;
 import oracle.nosql.driver.ops.QueryRequest;
@@ -51,6 +50,7 @@ abstract class JSONCommandsBase extends CommandsBase {
     protected static final String FLD_NUM_UPD = "NumRowsUpdated";
     protected static final String FLD_RES = "res";
     protected static final String KEY_ID_COND = "$r.id = $keyId ";
+    protected static final String KEY_IDS_COND = "$r.id IN $keyIds[]";
     protected static final String IS_TYPE_JSON =
         String.format("AND ($r.value.type = '%s')", TYPE_JSON);
     protected static final String SQL_JSON_COND =
@@ -58,6 +58,7 @@ abstract class JSONCommandsBase extends CommandsBase {
     protected static final String SQL_VAL = "$val";
     protected static final String SQL_DECLARE = "DECLARE ";
     protected static final String DECL_KEY_ID = " $keyId STRING; ";
+    protected static final String DECL_KEY_IDS = " $keyIds ARRAY(STRING); ";
     protected static final String DECL_KEY_ID_VAL =
         DECL_KEY_ID + SQL_VAL + " JSON; ";
     protected static final String SQL_RETURNING = " RETURNING ";
@@ -94,6 +95,8 @@ abstract class JSONCommandsBase extends CommandsBase {
     public static final String CMD_JSON_DEL = "JSON.DEL";
     public static final String CMD_JSON_FORGET = "JSON.FORGET";
     public static final String CMD_JSON_CLEAR = "JSON.CLEAR";
+    public static final String CMD_JSON_MGET = "JSON.MGET";
+    public static final String CMD_JSON_MERGE = "JSON.MERGE";
 
     protected static class TranslateResult {
         final String sqlPath;
@@ -506,6 +509,27 @@ abstract class JSONCommandsBase extends CommandsBase {
         return pStmt;
     }
 
+    protected RedisResponseException processNoSQLException(Exception ex) {
+        if (ex instanceof RedisResponseException) {
+            return (RedisResponseException)ex;
+        }
+
+        // If provided or retrieved (via embedded json path) regular
+        // expression pattern is unsupported or invalid, we want to avoid
+        // returning raw nosql error and signal the user that the problem is
+        // with the regular expression.
+        if (ex instanceof IllegalArgumentException) {
+            String msg = ex.getMessage();
+            if (msg.contains("regex_like") ||
+                msg.contains("regular expression")) {
+                return new RedisResponseException(
+                    "unsupported or invalid regular expression", ex);
+            }
+        }
+
+        return RedisResponseException.nosql(ex);
+    }
+
     // We need this overload when need to set additional options in
     // QueryRequest.
     protected MapValue doSQLUpdate(QueryRequest qReq,
@@ -527,8 +551,8 @@ abstract class JSONCommandsBase extends CommandsBase {
             }
 
             return res.get(0);
-        } catch(NoSQLException ex) {
-            throw RedisResponseException.nosql(ex);
+        } catch(Exception ex) {
+            throw processNoSQLException(ex);
         }
         finally {
             qReq.close();
@@ -564,6 +588,8 @@ abstract class JSONCommandsBase extends CommandsBase {
             } while(!qReq.isDone());
             // The key does not exist.
             return null;
+        } catch(Exception ex) {
+            throw processNoSQLException(ex);
         }
     }
 

@@ -7,9 +7,7 @@
 
 package oracle.nosql.redis;
 
-import oracle.nosql.driver.NoSQLException;
- 
- public class RedisResponseException extends Exception {
+public class RedisResponseException extends Exception {
 	 
     public static enum ErrorPrefix {
         ERR,
@@ -61,7 +59,7 @@ import oracle.nosql.driver.NoSQLException;
         return new RedisResponseException(ErrorPrefix.NOSQL, msg);
     }
 
-    public static RedisResponseException nosql(NoSQLException ex) {
+    public static RedisResponseException nosql(Exception ex) {
         return new RedisResponseException(ErrorPrefix.NOSQL, ex.toString(),
             ex);
     }

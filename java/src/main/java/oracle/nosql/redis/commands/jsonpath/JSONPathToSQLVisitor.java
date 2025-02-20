@@ -1,4 +1,5 @@
 package oracle.nosql.redis.commands.jsonpath;
+
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -30,6 +31,46 @@ import oracle.nosql.redis.util.Utils;
 public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 
 	private static final String IDX_SIZE_PFX = "size($) + ";
+
+	// Note that in JSON Path, regex pattern itself may be a path and not a
+	// literal, so we in general we cannot preprocess it on the client side.
+	// The following expressions allow some rudimentary preprocessing inside
+	// a query.
+
+	// This expression accounts for difference in behavior where SQL
+	// regex_like() matches only the whole string, but JSON Path regex matches
+	// a substring. It also introduces support for ^ and $ markers, which must
+	// be in the beginning and end of the pattern respectively (but after
+	// flags, see below).
+	private static final String REGEX_PATTERN_TRANSFORM1 =
+		"CASE WHEN NOT starts_with($, '^') AND NOT ends_with($, '$') " +
+		"THEN '.*' || $ || '.*' " +
+		"WHEN starts_with($, '^') AND NOT ends_with($, '$') " +
+		"THEN substring($, 1) || '.*' " +
+		"WHEN NOT starts_with($, '^') AND ends_with($, '$') " +
+		"THEN '.*' || substring($, 0, length($) - 1) " +
+		// starts with ^ and ends with $
+		"ELSE substring($, 1, length($) - 2) END";
+
+	// These 2 expressions allow to specify inline flags in format "(?flags)",
+	// (see https://docs.rs/regex/latest/regex/#syntax) we only support it at
+	// the very beginning of the pattern (even before ^). Supported flags are
+	// i, s, u, x. Note that R is enabled by default and u is not. Clearing of
+	// flags is also not supported.
+	private static final String REGEX_PATTERN_TRANSFORM2 =
+		"CASE WHEN NOT starts_with($, '(?') THEN $ ELSE " +
+		"substring($, index_of($, ')') + 1) END";
+	private static final String REGEX_MODE_TRANSFORM =
+		"CASE WHEN NOT starts_with($, '(?') THEN '' ELSE " +
+		"substring($, 2, index_of($, ')') - 2) END";
+
+	// Expression that combines support for ^, $ and the flags and allows
+	// patterns like "(?flags)^pattern$" (all of the markers are optional).
+	// Note that currently regex_like() casts its arguments to strings, so
+	// to conform to JSON Path, we check the arg types first.
+	private static final String REGEX_FMT =
+		"(%s IS OF TYPE (String) AND %s IS OF TYPE (String) AND " +
+		"seq_transform(%s, regex_like(%s, seq_transform(%s, %s), %s)))";
 
 	private final String root;
 	private final HashMap<String, FieldValue> variables = new HashMap<>();
@@ -191,6 +232,12 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 		return null;
 	}
 
+	private String makeRegexLike(String path, String pattern) {
+		return String.format(REGEX_FMT, path, pattern, pattern, path,
+		REGEX_PATTERN_TRANSFORM2, REGEX_PATTERN_TRANSFORM1,
+		REGEX_MODE_TRANSFORM);
+	}
+
 	protected String aggregateResult(String aggr, String res) {
 		return aggr + res;
 	}
@@ -274,8 +321,8 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 
 	@Override
 	public String visitDotSegment(JSONPathParser.DotSegmentContext ctx) {
-		assert(!inLastSegment && lastSegment == null);
 		if (!inFilter()) {
+			assert(!inLastSegment && lastSegment == null);
 			if (isLastSegment(ctx)) {
 				inLastSegment = true;
 				if (putFields != null) {
@@ -286,11 +333,13 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 			}
 		}
 		String res = '.' + visitChildren(ctx);
-		if (inLastSegment) {
-			lastSegment = res;
-			inLastSegment = false;
-		} else {
-			inParentSegment = false;
+		if (!inFilter()) {
+			if (inLastSegment) {
+				lastSegment = res;
+				inLastSegment = false;
+			} else {
+				inParentSegment = false;
+			}
 		}
 		return res;
 	}
@@ -298,8 +347,8 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 	@Override
 	public String visitBracketsSegment(
 		JSONPathParser.BracketsSegmentContext ctx) {
-		assert(!inLastSegment && lastSegment == null);
 		if (!inFilter()) {
+			assert(!inLastSegment && lastSegment == null);
 			if (isLastSegment(ctx)) {
 				inLastSegment = true;
 				if (putFields != null) {
@@ -310,11 +359,13 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 			}
 		}
 		String res = visitChildren(ctx);
-		if (inLastSegment) {
-			lastSegment = res;
-			inLastSegment = false;
-		} else {
-			inParentSegment = false;
+		if (!inFilter()) {
+			if (inLastSegment) {
+				lastSegment = res;
+				inLastSegment = false;
+			} else {
+				inParentSegment = false;
+			}
 		}
 		return res;
 	}
@@ -655,6 +706,8 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 			case JSONPathParser.GE:
 				compStr = ">=";
 				break;
+			case JSONPathParser.MATCH:
+				return makeRegexLike(visit(vals.get(0)), visit(vals.get(1)));
 			default:
 				assert(false);
 				break;

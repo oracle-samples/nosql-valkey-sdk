@@ -31,7 +31,7 @@ public class JSONDelMerge extends JSONCommandsBase {
         "REMOVE %s[size($element) = 0] WHERE " + SQL_JSON_COND +
         SQL_RETURNING_PAD;
 
-        private static final String NON_ZERO_SIZE = " AND size($value) != 0";
+    private static final String NON_ZERO_SIZE = " AND size($value) != 0";
     private static final String NON_EMPTY_MAP_FILTER = MAP_FILTER +
         NON_ZERO_SIZE;
     private static final String NON_EMPTY_ARR_FILTER = ARR_FILTER +
@@ -44,6 +44,8 @@ public class JSONDelMerge extends JSONCommandsBase {
         "size([%s]), SET %s = {}, SET %s = [], SET %s = 0 WHERE" +
         SQL_JSON_COND + SQL_RETURNING_PAD;
 
+    
+
     public JSONDelMerge(NoSQLHandle nosqlHandle,
         PreparedStatementCache pstmtCache) {
         super(nosqlHandle, pstmtCache);
@@ -53,6 +55,7 @@ public class JSONDelMerge extends JSONCommandsBase {
         cmdMap.put(CMD_JSON_DEL, this::handleJSONDel);
         cmdMap.put(CMD_JSON_FORGET, this::handleJSONDel);
         cmdMap.put(CMD_JSON_CLEAR, this::handleJSONClear);
+        cmdMap.put(CMD_JSON_MERGE, this::handleJSONMerge);
     }
 
     public RedisMessage handleJSONDel(RedisClientContext client,
@@ -111,6 +114,12 @@ public class JSONDelMerge extends JSONCommandsBase {
         }
 
         return new IntegerRedisMessage(getIntRes(row));        
+    }
+
+    public RedisMessage handleJSONMerge(RedisClientContext client,
+        RawCommand cmd) throws RedisResponseException {
+        chkExactNumArgs(cmd, 3);
+        return null;
     }
 
 }
