@@ -42,29 +42,35 @@ public class JSONArrays extends JSONCommandsBase {
         "[seq_transform(%s, CASE WHEN $ IS OF TYPE (Array(Any)) " +
         "THEN size($) ELSE NULL END)] AS res";
     private static final String SQL_ARR_APP_INS_FMT =
-        "UPDATE redis $r ADD %s %s %s WHERE " + SQL_JSON_COND + SQL_RETURNING +
-        SQL_ARR_LENS_FMT;
-    private static final String SQL_SEL_ARR_POP_FMT =
-        DECL_KEY_ID + SQL_POS_LONG +
-        "SELECT row_version($r) AS ver, [seq_transform(%s, CASE WHEN $ " +
-        "IS OF TYPE (Array(Any)) THEN $[%s].v ELSE NULL END)] AS res FROM " +
-        "redis $r WHERE " + SQL_JSON_COND;
-    private static final String SQL_UPD_REMOVE =
-        "UPDATE redis $r REMOVE %s[%s] WHERE ";
+        " UPDATE redis $r ADD %s %s %s WHERE " + SQL_EXISTS_COND +
+        SQL_RETURNING + SQL_ARR_LENS_FMT + SQL_IS_JSON;
     private static final String SQL_ARR_POP_FMT =
-        DECL_KEY_ID + SQL_POS_LONG + "$ver BINARY; " +
-        SQL_UPD_REMOVE + "row_version($r) = $ver AND " + SQL_JSON_COND;
+        DECL_KEY_ID + SQL_POS_LONG + 
+        "%sUPDATE redis $r SET $r.value.pad = [seq_transform(%s, CASE WHEN " +
+        // .v because arrays are in the transformed state
+        "$ IS OF TYPE (Array(Any)) THEN $[%s].v ELSE NULL END)], " +
+        "REMOVE %s[%s] WHERE " + SQL_EXISTS_COND + SQL_RETURNING_PAD +
+        SQL_IS_JSON;
+    // What happens if after trim operation one of the path items is no longer
+    // in the path, e.g. if the path has a filter condition based on some
+    // element of the array and that element has been trimmed. It is not clear
+    // if the result should include such items. This can be fixed by storing
+    // the initial path result in the pad and then using it via seq_transform
+    // to obtain the lenghts in the RETURNING clause, however this involves
+    // using too much storage in the pad (all arrays in the initial path), so
+    // not doing this currently.
     private static final String SQL_ARR_TRIM_FMT =
-        DECL_KEY_ID + SQL_START_STOP_LONG + SQL_UPD_REMOVE + SQL_JSON_COND +
-        SQL_RETURNING + SQL_ARR_LENS_FMT;
+        DECL_KEY_ID + SQL_START_STOP_LONG +
+        "%sUPDATE redis $r REMOVE %s[%s] WHERE " + SQL_EXISTS_COND +
+        SQL_RETURNING + SQL_ARR_LENS_FMT + SQL_IS_JSON;
     private static final String SQL_SEL_ARR_LENS_FMT = DECL_KEY_ID +
-        "SELECT " + SQL_ARR_LENS_FMT + " FROM redis $r WHERE " +
-        SQL_JSON_COND;
+        "%sSELECT " + SQL_ARR_LENS_FMT + SQL_IS_JSON +
+        " FROM redis $r WHERE " + SQL_EXISTS_COND;
     private static final String SQL_SEL_ARR_INDEX_OF_FMT =
         "SELECT [seq_transform(%s, CASE WHEN $ IS OF TYPE (Array(Any)) THEN " +
         "index_of(concat(seq_transform($[%s], CASE WHEN $.v = $val THEN 1 " +
-        "ELSE 0 END)), 1%s) ELSE NULL END)] AS res FROM redis $r WHERE " +
-        SQL_JSON_COND;
+        "ELSE 0 END)), 1%s) ELSE NULL END)] AS res " + SQL_IS_JSON +
+        " FROM redis $r WHERE " + SQL_EXISTS_COND;
 
     private static final String SQL_POS_EXPR_FMT =
         "(CASE WHEN %s >= 0 THEN %s ELSE size($) + %s END)";
@@ -116,7 +122,7 @@ public class JSONArrays extends JSONCommandsBase {
         }
 
         TranslateResult tr = translatePath(path);
-        String sql = tr.getSQLDecl() + DECL_KEY_ID_VAL +
+        String sql = DECL_KEY_ID_VAL + tr.getSQLDecl() +
             (isInsert ? SQL_POS_LONG : "") +
             String.format(SQL_ARR_APP_INS_FMT, tr.sqlPath,
             // It seems we cannot use CASE expr in position expr, so we have
@@ -132,58 +138,6 @@ public class JSONArrays extends JSONCommandsBase {
         }
 
         return getIntArrayReply(doSQLUpdate(pStmt));
-    }
-
-    // It seems that when using SQL UPDATE REMOVE clause, there is no way to
-    // return the items that have been removed, which is needed for
-    // JSON.ARRPOP command. So we have to do read-modify-write sequence.
-    // First we read the items about to be removed (see pSelStmt).
-    // If key does not exist/is of wrong type or if there are no items to be
-    // removed (the paths referenced by JSON path are not arrays or empty
-    // arrays), then we can throw/return immediately. Otherwise we perform the
-    // update (see pUpdStmt) and check the number of NumRowsUpdated (1 or 0).
-    // The only way that NumRowsUpdated = 0 is if the row has been
-    // concurrently modified by another client. Note that we condition the
-    // update on the row version we updated during read. In case of version
-    // mismatch, we retry the whole op up to certain number of times as done
-    // for strings and collections.
-    private List<RedisMessage> doJSONArrPop(PreparedStatement pSelStmt,
-        PreparedStatement pUpdStmt) throws RedisResponseException {
-        for(int i = 0; i < ATOMIC_SET_TRIES; i++) {
-            MapValue row = doSQLGet(pSelStmt);
-            if (row == null) {
-                throw new RedisResponseException(ERR_KEY_NOT_EXISTS);
-            }
-
-            FieldValue verVal = rowToVerVal(row);
-            ArrayValue arrVal = untransformValues(getArrRes(row));
-
-            List<RedisMessage> res = new ArrayList<>();
-            boolean hasUpdates = false;
-            
-            for(FieldValue val: arrVal) {
-                if (val.isAnyNull()) {
-                    res.add(FullBulkStringRedisMessage.NULL_INSTANCE);
-                    continue;
-                }
-
-                hasUpdates = true;
-                res.add(new FullBulkStringRedisMessage(
-                    Utils.stringToByteBuf(val.toJson(null))));
-            }
-
-            if (!hasUpdates) {
-                return res;
-            }
-
-            pUpdStmt.setVariable("$ver", verVal);
-            int numUpd = getNumRowsUpdated(doSQLUpdate(pUpdStmt, false));
-            if (numUpd != 0) {
-                return res;
-            }
-        }
-
-        throw failedAtomicRetries();   
     }
 
     public void registerCommands(HashMap<String, CommandHandler> cmdMap) {
@@ -216,17 +170,33 @@ public class JSONArrays extends JSONCommandsBase {
 
         TranslateResultWithFilters tr = translatePathWithFilter(path,
             ARR_FILTER);
-        String selSql = tr.getSQLDecl() + String.format(SQL_SEL_ARR_POP_FMT,
-            tr.sqlPath, pos >= 0 ? SQL_POS : SQL_NEG_POS);
-        String updSql = tr.getSQLDecl() + String.format(SQL_ARR_POP_FMT,
-            tr.sqlPathWithFilter(), pos >= 0 ? SQL_POS : SQL_NEG_POS);
-        RedisKeyInfo keyInfo = makeRedisKeyInfo(cmd.args[0]);
-        PreparedStatement pSelStmt = getPrepStmt(keyInfo, selSql, tr);
-        PreparedStatement pUpdStmt = getPrepStmt(keyInfo, updSql, tr);
-        pSelStmt.setVariable(SQL_POS, posVal);
-        pUpdStmt.setVariable(SQL_POS, posVal);
+        
+        String sqlPathWithFilter = tr.sqlPathWithFilter();
+        String sqlPos = pos >= 0 ? SQL_POS : SQL_NEG_POS;
+        
+        String sql = String.format(SQL_ARR_POP_FMT, tr.getSQLDecl(),
+            tr.sqlPath, sqlPos, sqlPathWithFilter, sqlPos);
+        PreparedStatement pStmt = getPrepStmt(makeRedisKeyInfo(cmd.args[0]),
+            sql, tr);
+        pStmt.setVariable(SQL_POS, posVal);
 
-        return new ArrayRedisMessage(doJSONArrPop(pSelStmt, pUpdStmt));
+        MapValue row = doSQLUpdate(pStmt);
+        if (row == null) {
+            throw new RedisResponseException(ERR_KEY_NOT_EXISTS);
+        }
+
+        chkIsJSON(row);
+        ArrayValue arrVal = getArrRes(row);
+
+        List<RedisMessage> res = new ArrayList<>();
+        for(FieldValue val : arrVal) {
+            res.add(val.isAnyNull() ?
+                FullBulkStringRedisMessage.NULL_INSTANCE :
+                new FullBulkStringRedisMessage(Utils.stringToByteBuf(
+                    untransformValue(val).toJson(null))));
+        }
+
+        return new ArrayRedisMessage(res);
     }
 
     public RedisMessage handleJSONArrTrim(RedisClientContext client,
@@ -238,7 +208,7 @@ public class JSONArrays extends JSONCommandsBase {
 
         TranslateResultWithFilters tr = translatePathWithFilter(path,
             ARR_FILTER);
-        String sql = tr.getSQLDecl() + String.format(SQL_ARR_TRIM_FMT,
+        String sql = String.format(SQL_ARR_TRIM_FMT, tr.getSQLDecl(),
             tr.sqlPathWithFilter(), SQL_TRIM_FILTER, tr.sqlPath);
         PreparedStatement pStmt = getPrepStmt(
             makeRedisKeyInfo(cmd.args[0]), sql, tr);
@@ -256,7 +226,7 @@ public class JSONArrays extends JSONCommandsBase {
         
         TranslateResult tr = translatePath(path);
         PreparedStatement pStmt = getPrepStmt(makeRedisKeyInfo(cmd.args[0]),
-            tr.getSQLDecl() + String.format(SQL_SEL_ARR_LENS_FMT, tr.sqlPath),
+            String.format(SQL_SEL_ARR_LENS_FMT, tr.getSQLDecl(), tr.sqlPath),
             tr);
 
         return getIntArrayReply(doSQLGet(pStmt));
@@ -289,11 +259,11 @@ public class JSONArrays extends JSONCommandsBase {
 
         TranslateResult tr = translatePath(path);
         PreparedStatement pStmt = getPrepStmt(makeRedisKeyInfo(cmd.args[0]),
-            tr.getSQLDecl() + DECL_KEY_ID_VAL +
+            DECL_KEY_ID_VAL + tr.getSQLDecl() +
             (startVal == null ? "" : SQL_START_INT) +
             (stopVal == null ? "" : SQL_STOP_LONG) +
             String.format(SQL_SEL_ARR_INDEX_OF_FMT, tr.sqlPath, boundExpr,
-            startExpr), tr);
+                startExpr), tr);
         pStmt.setVariable(SQL_VAL, val);
         if (startVal != null) {
             pStmt.setVariable(SQL_START, startVal);

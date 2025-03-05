@@ -17,7 +17,12 @@ import oracle.nosql.redis.RedisResponseException;
 import oracle.nosql.redis.RedisResponseException.ErrorPrefix;
 
 public class Utils {
-    
+
+    @FunctionalInterface
+    public interface ThrowingNoArgFunction<R, E extends Exception> {
+        R apply() throws E;
+    }
+
     @FunctionalInterface
     public interface ThrowingFunction<T, R, E extends Exception> {
         R apply(T t) throws E;
@@ -41,6 +46,9 @@ public class Utils {
     @FunctionalInterface
     public interface ThrowingPredicate<T, E extends Exception> {
         boolean test(T t) throws E;
+    }
+
+    public static class RedisRetryException extends RuntimeException {
     }
 
     private static final String SHA256_ALG = "SHA-256";
@@ -128,4 +136,21 @@ public class Utils {
         return parseException(input, pos, msg, null);
     }
     
+    // TODO: need to integrate this with other functions that do retries in
+    // CommandsBase.java and CollectionCommandsBase.java.
+    // TODO: introduce parameters or other methods that do exponential backoff.
+    public static <R> R doWithRetries(
+        ThrowingNoArgFunction<R, RedisResponseException> func, int numRetries)
+        throws RedisResponseException {
+        for(int i = 0; i < numRetries; i++) {
+            try {
+                return func.apply();
+            } catch(RedisRetryException ex) {
+                // retry
+            }
+        }
+        throw new RedisResponseException(ErrorPrefix.NOSQL,
+            "Failed to perform atomic operation after " + numRetries +
+            " tries");
+    }
 }

@@ -15,11 +15,11 @@ import oracle.nosql.redis.RedisResponseException;
 import oracle.nosql.redis.util.PreparedStatementCache;
 import oracle.nosql.redis.util.Utils;
 
-public class JSONDelMerge extends JSONCommandsBase {
+public class JSONDel extends JSONCommandsBase {
 
     private static final String SQL_DEL_KEY =
-        SQL_DECLARE + DECL_KEY_ID + "DELETE FROM redis $r WHERE " +
-        KEY_ID_COND + IS_TYPE_JSON + SQL_RETURNING + NOT_EXPIRED + "AS res";
+        DECL_KEY_ID + "DELETE FROM redis $r WHERE " + KEY_ID_COND +
+        AND_IS_JSON + SQL_RETURNING + NOT_EXPIRED + "AS res";
 
     // Note that since we store array elements wrapped in objects, removing
     // array element(s) using the sqlPath will only remove actual values, not
@@ -27,9 +27,9 @@ public class JSONDelMerge extends JSONCommandsBase {
     // path and only if the parent path points to an array, to remove empty
     // object wrappers from the array.
     private static final String SQL_UPDATE_DEL_FMT = DECL_KEY_ID +
-        "UPDATE redis $r SET $r.value.pad = size([%s]), REMOVE %s, " +
-        "REMOVE %s[size($element) = 0] WHERE " + SQL_JSON_COND +
-        SQL_RETURNING_PAD;
+        "%sUPDATE redis $r SET $r.value.pad = size([%s]), REMOVE %s, " +
+        "REMOVE %s[size($element) = 0] WHERE " + SQL_EXISTS_COND +
+        SQL_RETURNING_PAD + SQL_IS_JSON;
 
     private static final String NON_ZERO_SIZE = " AND size($value) != 0";
     private static final String NON_EMPTY_MAP_FILTER = MAP_FILTER +
@@ -40,13 +40,11 @@ public class JSONDelMerge extends JSONCommandsBase {
         " AND $value != 0";
 
     private static final String SQL_CLEAR_FMT = DECL_KEY_ID +
-        "UPDATE redis $r SET $r.value.pad = size([%s]) + size([%s]) + " +
-        "size([%s]), SET %s = {}, SET %s = [], SET %s = 0 WHERE" +
-        SQL_JSON_COND + SQL_RETURNING_PAD;
-
+        "%sUPDATE redis $r SET $r.value.pad = size([%s]) + size([%s]) + " +
+        "size([%s]), SET %s = {}, SET %s = [], SET %s = 0 WHERE " +
+        SQL_EXISTS_COND + SQL_RETURNING_PAD + SQL_IS_JSON;
     
-
-    public JSONDelMerge(NoSQLHandle nosqlHandle,
+    public JSONDel(NoSQLHandle nosqlHandle,
         PreparedStatementCache pstmtCache) {
         super(nosqlHandle, pstmtCache);
     }
@@ -55,7 +53,6 @@ public class JSONDelMerge extends JSONCommandsBase {
         cmdMap.put(CMD_JSON_DEL, this::handleJSONDel);
         cmdMap.put(CMD_JSON_FORGET, this::handleJSONDel);
         cmdMap.put(CMD_JSON_CLEAR, this::handleJSONClear);
-        cmdMap.put(CMD_JSON_MERGE, this::handleJSONMerge);
     }
 
     public RedisMessage handleJSONDel(RedisClientContext client,
@@ -80,7 +77,7 @@ public class JSONDelMerge extends JSONCommandsBase {
 
         TranslateResultWithFilters tr = translatePathWithFilter(path, null,
             ARR_FILTER);
-        String sql = tr.getSQLDecl() + String.format(SQL_UPDATE_DEL_FMT,
+        String sql = String.format(SQL_UPDATE_DEL_FMT, tr.getSQLDecl(),
             tr.sqlPath, tr.sqlPath, tr.parentSQLPathWithFilter());
         PreparedStatement pStmt = getPrepStmt(keyInfo, sql, tr);
 
@@ -89,6 +86,7 @@ public class JSONDelMerge extends JSONCommandsBase {
             return zeroReply;
         }
 
+        chkIsJSON(row);
         return new IntegerRedisMessage(getIntRes(row));
     }
 
@@ -101,7 +99,7 @@ public class JSONDelMerge extends JSONCommandsBase {
         TranslateResultWithFilters tr = translatePathWithFilters(path,
             new String[] { NON_EMPTY_MAP_FILTER, NON_EMPTY_ARR_FILTER,
                 NON_ZERO_NUM_FILTER }, null);
-        String sql = tr.getSQLDecl() + String.format(SQL_CLEAR_FMT,
+        String sql = String.format(SQL_CLEAR_FMT, tr.getSQLDecl(),
             tr.sqlPathsWithFilter[0], tr.sqlPathsWithFilter[1],
             tr.sqlPathsWithFilter[2], tr.sqlPathsWithFilter[0],
             tr.sqlPathsWithFilter[1], tr.sqlPathsWithFilter[2]);
@@ -113,13 +111,8 @@ public class JSONDelMerge extends JSONCommandsBase {
             throw new RedisResponseException(ERR_KEY_NOT_EXISTS);
         }
 
-        return new IntegerRedisMessage(getIntRes(row));        
-    }
-
-    public RedisMessage handleJSONMerge(RedisClientContext client,
-        RawCommand cmd) throws RedisResponseException {
-        chkExactNumArgs(cmd, 3);
-        return null;
+        chkIsJSON(row);
+        return new IntegerRedisMessage(getIntRes(row));
     }
 
 }

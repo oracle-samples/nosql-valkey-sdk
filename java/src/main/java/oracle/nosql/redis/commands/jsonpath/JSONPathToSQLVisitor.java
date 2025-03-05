@@ -20,12 +20,11 @@ import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser;
 import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.AndExprContext;
 import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.ArraySelectorContext;
 import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.BasicExprContext;
-import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.BracketsSegmentContext;
 import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.CompContext;
-import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.DotSegmentContext;
 import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.FilterExprContext;
 import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.MapSelectorContext;
 import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.PathOrValContext;
+import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.SegmentsContext;
 import oracle.nosql.redis.util.Utils;
 
 public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
@@ -86,7 +85,7 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 	// clause for the latter (because SET clause cannot be used to create new
 	// keys). Note that we cannot create new key for any arbitrary JSON Path
 	// expression. E.g. paths that end in filter, wildcard or slice
-	//expression (e.g. $.x[?(@.y > 1)], $.x.*, $.x[1:5]) can only reference
+	// expression (e.g. $.x[?(@.y > 1)], $.x.*, $.x[1:5]) can only reference
 	// existing keys or array elements. Specifically, we can only create new
 	// key(s) if the path ends in a concrete field name, or multiple field
 	// names in case of brackets with multiple selectors. E.g. $.x.y,
@@ -100,12 +99,17 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 	// BracketSegment nodes that have no following "segments" child node (see
 	// "segments?" in the grammar). Then we can collect field names from
 	// either FieldId (under DotSegment) or MapSelector (under BracketSegment).
-	// If at the end of traversal we get non-empty endFields list, new fields
+	// If at the end of traversal we get non-empty leafFields list, new fields
 	// can be created with this path and we can use PUT clause for this.
 	// Otherwise, new fields cannot be created and we use SET clause.
 	// Note that we also need to exclude cases when we are inside a filter
 	// since filter can contain arbitrary JSON Path expressions.
-	private ArrayList<String> putFields;
+	// Similar approach is also used for JSON.MERGE, since in SQL JSON merge
+	// patch the target cannot reference non-existing value. For this, we
+	// merge with the parent path instead, but the patch object used for this
+	// will be an object containing leafFields with values assigned to the
+	// user-provided patch.
+	private ArrayList<String> leafFields = new ArrayList<>();
 	private String input; // for error reporting
 	private String sqlPath;
 
@@ -153,33 +157,13 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 		return s;
 	}
 
-	private static boolean isLastSegment(DotSegmentContext seg) {
-		int cnt = seg.getChildCount();
-		assert(cnt == 3 || cnt == 2);
-		return cnt == 2;
+	private static boolean isLastSegment(ParserRuleContext ctx) {
+		return ctx.getChild(SegmentsContext.class, 0) == null;
 	}
 
-	private static boolean isLastSegment(BracketsSegmentContext seg) {
-		int cnt = seg.getChildCount();
-		assert(cnt == 2 || cnt == 1);
-		return cnt == 1;
-	}
-
-	private static boolean isLastSegment(ParseTree seg) {
-		if (seg instanceof DotSegmentContext) {
-			return isLastSegment((DotSegmentContext)seg);
-		}
-		if (seg instanceof BracketsSegmentContext) {
-			return isLastSegment((BracketsSegmentContext)seg);
-		}
-		assert(false);
-		return false;
-	}
-
-	private static boolean isParentSegment(ParseTree seg) {
-		int cnt = seg.getChildCount();
-		assert(cnt > 0);
-		return isLastSegment(seg.getChild(cnt - 1));
+	private static boolean isParentSegment(ParserRuleContext ctx) {
+		ParserRuleContext seg = ctx.getChild(SegmentsContext.class, 0);
+		return seg != null && isLastSegment(seg);
 	}
 
 	private String addVariable(FieldValue val) {
@@ -210,19 +194,14 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 			String.format("values(%s)", filter) : "values()";
 	}
 
-	// Just for completeness. More efficient to bypass visitor entirely for
-	// for this case.
-	private String getRootEndValueFilter() {
-		assert endValueFilter != null;
-		int i = root.lastIndexOf('.');
-		assert i >= 0;
-		String rootPar = root.substring(0, i);
-		String rootField = root.substring(i + 1);
-		return String.format("%s.values($key = '%s' AND (%s))", rootPar,
-			rootField, endValueFilter);
-	}
-
 	private String getAdditionalFilter() {
+		// We must not apply any additional filter if we are inside JSON path
+		// filter expression, additional filters have to be applied only
+		// outside JSON path filters. Note that checking inLastSegment is not
+		// enough since the last segment can be the JSON path filter.
+		if (inFilter()) {
+			return null;
+		}
 		if (inParentSegment) {
 			return parentFilter;
 		}
@@ -230,6 +209,15 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 			return endValueFilter;
 		}
 		return null;
+	}
+
+	private String getRootPathWithFilter(String filter) {
+		int i = root.lastIndexOf('.');
+		assert i >= 0;
+		String rootPar = root.substring(0, i);
+		String rootField = root.substring(i + 1);
+		return String.format("%s.values($key = '%s' AND (%s))", rootPar,
+			rootField, filter);
 	}
 
 	private String makeRegexLike(String path, String pattern) {
@@ -254,10 +242,6 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 		this.parentFilter = parentFilter;
 	}
 
-	public void setIsForSet(boolean isForSet) {
-		putFields = isForSet ? new ArrayList<>() : null;
-	}
-
 	public Map<String, FieldValue> getVariables() {
 		return variables;
 	}
@@ -275,21 +259,17 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 		return sqlPath.substring(0,	sqlPath.length() - lastSegment.length());
 	}
 
-	public List<String> getPutFields() {
-		return putFields != null && !putFields.isEmpty() ? putFields : null;
-	}
-
-	public String getSQLPutPath() {
-		return getPutFields() != null ? getParentSQLPath() : null;
+	// Return null if there are no leaf fields.
+	public List<String> getLeafFields() {
+		return !leafFields.isEmpty() ? leafFields : null;
 	}
 
 	public void run(ParseTree parseTree, String input) {
-		if (putFields != null) {
-			putFields.clear();
-			lastSegment = null;
-		}
+		lastSegment = null;
+		leafFields.clear();
 		assert(inFilterCnt == 0);
 		assert(!inLastSegment);
+		assert(!inParentSegment);
 
 		assert input != null;
 		this.input = input;
@@ -298,9 +278,15 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 
 	@Override
 	public String visitRootPath(JSONPathParser.RootPathContext ctx) {
-		if (endValueFilter != null && ctx.getChildCount() == 1) {
-			return getRootEndValueFilter();
+		// Note that since root path is a common case, we handle it outside in
+		// JSONCommandsBase.translatePath...() methods to avoid invoking the
+		// parser.
+		assert(!isLastSegment(ctx));
+
+		if (parentFilter != null && isParentSegment(ctx)) {
+			return getRootPathWithFilter(parentFilter) + visitChildren(ctx);
 		}
+
 		return root + visitChildren(ctx);
 	}
 	
@@ -325,9 +311,7 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 			assert(!inLastSegment && lastSegment == null);
 			if (isLastSegment(ctx)) {
 				inLastSegment = true;
-				if (putFields != null) {
-					putFields.clear();
-				}
+				leafFields.clear();
 			} else if (parentFilter != null && isParentSegment(ctx)) {
 				inParentSegment = true;
 			}
@@ -351,9 +335,7 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 			assert(!inLastSegment && lastSegment == null);
 			if (isLastSegment(ctx)) {
 				inLastSegment = true;
-				if (putFields != null) {
-					putFields.clear();
-				}
+				leafFields.clear();
 			} else if (parentFilter != null && isParentSegment(ctx)) {
 				inParentSegment = true;
 			}
@@ -380,11 +362,10 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 	public String visitFieldId(JSONPathParser.FieldIdContext ctx) {
 		String res = ctx.getText();
 		String filter = getAdditionalFilter();
-		boolean addPutField = inLastSegment && putFields != null;
-		if (filter != null || addPutField) {
+		if (filter != null || inLastSegment) {
 			String fieldVar = addVariable(new StringValue(res));
-			if (addPutField) {
-				putFields.add(fieldVar);
+			if (inLastSegment) {
+				leafFields.add(fieldVar);
 			}
 			if (filter != null) {
 				return String.format("values($key = %s AND (%s))", fieldVar,
@@ -484,15 +465,18 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 	@Override
 	public String visitFilterSelector(
 		JSONPathParser.FilterSelectorContext ctx) {
+		String extraFilter = getAdditionalFilter();
+
 		inFilterCnt++;
 		String filterRes = visit(ctx.filterExpr());
-		String extraFilter = getAdditionalFilter();
 		if (extraFilter != null) {
 			filterRes = String.format("(%s) AND (%s)", filterRes,
 				extraFilter);
 		}
+		
 		String res = ".values(" + filterRes + ")";
 		inFilterCnt--;
+		
 		return res;
 	}
 	
@@ -632,8 +616,8 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 		String key = isSingleSelector.peek() ?
 			ctx.getText() : addVariable(new StringValue(unquote(
 				ctx.getText())));
-		if (inLastSegment && putFields != null) {
-			putFields.add(key);
+		if (inLastSegment) {
+			leafFields.add(key);
 		}
 		return isSingleSelector.peek() ? key : "$key = " + key;
 	}

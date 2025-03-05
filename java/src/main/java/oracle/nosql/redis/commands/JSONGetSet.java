@@ -1,15 +1,11 @@
 package oracle.nosql.redis.commands;
 
 import static oracle.nosql.redis.util.Utils.byteBufToString;
-import static oracle.nosql.redis.util.Utils.stringToByteBuf;
-
-import java.math.MathContext;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 
-import io.netty.buffer.ByteBuf;
 import io.netty.handler.codec.redis.ArrayRedisMessage;
 import io.netty.handler.codec.redis.FullBulkStringRedisMessage;
 import io.netty.handler.codec.redis.RedisMessage;
@@ -28,99 +24,123 @@ import oracle.nosql.redis.RedisClientContext;
 import oracle.nosql.redis.RedisResponseException;
 import oracle.nosql.redis.util.PreparedStatementCache;
 import oracle.nosql.redis.util.Utils;
+import oracle.nosql.redis.util.Utils.RedisRetryException;
 
 public class JSONGetSet extends JSONCommandsBase {
 
-    private static final String STR_FILTER = String.format(VAL_FILTER_FMT,
-        "String");
-    private static final String BOOL_FILTER = String.format(VAL_FILTER_FMT,
-        "Boolean");
     private static final String SQL_UPDATE_SET_FMT =
         "UPDATE redis $r SET $r.value.pad = (EXISTS %s), %s = $val WHERE " +
-        SQL_JSON_COND + SQL_RETURNING_PAD;
+        SQL_EXISTS_COND + SQL_RETURNING_PAD + SQL_IS_JSON;
     private static final String SQL_UPDATE_PUT_FMT =
-        "UPDATE redis $r PUT %s %s WHERE " + SQL_JSON_COND + SQL_RETURNING +
-        "EXISTS %s AS res";
+        "UPDATE redis $r PUT %s %s WHERE " + SQL_EXISTS_COND + SQL_RETURNING +
+        "EXISTS %s AS res" + SQL_IS_JSON;
     private static final String SQL_UPDATE_PUT_NX_FMT =
         "UPDATE redis $r SET $r.value.pad = (NOT EXISTS %s), " +
-        "PUT %s[NOT EXISTS %s] %s WHERE " + SQL_JSON_COND + SQL_RETURNING +
-        "$r.value.pad AND EXISTS %s AS res";
+        "PUT %s[NOT EXISTS %s] %s WHERE " + SQL_EXISTS_COND + SQL_RETURNING +
+        "$r.value.pad AND EXISTS %s AS res" + SQL_IS_JSON;
     private static final String SQL_GET_FMT = DECL_KEY_ID +
-        "SELECT [%s] AS res FROM redis $r WHERE " + SQL_JSON_COND;
+        "%sSELECT [%s] AS res " + SQL_IS_JSON + " FROM redis $r WHERE " +
+        SQL_EXISTS_COND;
     private static final String SQL_MGET_FMT = DECL_KEY_IDS +
-        "SELECT id, [%s] AS res FROM redis $r WHERE " + KEY_IDS_COND +
-        AND_NOT_EXPIRED + IS_TYPE_JSON;
-    private static final String SQL_NUM_INCR_MULT_FMT = DECL_KEY_ID_VAL +
-        "UPDATE redis $r SET %s = $ %c $val WHERE " + SQL_JSON_COND +
-        SQL_RETURNING + "[seq_transform(%s, CASE WHEN $ IS OF TYPE " +
-        "(Number) THEN $ ELSE NULL END)] AS res";
-    protected static final String SQL_STR_LENS_FMT =
-        "[seq_transform(%s, CASE WHEN $ IS OF TYPE (String) " +
-        "THEN size($) ELSE NULL END)] AS res";
-    private static final String SQL_STR_APPEND_FMT = DECL_KEY_ID_VAL +
-        "UPDATE redis $r SET %s = $ || $val WHERE " + SQL_JSON_COND +
-        SQL_RETURNING + SQL_STR_LENS_FMT;
-    private static final String SQL_SEL_STR_LENS_FMT = DECL_KEY_ID +
-        "SELECT " + SQL_STR_LENS_FMT + " FROM redis $r WHERE " +
-        SQL_JSON_COND;
-    private static final String SQL_BOOL_TOGGLE_FMT = DECL_KEY_ID +
-        "UPDATE redis $r SET %s = NOT $ WHERE " + SQL_JSON_COND +
-        SQL_RETURNING + "[seq_transform(%s, CASE WHEN $ IS OF TYPE " +
-        "(Boolean) THEN (CASE WHEN $ THEN 1 ELSE 0 END) ELSE NULL END)] " +
-        "AS res";
-    private static final String SQL_SEL_TYPES_FMT = DECL_KEY_ID +
-        "SELECT [seq_transform(%s, " +
-        "CASE WHEN $ IS OF TYPE (String) THEN 'string' " +
-        "WHEN $ IS OF TYPE (Long) THEN 'integer' " +
-        "WHEN $ IS OF TYPE (Number) THEN 'number' " +
-        "WHEN $ IS OF TYPE (Boolean) THEN 'boolean' " +
-        "WHEN $ IS OF TYPE (Array(Any)) THEN 'array' " +
-        "WHEN $ IS OF TYPE (Map(Any)) THEN 'object' " +
-        // somehow IS NULL doesn't work here
-        "WHEN $ = NULL THEN 'null' " +
-        "ELSE NULL END)] AS res FROM redis $r WHERE " + SQL_JSON_COND;
-    private static final String SQL_SEL_OBJ_KEYS_FMT = DECL_KEY_ID +
-        "SELECT [seq_transform(%s, CASE WHEN $ IS OF TYPE (Map(Any)) THEN " +
-        "[$.keys()] ELSE NULL END)] AS res FROM redis $r WHERE " +
-        SQL_JSON_COND;
-    private static final String SQL_SEL_OBJ_LENS_FMT = DECL_KEY_ID +
-        "SELECT [seq_transform(%s, CASE WHEN $ IS OF TYPE (Map(Any)) THEN " +
-        "size($) ELSE NULL END)] AS res FROM redis $r WHERE " +
-        SQL_JSON_COND;
+        "%sSELECT id, [%s] AS res FROM redis $r WHERE " + KEY_IDS_COND +
+        AND_NOT_EXPIRED + AND_IS_JSON;
+
+    private static final String[] MAP_FILTER_ARR = new String[] { MAP_FILTER };
+    private static final String SQL_MERGE_FMT = DECL_KEY_ID_VAL +
+        "%sUPDATE redis $r JSON MERGE %s WITH PATCH %s WHERE " +
+        SQL_EXISTS_COND + SQL_RETURNING +  "(EXISTS %s) AS res" +
+        SQL_IS_JSON;
 
     public JSONGetSet(NoSQLHandle nosqlHandle,
         PreparedStatementCache pstmtCache) {
         super(nosqlHandle, pstmtCache);
     }
 
+    // Behavior when path has multiple items:
+    // OK reply returned if update partially succeeded, that is only some of
+    // the items were set. When using NX option, currently update will fail if
+    // any items in the path exists. Redis JSON only allows static paths for
+    // non-existing fields, so we can't compare it here. It is possible that
+    // the better option would be to set only items in the path that don't
+    // exist, however with current implementation it is not possible when
+    // there are multiple leaf fields. We could change implementation to use
+    // separate PUT clause and separate NX filter for each leaf field which
+    // would enable each of these fields to be checked and set separately.
+    // This may be considered. For XX, the behavior is the same as in UPDATE
+    // SET clause, that is only existing fields are set and non-existing
+    // skipped.
     private boolean doJSONSet(RedisKeyInfo keyInfo, String path,
         FieldValue val, SetOpt setOpt) throws RedisResponseException {
-        TranslateSetResult tr = translateSetPath(path);
-        
-        if (setOpt == SetOpt.NX && !tr.isForPut()) {
-            throw new RedisResponseException(
-                "cannot create new fields with this path");
+        TranslateResult tr;
+        if (setOpt == SetOpt.NX) {
+            // Optimization for NX case: there is no reason to go though
+            // an update statement because we are not in danger of overwriting
+            // a key with wrong (non-json) type.
+            // We can't do the same for no setOpt case, because we could
+            // potentially overwrite a non-json key, so we would really need
+            // to do read-modify-write with doGetSet(). Instead we do update
+            // statement in hope that the key exists only perform another
+            // request (doSet) if it doesn't.
+            if (path.equals(ROOT_PATH)) {
+                return doSet(keyInfo, makeJSONValue(val), NO_EXP, SetOpt.NX);
+            }
+
+            // Note that SQL_UPDATE_PUT_NX_FMT uses array filter step
+            // expression in the PUT clause. Because of this, we have to make
+            // sure it is not applied if the context item itself is an array,
+            // otherwise this array would be converted to a sequence and our
+            // parent path will include each element of this array which would
+            // give wrong result. Since parent of new fields can only be a
+            // map, we use MAP_FILTER as parent filter.
+            // Another solution would be to remove array filter step
+            // expression from SQL_UPDATE_PUT_NX_FMT and put it into the parent
+            // filter, this would avoid using 2 parent filters. This would
+            // require some more refactoring of the code since the parent
+            // filter itself the result of the first visitor invocation.
+            tr = translatePathWithFilter(path, null, MAP_FILTER);
+            if (tr.leafFields == null) {
+                throw new RedisResponseException(
+                    "cannot create new fields with this path");
+            }
+        } else {
+            tr = translatePath(path);
         }
 
-        String sql = tr.getSQLDecl() + DECL_KEY_ID_VAL +
-            (!tr.isForPut() || setOpt == SetOpt.XX ?
+        String sql = DECL_KEY_ID_VAL + tr.getSQLDecl() +
+            (tr.leafFields == null || setOpt == SetOpt.XX ?
                 String.format(SQL_UPDATE_SET_FMT, tr.sqlPath, tr.sqlPath) :
                 (setOpt != SetOpt.NX ?
                     String.format(SQL_UPDATE_PUT_FMT, tr.parentSQLPath,
                         tr.getSQLNewFieldsExpr(), tr.sqlPath) :
                     String.format(SQL_UPDATE_PUT_NX_FMT, tr.sqlPath,
-                        tr.parentSQLPath, tr.sqlPath,
-                        tr.getSQLNewFieldsExpr(), tr.sqlPath)));
+                        ((TranslateResultWithFilters)tr)
+                            .parentSQLPathWithFilter(),
+                    tr.sqlPath, tr.getSQLNewFieldsExpr(), tr.sqlPath)));
         
         PreparedStatement pStmt = getPrepStmt(keyInfo, sql, tr);
-        pStmt.setVariable(SQL_VAL, transformValue(val));
+        pStmt.setVariable(SQL_VAL, val);
 
         MapValue row = doSQLUpdate(pStmt);
         if (row == null) {
-            throw new RedisResponseException(
-                "new objects must be created at the root");
+            if (setOpt == SetOpt.XX) {
+                return false;
+            }
+
+            if (!path.equals(ROOT_PATH)) {
+                throw new RedisResponseException(ERR_NEW_VAL_NOT_ROOT);
+            }
+
+            assert setOpt == null; // we handled other cases above
+            if (!doSet(keyInfo, makeJSONValue(val), NO_EXP, null)) {
+                // This is rare case when another client just concurrently
+                // inserted a new key.
+                throw new RedisRetryException();
+            };
+
+            return true;
         }
         
+        chkIsJSON(row);
         return getBoolRes(row);
     }
 
@@ -129,7 +149,7 @@ public class JSONGetSet extends JSONCommandsBase {
         assert !paths.isEmpty();
         TranslateResult tr = paths.size() == 1 ?
             translatePath(paths.get(0)) : translatePaths(paths);
-        String sql = tr.getSQLDecl() + String.format(SQL_GET_FMT, tr.sqlPath);
+        String sql = String.format(SQL_GET_FMT, tr.getSQLDecl(), tr.sqlPath);
 
         PreparedStatement pStmt = getPrepStmt(keyInfo, sql, tr);
         
@@ -138,59 +158,69 @@ public class JSONGetSet extends JSONCommandsBase {
             return null;
         }
 
+        chkIsJSON(row);
         ArrayValue res = getArrRes(doSQLGet(pStmt));
         return paths.size() == 1 ?
             untransformValues(res) : makeMultiResult(paths, res);
     }
 
-    private RedisMessage handleJSONNumIncrMult(RedisClientContext client,
-        RawCommand cmd, char op) throws RedisResponseException {
-        chkExactNumArgs(cmd, 3);
-        
-        String path = Utils.byteBufToString(cmd.args[1]);
-        FieldValue val = byteBufToJson(cmd.args[2]);
+    private boolean doJSONMerge(RedisKeyInfo keyInfo, String path,
+        FieldValue val) throws RedisResponseException {
 
-        if (!val.isNumeric()) {
-            throw new RedisResponseException("bad input number");
+        // If val is not an object, then the merge operation should just
+        // replace the target with val. Particulary, we cannot use merge when
+        // val = null, since if we do merge via parent path (see below), the
+        // this would remove the target field(s) rather than assign null to it
+        // as expected in this case.
+        if (!val.isMap()) {
+            return doJSONSet(keyInfo, path, val, null);
         }
         
-        TranslateResultWithFilters tr = translatePathWithFilter(path,
-            NUM_FILTER);
-        String sql = tr.getSQLDecl() + String.format(SQL_NUM_INCR_MULT_FMT,
-            tr.sqlPathWithFilter(), op, tr.sqlPath);
-        PreparedStatement pStmt = getPrepStmt(makeRedisKeyInfo(cmd.args[0]),
-            sql, tr);
+        // SQL merge patch does not allow us to merge with non-existing field.
+        // This is similar situation to JSON.SET (see leafFields in
+        // JSONPathToSQLVisitor). In this case we merge with the parent path
+        // intead. E.g. to merge a.b.new_field with patch p, we merge a.b with
+        // patch { new_field: p }. Note that this is only needed when
+        // leafFields exist, since all other paths can only point to existing
+        // values. However, we want to avoid cases when parent (e.g. a.b) is
+        // not an object, since in this case merge on a.b.new_field should
+        // fail, but would replace a.b if performed via parent path as above.
+
+        String[] parentFilters = path.equals(ROOT_PATH) ?
+            null : MAP_FILTER_ARR;
+        TranslateResultWithFilters tr = translatePathWithFilters(path, null,
+            parentFilters);
+        String sql = String.format(SQL_MERGE_FMT, tr.getSQLDecl(),
+            tr.leafFields != null ? tr.parentSQLPathWithFilter() : tr.sqlPath,
+            tr.leafFields != null ? tr.getSQLNewFieldsExpr() : SQL_VAL,
+            tr.sqlPath);
+
+        PreparedStatement pStmt = getPrepStmt(keyInfo, sql, tr);
         pStmt.setVariable(SQL_VAL, val);
-        
-        QueryRequest qReq = new QueryRequest();
-        // Avoiding one-liner because of the resource leak warning.
-        qReq.setPreparedStatement(pStmt);
-        qReq.setMathContext(MathContext.DECIMAL64);
 
-        MapValue row = doSQLUpdate(qReq, true);
+        MapValue row = doSQLUpdate(pStmt);
         if (row == null) {
-            throw new RedisResponseException(ERR_KEY_NOT_EXISTS);
-        }
+            if (!path.equals(ROOT_PATH)) {
+                throw new RedisResponseException(ERR_NEW_VAL_NOT_ROOT);
+            }
 
-        ArrayValue arrVal = getArrRes(row);
-        // Per spec, we return bulk string representing JSON array (rather
-        // than ArrayRedisMessage).
-        return new FullBulkStringRedisMessage(
-            Utils.stringToByteBuf(arrVal.toJson(null)));
+            // Merge to non-existing key is just assigning the patch to it.
+            if (!doSet(keyInfo, makeJSONValue(val), NO_EXP, SetOpt.NX)) {
+                throw new RedisRetryException();
+            };
+
+            return true;
+        }
+        
+        chkIsJSON(row);
+        return getBoolRes(row);
     }
 
     public void registerCommands(HashMap<String, CommandHandler> cmdMap) {
         cmdMap.put(CMD_JSON_SET, this::handleJSONSet);
         cmdMap.put(CMD_JSON_GET, this::handleJSONGet);
-        cmdMap.put(CMD_JSON_NUMINCRBY, this::handleJSONNumIncrBy);
-        cmdMap.put(CMD_JSON_NUMMULTBY, this::handleJSONNumMultBy);
-        cmdMap.put(CMD_JSON_STRAPPEND, this::handleJSONStrAppend);
-        cmdMap.put(CMD_JSON_STRLEN, this::handleJSONStrLen);
-        cmdMap.put(CMD_JSON_TOGGLE, this::handleJSONToggle);
-        cmdMap.put(CMD_JSON_TYPE, this::handleJSONType);
-        cmdMap.put(CMD_JSON_OBJKEYS, this::handleJSONObjKeys);
-        cmdMap.put(CMD_JSON_OBJLEN, this::handleJSONObjLen);
         cmdMap.put(CMD_JSON_MGET, this::handleJSONMGet);
+        cmdMap.put(CMD_JSON_MERGE, this::handleJSONMerge);
     }
 
     public RedisMessage handleJSONSet(RedisClientContext client,
@@ -198,52 +228,26 @@ public class JSONGetSet extends JSONCommandsBase {
         chkNumArgs(cmd, 3, 4);
         
         String path = Utils.byteBufToString(cmd.args[1]);
-        ByteBuf val = cmd.args[2];
-        SetOpt setOpt = null;
+        FieldValue val = transformValue(byteBufToJson(cmd.args[2]));
+        SetOpt setOptArg = null;
 
         if (cmd.args.length == 4) {
             String arg = Utils.byteBufToString(cmd.args[3]);
             if (arg.equalsIgnoreCase("NX")) {
-                chkNotSet(setOpt);
-                setOpt = SetOpt.NX;
+                chkNotSet(setOptArg);
+                setOptArg = SetOpt.NX;
             } else if (arg.equalsIgnoreCase("XX")) {
-                chkNotSet(setOpt);
-                setOpt = SetOpt.XX;
+                chkNotSet(setOptArg);
+                setOptArg = SetOpt.XX;
             } else {
                 throw RedisResponseException.syntaxError();
             }
         }
 
-        // With root path, we may either set new value or overwrite existing
-        // value, so we use doGetSet() approach.
-        if (path.equals(ROOT_PATH)) {
-            final SetOpt setOpt1 = setOpt; // copy to use in doGetSet()
-            return doGetSet(
-                cmd.args[0],
-                (oldVal) -> setOpt1 == null ||
-                    (setOpt1 == SetOpt.NX && !oldVal.exists()) ||
-                    (setOpt1 == SetOpt.XX && oldVal.exists()),
-                (oldVal) -> {
-                    if (oldVal.val != null &&
-                        !getValueType(oldVal.val).equals(TYPE_JSON)) {
-                        throw RedisResponseException.wrongType();
-                    }
-                    return new RedisValueInfo(makeJSONValue(val), null,
-                        oldVal.exp);
-                },
-                // newVal is NONE if SET is not successful
-                (oldVal, newVal) -> {
-                    assert(setOpt1 != null || newVal.exists());
-                    return newVal.exists() ?
-                        okReply : FullBulkStringRedisMessage.NULL_INSTANCE;
-                }, true);
-        }
-
-        // With any other path, we can only update existing value. To do this
-        // in 1 request (vs doing GET and PUT), we use JSONPathToSQL
-        // translator to construct an update statement.
-        return doJSONSet(makeRedisKeyInfo(cmd.args[0]), path,
-            byteBufToJson(val), setOpt) ?
+        final SetOpt setOpt = setOptArg;
+        return Utils.doWithRetries(() ->
+            doJSONSet(makeRedisKeyInfo(cmd.args[0]), path, val, setOpt),
+            ATOMIC_SET_TRIES) ?
             okReply : FullBulkStringRedisMessage.NULL_INSTANCE;
     }
 
@@ -289,162 +293,6 @@ public class JSONGetSet extends JSONCommandsBase {
             Utils.stringToByteBuf(res.toJson(jsonOpts)));
     }
 
-    public RedisMessage handleJSONNumIncrBy(RedisClientContext client,
-        RawCommand cmd) throws RedisResponseException {
-        return handleJSONNumIncrMult(client, cmd, '+');
-    }
-
-    public RedisMessage handleJSONNumMultBy(RedisClientContext client,
-        RawCommand cmd) throws RedisResponseException {
-        return handleJSONNumIncrMult(client, cmd, '*');
-    }
-
-    public RedisMessage handleJSONStrAppend(RedisClientContext client,
-        RawCommand cmd) throws RedisResponseException {
-        chkExactNumArgs(cmd, 3);
-        
-        String path = Utils.byteBufToString(cmd.args[1]);
-        FieldValue val = byteBufToJson(cmd.args[2]);
-        
-        if (!val.isString()) {
-            throw new RedisResponseException("bad input string");
-        }
-
-        TranslateResultWithFilters tr = translatePathWithFilter(path,
-            STR_FILTER);
-        String sql = tr.getSQLDecl() + String.format(SQL_STR_APPEND_FMT,
-            tr.sqlPathWithFilter(), "||", tr.sqlPath);
-        PreparedStatement pStmt = getPrepStmt(makeRedisKeyInfo(cmd.args[0]),
-            sql, tr);
-        pStmt.setVariable(SQL_VAL, val);
-        
-        return getIntArrayReply(doSQLUpdate(pStmt));
-    }
-
-    public RedisMessage handleJSONStrLen(RedisClientContext client,
-        RawCommand cmd) throws RedisResponseException {
-        chkNumArgs(cmd, 1, 2);
-        String path = cmd.args.length > 1 ?
-            Utils.byteBufToString(cmd.args[1]) : ROOT_PATH;
-        
-        TranslateResult tr = translatePath(path);
-        PreparedStatement pStmt = getPrepStmt(makeRedisKeyInfo(cmd.args[0]),
-            tr.getSQLDecl() + String.format(SQL_SEL_STR_LENS_FMT, tr.sqlPath),
-            tr);
-
-        return getIntArrayReply(doSQLGet(pStmt));
-    }
-
-    public RedisMessage handleJSONToggle(RedisClientContext client,
-        RawCommand cmd) throws RedisResponseException {
-        chkNumArgs(cmd, 1, 2);
-        String path = cmd.args.length > 1 ?
-            Utils.byteBufToString(cmd.args[1]) : ROOT_PATH;
-
-        TranslateResultWithFilters tr = translatePathWithFilter(path,
-            BOOL_FILTER);
-        String sql = tr.getSQLDecl() + String.format(SQL_BOOL_TOGGLE_FMT,
-            tr.sqlPathWithFilter(), tr.sqlPath);
-        PreparedStatement pStmt = getPrepStmt(makeRedisKeyInfo(cmd.args[0]),
-            sql, tr);        
-        return getIntArrayReply(doSQLUpdate(pStmt));
-    }
-
-    public RedisMessage handleJSONType(RedisClientContext client,
-        RawCommand cmd) throws RedisResponseException {
-        chkNumArgs(cmd, 1, 2);
-        String path = cmd.args.length > 1 ?
-            Utils.byteBufToString(cmd.args[1]) : ROOT_PATH;
-        
-        TranslateResult tr = translatePath(path);
-        PreparedStatement pStmt = getPrepStmt(makeRedisKeyInfo(cmd.args[0]),
-            tr.getSQLDecl() + String.format(SQL_SEL_TYPES_FMT, tr.sqlPath),
-            tr);
-
-        MapValue row = doSQLGet(pStmt);
-        if (row == null) {
-            throw new RedisResponseException(ERR_KEY_NOT_EXISTS);
-        }
-    
-        ArrayValue arrVal = getArrRes(row);
-
-        List<RedisMessage> res = new ArrayList<>();
-        for(FieldValue val : arrVal) {
-            if (val.isAnyNull()) {
-                throw RedisResponseException.corrupt(
-                    "invalid data type in JSON");
-            }
-            if (!val.isString()) {
-                throw RedisResponseException.nosql(
-                    "invalid data type in array result");
-            }
-            res.add(new FullBulkStringRedisMessage(
-                stringToByteBuf(val.getString())));
-        }
-
-        return new ArrayRedisMessage(res);
-    }
-
-    public RedisMessage handleJSONObjKeys(RedisClientContext client,
-        RawCommand cmd) throws RedisResponseException {
-        chkNumArgs(cmd, 1, 2);
-        String path = cmd.args.length > 1 ?
-            Utils.byteBufToString(cmd.args[1]) : ROOT_PATH;
-        
-        TranslateResult tr = translatePath(path);
-        PreparedStatement pStmt = getPrepStmt(makeRedisKeyInfo(cmd.args[0]),
-            tr.getSQLDecl() + String.format(SQL_SEL_OBJ_KEYS_FMT, tr.sqlPath),
-            tr);
-
-        MapValue row = doSQLGet(pStmt);
-        if (row == null) {
-            throw new RedisResponseException(ERR_KEY_NOT_EXISTS);
-        }
-
-        ArrayValue arrVal = getArrRes(row);
-
-        List<RedisMessage> res = new ArrayList<>();
-        for(FieldValue val : arrVal) {
-            if (val.isAnyNull()) {
-                res.add(FullBulkStringRedisMessage.NULL_INSTANCE);
-                continue;
-            }
-
-            if (!val.isArray()) {
-                throw RedisResponseException.nosql(
-                    "result is not array or null");
-            }
-
-            List<RedisMessage> valRes = new ArrayList<>();
-            for(FieldValue key : val.asArray()) {
-                if (!key.isString()) {
-                    throw RedisResponseException.nosql(
-                        "object key is not a string");
-                }
-                valRes.add(new FullBulkStringRedisMessage(
-                    stringToByteBuf(key.getString())));
-            }
-
-            res.add(new ArrayRedisMessage(valRes));
-        }
-
-        return new ArrayRedisMessage(res);
-    }
-
-    public RedisMessage handleJSONObjLen(RedisClientContext client,
-        RawCommand cmd) throws RedisResponseException {
-        chkNumArgs(cmd, 1, 2);
-        String path = cmd.args.length > 1 ?
-            Utils.byteBufToString(cmd.args[1]) : ROOT_PATH;
-        
-        TranslateResult tr = translatePath(path);
-        PreparedStatement pStmt = getPrepStmt(makeRedisKeyInfo(cmd.args[0]),
-            tr.getSQLDecl() + String.format(SQL_SEL_OBJ_LENS_FMT, tr.sqlPath),
-            tr);
-
-        return getIntArrayReply(doSQLGet(pStmt));
-    }
-
     public RedisMessage handleJSONMGet(RedisClientContext client,
         RawCommand cmd) throws RedisResponseException {
         chkMinNumArgs(cmd, 2);
@@ -454,7 +302,7 @@ public class JSONGetSet extends JSONCommandsBase {
         String path = byteBufToString(cmd.args[cmd.args.length - 1]);
 
         TranslateResult tr = translatePath(path);
-        String sql = tr.getSQLDecl() + String.format(SQL_MGET_FMT,
+        String sql = String.format(SQL_MGET_FMT, tr.getSQLDecl(),
             tr.sqlPath);
 
         PreparedStatement pStmt = pstmtCache.getByVal(sql);
@@ -477,7 +325,7 @@ public class JSONGetSet extends JSONCommandsBase {
                             "Missing or invalid key id");
                     }
                     ArrayValue arrRes = getArrRes(row);
-                    resMap.put(fldId.getString(), arrRes);
+                    resMap.put(fldId.getString(), untransformValues(arrRes));
                 }
             }
         } catch(Exception ex) {
@@ -494,6 +342,18 @@ public class JSONGetSet extends JSONCommandsBase {
         }
 
         return new ArrayRedisMessage(res);
+    }
+
+    public RedisMessage handleJSONMerge(RedisClientContext client,
+        RawCommand cmd) throws RedisResponseException {
+        chkExactNumArgs(cmd, 3);
+        String path = Utils.byteBufToString(cmd.args[1]);
+        FieldValue val = transformValue(byteBufToJson(cmd.args[2]));
+
+        return Utils.doWithRetries(() ->
+            doJSONMerge(makeRedisKeyInfo(cmd.args[0]), path, val),
+                ATOMIC_SET_TRIES) ?
+                okReply : FullBulkStringRedisMessage.NULL_INSTANCE;
     }
 
 }

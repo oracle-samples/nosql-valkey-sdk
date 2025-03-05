@@ -8,21 +8,24 @@ import oracle.nosql.redis.util.PreparedStatementCache;
 public class JSONCommands extends JSONCommandsBase {
 
     private final JSONGetSet jsonGetSet;
+    private final JSONValueOps jsonValueOps;
     private final JSONArrays jsonArrays;
-    private final JSONDelMerge jsonDelMerge;
+    private final JSONDel jsonDel;
 
     public JSONCommands(NoSQLHandle nosqlHandle,
         PreparedStatementCache pstmtCache) {
         super(nosqlHandle, pstmtCache);
         jsonGetSet = new JSONGetSet(nosqlHandle, pstmtCache);
+        jsonValueOps = new JSONValueOps(nosqlHandle, pstmtCache);
         jsonArrays = new JSONArrays(nosqlHandle, pstmtCache);
-        jsonDelMerge = new JSONDelMerge(nosqlHandle, pstmtCache);
+        jsonDel = new JSONDel(nosqlHandle, pstmtCache);
     }
 
     public void registerCommands(HashMap<String, CommandHandler> cmdMap) {
         jsonGetSet.registerCommands(cmdMap);
+        jsonValueOps.registerCommands(cmdMap);
         jsonArrays.registerCommands(cmdMap);
-        jsonDelMerge.registerCommands(cmdMap);
+        jsonDel.registerCommands(cmdMap);
     }
 
 }
