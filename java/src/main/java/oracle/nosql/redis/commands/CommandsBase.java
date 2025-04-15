@@ -7,6 +7,7 @@
  
 package oracle.nosql.redis.commands;
 
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.function.Predicate;
@@ -29,7 +30,9 @@ import oracle.nosql.driver.ops.PutRequest;
 import oracle.nosql.driver.ops.PutResult;
 import oracle.nosql.driver.ops.QueryIterableResult;
 import oracle.nosql.driver.ops.QueryRequest;
+import oracle.nosql.driver.values.ArrayValue;
 import oracle.nosql.driver.values.FieldValue;
+import oracle.nosql.driver.values.IntegerValue;
 import oracle.nosql.driver.values.LongValue;
 import oracle.nosql.driver.values.MapValue;
 import oracle.nosql.driver.values.StringValue;
@@ -41,6 +44,7 @@ import oracle.nosql.redis.RedisResponseException.ErrorPrefix;
 import oracle.nosql.redis.util.PreparedStatementCache;
 import oracle.nosql.redis.util.Utils;
 import oracle.nosql.redis.util.Utils.ThrowingBiFunction;
+import oracle.nosql.redis.util.Utils.ThrowingConsumer;
 import oracle.nosql.redis.util.Utils.ThrowingFunction;
 
 public abstract class CommandsBase {
@@ -67,6 +71,7 @@ public abstract class CommandsBase {
     static final char BIN_VAL_PFX = BIN_KEY_PFX;
     static final char HASH_PFX = 'H';
 
+    static final String FLD_SLOT = "slot";
     static final String FLD_ID = "id";
     static final String FLD_KEY = "key";
     static final String FLD_VALUE = "value";
@@ -79,12 +84,30 @@ public abstract class CommandsBase {
     static final String VALUE_TYPE = "type";
     static final String VALUE_DATA = FLD_DATA;
 
+    static final String SQL_DECLARE = "DECLARE ";
+    static final String SQL_WHERE = "WHERE ";
+    static final String SQL_RETURNING = " RETURNING ";
+    static final String SQL_SLOT = "$slot";
+    static final String SQL_KEY_ID = "$id";
+    static final String SQL_KEY_IDS = "$ids";
+    static final String DECL_KEY_ID =
+        SQL_DECLARE + "$slot INTEGER; $id STRING; ";
+    static final String DECL_KEY_IDS =
+        SQL_DECLARE + "$slot INTEGER; $ids ARRAY(STRING); ";
+    static final String KEY_ID_COND = "$r.slot = $slot AND $r.id = $id ";
+    static final String WHERE_KEY_ID_COND = SQL_WHERE + KEY_ID_COND;
+    static final String KEY_IDS_COND =
+        "$r.slot = $slot AND $r.id IN $ids[]";
+    static final String WHERE_KEY_IDS_COND = SQL_WHERE + KEY_IDS_COND;
+
     static final String NOT_EXPIRED =
         "(NOT EXISTS $r.key.exp OR $r.key.exp > current_time_millis()) ";
     static final String AND_NOT_EXPIRED = "AND " + NOT_EXPIRED;
 
     static final String ERR_NO_SINGLE_RES =
         "Expected single result, got multiple";
+    static final String ERR_WM_FAIL =
+        "Unsuccessful result from writeMultiple";
 
     public static final String TYPE_STRING = "string";
     public static final String TYPE_LIST = "list";
@@ -100,6 +123,9 @@ public abstract class CommandsBase {
     //static final int ATOMIC_SET_TRIES = 20;
     static final int ATOMIC_SET_TRIES = 10000000;
 
+    // WriteMultipleRequest can do max of 50 ops.
+    static final int MAX_WM_CNT = 50;
+
     static final SimpleStringRedisMessage okReply =
         new SimpleStringRedisMessage("OK");
     static final IntegerRedisMessage zeroReply = new IntegerRedisMessage(0);
@@ -112,6 +138,7 @@ public abstract class CommandsBase {
         final String id;
         final String data;
         long exp;
+        final int slot;
         final boolean isBin;
 
         // One potential issue: if expiration is given as TTL (not expiry
@@ -121,15 +148,13 @@ public abstract class CommandsBase {
         // (considering HTTP requests may take on the order of 100ms for a
         // slower network)
 
-        RedisKeyInfo(String id, String data, boolean isBin, long exp) {
+        RedisKeyInfo(int slot, String id, String data, boolean isBin,
+            long exp) {
+            this.slot = slot;
             this.id = id;
             this.data = data;
             this.isBin = isBin;
             this.exp = exp;
-        }
-
-        RedisKeyInfo(String id, String data, boolean isBin) {
-            this(id, data, isBin, NO_EXP);
         }
     }
 
@@ -150,22 +175,25 @@ public abstract class CommandsBase {
             this.exp = exp;
         }
 
+        static boolean isExpired(long expTime, long currTime) {
+            return expTime != NO_EXP && currTime > expTime;
+        }
+
         boolean exists() {
             return val != null;
         }
 
         boolean isValid(long currTime) {
-            return val != null && (exp == NO_EXP || currTime <= exp);
+            return val != null && !isExpired(exp, currTime);
         }
 
         boolean isValid() {
-            return val != null && (exp == NO_EXP ||
-                System.currentTimeMillis() <= exp);
+            return val != null && !isExpired(exp, System.currentTimeMillis());
         }
 
         // the key exists but has expired
         boolean isExpired(long currTime) {
-            return val != null && exp != NO_EXP && currTime > exp;
+            return isExpired(exp, currTime);
         }
 
         boolean isExpired() {
@@ -191,7 +219,8 @@ public abstract class CommandsBase {
             int limit) throws RedisResponseException {
             PreparedStatement pStmt = pstmtCache.getByRef(getSQLScan());
             if (keyInfo != null) {
-                pStmt.setVariable("$var1", new StringValue(keyInfo.id));
+                pStmt.setVariable(SQL_SLOT, new IntegerValue(keyInfo.slot));
+                pStmt.setVariable(SQL_KEY_ID, new StringValue(keyInfo.id));
                 pStmt.setVariable("$var2", new LongValue(cursor));
             } else {
                 pStmt.setVariable("$var1", new LongValue(cursor));
@@ -223,6 +252,26 @@ public abstract class CommandsBase {
         PreparedStatementCache pstmtCache) {
         this.nosqlHandle = nosqlHandle;
         this.pstmtCache = pstmtCache;
+    }
+
+    // The hash slot is the least significant 14 bits of CRC16 of the key. But
+    // if we locate "{...}", and there are bytes between '{' and '}', we only
+    // hash those bytes. The data between '{' and '}' is called a hash tag.
+    // Note that, like Redis Cluster, we look for hash tag regardless whether
+    // they key is text or binary.
+    // Based on keyHashSlot in
+    // https://github.com/redis/redis/blob/unstable/src/cluster.h
+    private static int getKeyHashSlot(ByteBuf key) {
+        int len = key.readableBytes();
+        int i = key.indexOf(0, len, (byte)'{');
+        if (i != -1) {
+            i++;
+            int j = key.indexOf(i, len, (byte)'}');
+            if (j != -1 && j != i) {
+                key = key.slice(i, j - i);
+            }
+        }
+        return Utils.crc16(key) & 0x3FFF;
     }
 
     static void chkExactNumArgs(RawCommand cmd, int numArgs)
@@ -286,19 +335,44 @@ public abstract class CommandsBase {
             (isBin ? BIN_KEY_PFX : STR_KEY_PFX) + data :
             HASH_PFX + Utils.createDigest(buf);
         
-        return new RedisKeyInfo(id, data, isBin, exp);
+        return new RedisKeyInfo(getKeyHashSlot(buf), id, data, isBin, exp);
     }
 
     static RedisKeyInfo makeRedisKeyInfo(ByteBuf buf) {
         return makeRedisKeyInfo(buf, NO_EXP);
     }
 
-    static String makeKeyId(ByteBuf buf) {
-        return makeRedisKeyInfo(buf).id;
+    static RedisKeyInfo[] makeRedisMultiKeyInfo(ByteBuf[] keys, int off,
+        int cnt, int step) throws RedisResponseException {
+        RedisKeyInfo[] res = new RedisKeyInfo[cnt];
+        int slot = -1;
+        
+        for(int i = 0; i < cnt; i++) {
+            RedisKeyInfo keyInfo = makeRedisKeyInfo(keys[off + (i * step)]);
+            if (slot == -1) {
+                slot = keyInfo.slot;
+            } else if (keyInfo.slot != slot) {
+                throw RedisResponseException.crossSlot();
+            }
+            res[i] = keyInfo;
+        }
+
+        return res;
+    }
+
+    static RedisKeyInfo[] makeRedisMultiKeyInfo(ByteBuf[] keys, int off,
+        int cnt) throws RedisResponseException {
+        return makeRedisMultiKeyInfo(keys, off, cnt, 1);
+    }
+
+    static ArrayValue makeKeyIdsValue(RedisKeyInfo[] keyInfos) {
+        return new ArrayValue().addAll(
+            Arrays.stream(keyInfos).map(val -> new StringValue(val.id)));
     }
 
     static MapValue makePrimaryKey(RedisKeyInfo keyInfo) {
-        return new MapValue().put(FLD_ID, keyInfo.id);
+        return new MapValue().put(FLD_SLOT, keyInfo.slot)
+            .put(FLD_ID, keyInfo.id);
     }
 
     static MapValue makePrimaryKey(ByteBuf buf) {
@@ -382,6 +456,10 @@ public abstract class CommandsBase {
         throws RedisResponseException {
         return oracle.nosql.driver.Version.createVersion(
             rowToVerVal(row).getBinary());
+    }
+
+    static String getId(MapValue val) throws RedisResponseException {
+        return getStringField(val, FLD_ID);
     }
 
     static String getValueType(MapValue val) throws RedisResponseException {
@@ -483,6 +561,10 @@ public abstract class CommandsBase {
             ATOMIC_SET_TRIES + " tries");
     }
 
+    boolean isCollectionType() {
+        return false;
+    }
+
     RedisValueInfo doGet(RedisKeyInfo keyInfo) throws RedisResponseException {
         try {
             GetResult getRes = nosqlHandle.get(new GetRequest()
@@ -510,7 +592,8 @@ public abstract class CommandsBase {
 
     boolean doSet(RedisKeyInfo keyInfo, MapValue val, long exp, SetOpt setOpt)
         throws RedisResponseException {
-        MapValue row = new MapValue().put(FLD_ID, keyInfo.id)
+        MapValue row = new MapValue().put(FLD_SLOT, keyInfo.slot)
+            .put(FLD_ID, keyInfo.id)
             .put(FLD_KEY, makeRedisKey(keyInfo, exp))
             .put(FLD_VALUE, val);
         PutRequest putReq = new PutRequest()
@@ -589,7 +672,8 @@ public abstract class CommandsBase {
             long exp = (!isValid && newVal.exp == KEEP_TTL) ?
                 NO_EXP : newVal.exp;
 
-            MapValue row = new MapValue().put(FLD_ID, keyInfo.id)
+            MapValue row = new MapValue().put(FLD_SLOT, keyInfo.slot)
+                .put(FLD_ID, keyInfo.id)
                 .put(FLD_KEY, makeRedisKey(keyInfo, exp))
                 .put(FLD_VALUE, newVal.val);
             PutRequest putReq = new PutRequest()
@@ -669,54 +753,45 @@ public abstract class CommandsBase {
         }
     }
 
-    // Atomic get-delete sequence, similar to doGetSet.  Note that even for
-    // DEL command we do have to get old value to check its expiration, in
-    // order to compute correct result.
-    // beforeDelete - callback before deletion, will only be called if the key
-    // exists. Throw if any error detected, in which case the deletion will not
-    // proceed. Returns intermediate result of type I.
-    // getResult - callback after deletion, can use existing value and
-    // intermediate result from beforeDelete, returns final result of type R.
-    <R, I> R doGetDel(RedisKeyInfo keyInfo,
-        ThrowingFunction<RedisValueInfo, I, RedisResponseException>
-            beforeDelete,
-        ThrowingBiFunction<RedisValueInfo, I, R, RedisResponseException>
-            getResult) throws RedisResponseException {
-        DeleteRequest delReq = new DeleteRequest()
-            .setTableName(NoSQLRedisServer.MAIN_TABLE_NAME)
-            .setKey(makePrimaryKey(keyInfo));
-
-        for(int i = 0; i < ATOMIC_SET_TRIES; i++) {
-            RedisValueInfo oldVal = doGet(keyInfo);
-            if (!oldVal.isValid()) {
-                return getResult.apply(RedisValueInfo.NONE, null);
-            }
-            
-            I iRes = beforeDelete.apply(oldVal);
-
-            delReq.setMatchVersion(oldVal.ver);
-
-            try {
-                DeleteResult delRes = nosqlHandle.delete(delReq);
-                if (delRes.getSuccess()) {
-                    return getResult.apply(oldVal, iRes);
-                }
-            } catch(NoSQLException ex) {
-                throw RedisResponseException.nosql(ex);
-            }
+    protected RedisResponseException processNoSQLException(Exception ex) {
+        if (ex instanceof RedisResponseException) {
+            return (RedisResponseException)ex;
         }
-
-        throw new RedisResponseException(ErrorPrefix.NOSQL,
-            "Failed to perform atomic delete after "
-                + ATOMIC_SET_TRIES + " tries");
+        return RedisResponseException.nosql(ex);
     }
 
-    <R, I> R doGetDel(ByteBuf keyBuf,
-        ThrowingFunction<RedisValueInfo, I, RedisResponseException>
-            beforeDelete,
-        ThrowingBiFunction<RedisValueInfo, I, R, RedisResponseException>
-            getResult) throws RedisResponseException {
-        return doGetDel(makeRedisKeyInfo(keyBuf), beforeDelete, getResult);
+    // applyRow() will return true if we are done and should not process
+    // remaining rows, false otherwise.
+    // Return value - true if applyRow() returned true, false otherwise.
+    protected boolean processQuery(PreparedStatement pStmt,
+        ThrowingFunction<MapValue, Boolean, RedisResponseException> applyRow)
+        throws RedisResponseException {
+
+        // Nested "try" to avoid resource leak warning on qReq because of
+        // set... methods below.
+        try(QueryRequest qReq = new QueryRequest()) {
+            qReq.setPreparedStatement(pStmt);
+            try(QueryIterableResult qir = nosqlHandle.queryIterable(qReq)) {
+                for(MapValue row : qir) {
+                    if (applyRow.apply(row)) {
+                        return true;
+                    }
+                }
+            }
+        } catch(Exception ex) {
+            throw processNoSQLException(ex);
+        }
+
+        return false;
+    }
+
+    protected void processQuery(PreparedStatement pStmt,
+        ThrowingConsumer<MapValue, RedisResponseException> acceptRow)
+        throws RedisResponseException {
+        processQuery(pStmt, (row) -> {
+            acceptRow.accept(row);
+            return false;
+        });
     }
 
     // Delete elements of the collection. Overriden for collection commands.

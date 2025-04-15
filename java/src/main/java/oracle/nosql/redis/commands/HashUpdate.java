@@ -61,10 +61,11 @@ public class HashUpdate extends HashCommandsBase {
 
         for(Map.Entry<String, FieldValue> ent : smallVal) {
             // The values in the map already contain key and value, we only
-            // need to add id, keyId and cid.
+            // need to add slot, id, keyId and cid.
             upInfo.addElemReq(new PutRequest()
                 .setTableName(HASH_TABLE_NAME)
                 .setValue(ent.getValue().asMap()
+                    .put(FLD_SLOT, keyInfo.slot)
                     .put(FLD_ID, keyInfo.id)
                     .put(FLD_KEY_ID, ent.getKey())
                     .put(FLD_CID, header.cid)));
@@ -130,10 +131,11 @@ public class HashUpdate extends HashCommandsBase {
             assert val != null;
 
             // The values in the map already contain key and value, we
-            // only need to add id, keyId and cid.
+            // only need to add slot, id, keyId and cid.
             upInfo.addElemReq(new PutRequest()
                 .setTableName(HASH_TABLE_NAME)
-                .setValue(val.put(FLD_ID, keyInfo.id).put(FLD_KEY_ID, keyId)
+                .setValue(val.put(FLD_SLOT, keyInfo.slot)
+                    .put(FLD_ID, keyInfo.id).put(FLD_KEY_ID, keyId)
                     .put(FLD_CID, header.cid)));
         }
 
@@ -218,7 +220,8 @@ public class HashUpdate extends HashCommandsBase {
         for(int i = 0; i < existingCnt; i++) {
             upInfo.addElemReq(new DeleteRequest()
                 .setTableName(HASH_TABLE_NAME)
-                .setKey(new MapValue().put(FLD_ID, keyInfo.id)
+                .setKey(new MapValue().put(FLD_SLOT, keyInfo.slot)
+                .put(FLD_ID, keyInfo.id)
                 .put(FLD_KEY_ID, hdi.existingIds.get(i))));
         }
 
@@ -313,7 +316,8 @@ public class HashUpdate extends HashCommandsBase {
         // only need to add id, keyId and cid.
         upInfo.addElemReq(new PutRequest()
             .setTableName(HASH_TABLE_NAME)
-            .setValue(mapVal.put(FLD_ID, keyInfo.id).put(FLD_KEY_ID, hki.id)
+            .setValue(mapVal.put(FLD_SLOT, keyInfo.slot)
+                .put(FLD_ID, keyInfo.id).put(FLD_KEY_ID, hki.id)
                 .put(FLD_CID, header.cid)));
     }
 

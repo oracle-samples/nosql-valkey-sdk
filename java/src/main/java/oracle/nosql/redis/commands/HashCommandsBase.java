@@ -39,13 +39,11 @@ public class HashCommandsBase extends CollectionCommandsBase {
     protected static String HKEYID_IN_ARRAY_VAR2 = HKEYID_COND + "IN $var2[]";
     protected static String HKEYID_EQ_VAL_VAR2 = HKEYID_COND + "= $var2";
 
-    protected static final String FROM_LOJ =
-        "FROM redis $r LEFT OUTER JOIN redis.hashes $h ON $r.id = $h.id " +
-        "AND $r.value.cid = $h.cid";
+    protected static final String FROM_LOJ = makeFromLOJ("redis.hashes", "$h");
 
-    protected static final String SQL_ENTRIES_FMT =
-        "DECLARE $var1 STRING;%s SELECT row_version($r) AS ver, $r.key, " +
-        "$r.value%s " + FROM_LOJ + "%s WHERE $r.id = $var1 ";
+    protected static final String SQL_ENTRIES_FMT = DECL_KEY_ID +
+        "%s SELECT row_version($r) AS ver, $r.key, $r.value%s " + FROM_LOJ +
+        WHERE_KEY_ID_COND;
     protected static final String SQL_ENTRY_IDS = String.format(
         SQL_ENTRIES_FMT, VAR2_STRING_ARRAY, SEL_HKEYID, HKEYID_IN_ARRAY_VAR2);
     protected static final String SQL_ENTRY_ID = String.format(

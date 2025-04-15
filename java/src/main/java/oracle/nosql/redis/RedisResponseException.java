@@ -71,6 +71,11 @@ public class RedisResponseException extends Exception {
             "Unknown command: " + cmd.name);
     }
 
+    public static RedisResponseException crossSlot() {
+        return new RedisResponseException(ErrorPrefix.ERR,
+            "CROSSSLOT Keys in request don't hash to the same slot");
+    }
+
     // In some cases it is not possible to throw checked
     // RedisResponseException, e.g. when implementing an iterator, in which
     // case we use this workaround. RedisServerHandler will check for this.

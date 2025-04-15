@@ -19,11 +19,16 @@ import io.netty.handler.codec.redis.ArrayRedisMessage;
 import io.netty.handler.codec.redis.IntegerRedisMessage;
 import io.netty.handler.codec.redis.RedisMessage;
 import io.netty.handler.codec.redis.SimpleStringRedisMessage;
+import oracle.nosql.driver.NoSQLException;
 import oracle.nosql.driver.NoSQLHandle;
 import oracle.nosql.driver.TimeToLive;
+import oracle.nosql.driver.ops.DeleteRequest;
+import oracle.nosql.driver.ops.WriteMultipleRequest;
+import oracle.nosql.driver.ops.WriteMultipleResult;
 import oracle.nosql.driver.values.MapValue;
 import oracle.nosql.redis.CommandHandlers;
 import oracle.nosql.redis.CommandHandlers.CommandHandler;
+import oracle.nosql.redis.NoSQLRedisServer;
 import oracle.nosql.redis.RawCommand;
 import oracle.nosql.redis.RedisClientContext;
 import oracle.nosql.redis.RedisResponseException;
@@ -171,23 +176,86 @@ public class GenericCommands extends CommandsBase {
             ttlOpt);
     }
 
-    // For collections, this will delete collection elements after the key is
+
+
+    // For collections, this will delete collection elements after a key is
     // deleted (see cmds.afterDelete()). Note that we do not need to worry
-    // about atomicity here. If the collection key gets concurrently
-    // re-created, it will use different cid, which will not clash with the
-    // elements with old cid.
-    private boolean doDel(ByteBuf keyBuf) throws RedisResponseException {
-        RedisKeyInfo keyInfo = makeRedisKeyInfo(keyBuf);
-        // This will delete the row and get old value in a single request.
-        RedisValueInfo oldVal = doDelGetVal(keyInfo);
-        if (oldVal.val == null) {
-            // the key didn't exist or expired
+    // about atomicity for these collection elements. If the collection key
+    // gets concurrently re-created, it will use different cid, which will not
+    // clash with the elements with old cid.
+    private int doDel(ByteBuf [] keys, int off, int cnt)
+        throws RedisResponseException {
+        RedisKeyInfo[] keyInfos = makeRedisMultiKeyInfo(keys, off, cnt);
+
+        WriteMultipleRequest wmReq = new WriteMultipleRequest();
+        for(int i = 0; i < keyInfos.length; i++) {
+            RedisKeyInfo ki = keyInfos[i];
+            MapValue pk = new MapValue().put(FLD_SLOT, ki.slot)
+                .put(FLD_ID, ki.id);
+            DeleteRequest delReq = new DeleteRequest()
+                .setTableName(NoSQLRedisServer.MAIN_TABLE_NAME)
+                .setKey(pk).setReturnRow(true);
+            wmReq.add(delReq, true);
+        }
+        
+        WriteMultipleResult wmRes;
+        try {
+            wmRes = nosqlHandle.writeMultiple(wmReq);
+            if (!wmRes.getSuccess()) {
+                throw RedisResponseException.nosql(ERR_WM_FAIL);
+            }
+        } catch(NoSQLException ex) {
+            throw RedisResponseException.nosql(ex);
+        }
+
+        List<WriteMultipleResult.OperationResult> ls = wmRes.getResults();
+        if (ls.size() != keyInfos.length) {
+            throw RedisResponseException.nosql(String.format(
+                "Mismatched result count from writeMultiple, " +
+                "expected %d, got %d", ls.size(), keyInfos.length));
+        }
+
+        long currTime = System.currentTimeMillis();
+        int delCnt = 0;
+
+        for(int i = 0; i < keyInfos.length; i++) {
+            WriteMultipleResult.OperationResult opRes = ls.get(i);
+            if (!opRes.getSuccess()) {
+                continue;
+            }
+
+            MapValue row = opRes.getExistingValue();
+            if (row == null) {
+                throw RedisResponseException.nosql(
+                    "Missing existing value from delete");
+            }
+
+            RedisValueInfo valInfo = new RedisValueInfo(rowToValue(row),
+                opRes.getVersion(), getExpTime(rowToKey(row)));
+            if (!valInfo.isValid(currTime)) {
+                continue;
+            }
+
+            ++delCnt;
+            CommandsBase cmds = cmdHandlers.getCommandsByValueType(
+                getValueType(valInfo.val));
+            cmds.doDelElems(keyInfos[i], valInfo);
+        }
+
+        return delCnt;
+    }
+
+    private boolean doDel(ByteBuf key) throws RedisResponseException {
+        RedisKeyInfo keyInfo = makeRedisKeyInfo(key);
+        
+        RedisValueInfo valInfo = doDelGetVal(makeRedisKeyInfo(key));
+        if (!valInfo.isValid()) {
             return false;
         }
 
         CommandsBase cmds = cmdHandlers.getCommandsByValueType(
-            getValueType(oldVal.val));
-        cmds.doDelElems(keyInfo, oldVal);
+            getValueType(valInfo.val));
+        cmds.doDelElems(keyInfo, valInfo);
         return true;
     }
 
@@ -256,13 +324,21 @@ public class GenericCommands extends CommandsBase {
     public RedisMessage handleDel(RedisClientContext client, RawCommand cmd)
         throws RedisResponseException {
         chkMinNumArgs(cmd, 1);
-        int cnt = 0;
-        for(int i = 0; i < cmd.args.length; i++) {
-            if (doDel(cmd.args[i])) {
-                cnt++;
-            }
+
+        // Delete is atomic with number of keys <= MAX_WM_CNT, otherwise
+        // performed in batches.
+        if (cmd.args.length == 1) {
+            return doDel(cmd.args[0]) ? oneReply : zeroReply;
+        } else {
+            int delCnt = 0;
+            int off = 0;
+            do {
+                int cnt = Math.min(MAX_WM_CNT, cmd.args.length - off);
+                delCnt += doDel(cmd.args, off, cnt);
+                off += MAX_WM_CNT;
+            } while(off < cmd.args.length);
+            return new IntegerRedisMessage(delCnt);
         }
-        return new IntegerRedisMessage(cnt);
     }
 
     public RedisMessage handleExists(RedisClientContext client,

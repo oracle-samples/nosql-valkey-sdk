@@ -6,6 +6,7 @@ import io.netty.handler.codec.redis.IntegerRedisMessage;
 import io.netty.handler.codec.redis.RedisMessage;
 import oracle.nosql.driver.NoSQLHandle;
 import oracle.nosql.driver.ops.PreparedStatement;
+import oracle.nosql.driver.values.IntegerValue;
 import oracle.nosql.driver.values.MapValue;
 import oracle.nosql.driver.values.StringValue;
 import oracle.nosql.redis.CommandHandlers.CommandHandler;
@@ -65,7 +66,8 @@ public class JSONDel extends JSONCommandsBase {
         
         if (path.equals(ROOT_PATH)) {
             PreparedStatement pStmt = pstmtCache.getByRef(SQL_DEL_KEY);
-            pStmt.setVariable("$keyId", new StringValue(keyInfo.id));
+            pStmt.setVariable(SQL_SLOT, new IntegerValue(keyInfo.slot));
+            pStmt.setVariable(SQL_KEY_ID, new StringValue(keyInfo.id));
             
             MapValue row = doSQLUpdate(pStmt);
             if (row == null) {

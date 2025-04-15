@@ -26,9 +26,9 @@ import oracle.nosql.redis.util.Utils;
 public class ListTrimRemove extends ListCommandsBase {
 
     private static final String SQL_LREM = String.format(SQL_ELEMS_FMT,
-        VAR2_STR_VAR3_INT, "", ELEM_VAL_VAR2, "", "", LIMIT_VAR3, "");
+        VAR2_STR_VAR3_INT, "", ELEM_VAL_VAR2, "", LIMIT_VAR3, "");
     private static final String SQL_LREM_DESC = String.format(SQL_ELEMS_FMT,
-        VAR2_STR_VAR3_INT, "", ELEM_VAL_VAR2, DESC, DESC, LIMIT_VAR3, "");
+        VAR2_STR_VAR3_INT, "", ELEM_VAL_VAR2, DESC, LIMIT_VAR3, "");
 
     private static class ListTrimInfo extends ListValueInfo {
         long start;

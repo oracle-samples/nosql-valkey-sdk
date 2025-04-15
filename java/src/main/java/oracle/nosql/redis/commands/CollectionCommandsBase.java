@@ -25,6 +25,7 @@ import oracle.nosql.driver.ops.Request;
 import oracle.nosql.driver.ops.WriteMultipleRequest;
 import oracle.nosql.driver.ops.WriteMultipleResult;
 import oracle.nosql.driver.values.FieldValue;
+import oracle.nosql.driver.values.IntegerValue;
 import oracle.nosql.driver.values.MapValue;
 import oracle.nosql.driver.values.StringValue;
 import oracle.nosql.redis.NoSQLRedisServer;
@@ -41,12 +42,13 @@ abstract class CollectionCommandsBase extends CommandsBase {
     protected static final String FLD_CID = "cid";
     protected static final String FLD_LEN = "len";
 
+    protected static final String SQL_CID = "$cid";
     protected static final String SQL_SEL_ELEMS_FMT =
-        "DECLARE $var1 STRING; $var2 STRING; SELECT * FROM %s " +
-        "WHERE id = $var1 AND cid = $var2";
+        "DECLARE $slot INTEGER; $id STRING; $cid STRING; SELECT * FROM %s " +
+        "WHERE slot = $slot AND id = $id AND cid = $cid";
     protected static final String SQL_DEL_ELEMS_FMT =
-        "DECLARE $var1 STRING; $var2 STRING; DELETE FROM %s WHERE " +
-        "id = $var1 AND cid = $var2";
+        "DECLARE $slot INTEGER; $id STRING; $cid STRING; DELETE FROM %s " +
+        "WHERE slot = $slot AND id = $id AND cid = $cid";
 
     protected static class CollectionHeader {
 
@@ -129,8 +131,9 @@ abstract class CollectionCommandsBase extends CommandsBase {
         CollectionUpdateInfo addPutKeyReq(MapValue newVal) {
             assert putKeyReq == null && delKeyReq == null;
 
-            MapValue row = new MapValue().put(FLD_ID, keyInfo.id)
-                .put(FLD_KEY, makeRedisKey(keyInfo)).put(FLD_VALUE, newVal);
+            MapValue row = new MapValue().put(FLD_SLOT, keyInfo.slot)
+                .put(FLD_ID, keyInfo.id).put(FLD_KEY, makeRedisKey(keyInfo))
+                .put(FLD_VALUE, newVal);
             putKeyReq = new PutRequest()
                 .setTableName(NoSQLRedisServer.MAIN_TABLE_NAME)
                 .setValue(row);
@@ -198,8 +201,6 @@ abstract class CollectionCommandsBase extends CommandsBase {
         }
     }
 
-    // WriteMultipleRequest can do max of 50 ops.
-    static final int MAX_WM_CNT = 50;
     // For most transactions, we use one for the ops for the collection header.
     static final int MAX_TXN_ELEM_CNT = MAX_WM_CNT - 1;
 
@@ -214,8 +215,15 @@ abstract class CollectionCommandsBase extends CommandsBase {
         nosqlHandle.writeMultiple(wmReq);
         if (!wmRes.getSuccess()) {
             // this should not happen but just in case
-            throw RedisResponseException.nosql("Unsuccessful writeMultiple");
+            throw RedisResponseException.nosql(ERR_WM_FAIL);
         }
+    }
+
+    static String makeFromLOJ(String tblName, String varName) {
+        return String.format(
+            "FROM redis $r LEFT OUTER JOIN %s %s ON $r.slot = %s.slot " +
+            "AND $r.id = %s.id AND $r.value.cid = %s.cid ", tblName, varName,
+            varName, varName, varName);
     }
 
     static long fvToLen(FieldValue fldLen) throws RedisResponseException {
@@ -233,28 +241,19 @@ abstract class CollectionCommandsBase extends CommandsBase {
         return len;
     }
 
+    boolean isCollectionType() {
+        return true;
+    }
+
     <R> List<R> doQuery(RedisKeyInfo keyInfo, String sql,
         ThrowingFunction<MapValue, R, RedisResponseException> getResult,
         FieldValue... vars) throws RedisResponseException {
-        PreparedStatement pStmt = pstmtCache.getByRef(sql);
-        
-        // The first variable is always the key id.
-        pStmt.setVariable("$var1", new StringValue(keyInfo.id));
-        for(int i = 0; i < vars.length; i++) {
-            pStmt.setVariable("$var" + (i + 2), vars[i]);
-        }
 
         ArrayList<R> res = new ArrayList<>();
-        // Nested "try" to avoid resource leak warning on qReq because of
-        // set... methods below.
-        try(QueryRequest qReq = new QueryRequest()) {
-            qReq.setPreparedStatement(pStmt);
-            try(QueryIterableResult qir = nosqlHandle.queryIterable(qReq)) {
-                for(MapValue row : qir) {
-                    res.add(getResult.apply(row));
-                }
-            }
-        }
+        processQuery(keyInfo, sql, row -> {
+            res.add(getResult.apply(row));
+            return false;
+        }, vars);
 
         return res;
     }
@@ -274,26 +273,15 @@ abstract class CollectionCommandsBase extends CommandsBase {
         FieldValue... vars) throws RedisResponseException {
         PreparedStatement pStmt = pstmtCache.getByRef(sql);
         
-        // The first variable is always the key id.
-        pStmt.setVariable("$var1", new StringValue(keyInfo.id));
+        // The first 2 variables are always the key slot and id.
+        pStmt.setVariable(SQL_SLOT, new IntegerValue(keyInfo.slot));
+        pStmt.setVariable(SQL_KEY_ID, new StringValue(keyInfo.id));
+        // Other variables start with $var2, $var3, ...
         for(int i = 0; i < vars.length; i++) {
             pStmt.setVariable("$var" + (i + 2), vars[i]);
         }
-
-        // Nested "try" to avoid resource leak warning on qReq because of
-        // set... methods below.
-        try(QueryRequest qReq = new QueryRequest()) {
-            qReq.setPreparedStatement(pStmt);
-            try(QueryIterableResult qir = nosqlHandle.queryIterable(qReq)) {
-                for(MapValue row : qir) {
-                    if (applyRow.apply(row)) {
-                        return true;
-                    }
-                }
-            }
-        }
-
-        return false;
+        
+        return super.processQuery(pStmt, applyRow);
     }
 
     <V, U, R> R doMultiUpdate(RedisKeyInfo keyInfo,
@@ -368,8 +356,9 @@ abstract class CollectionCommandsBase extends CommandsBase {
         String cid = CollectionHeader.getCid(valInfo.val);
         PreparedStatement pStmt = pstmtCache.getByRef(getSQLDelElems());
         
-        pStmt.setVariable("$var1", new StringValue(keyInfo.id));
-        pStmt.setVariable("$var2", new StringValue(cid));
+        pStmt.setVariable(SQL_SLOT, new IntegerValue(keyInfo.slot));
+        pStmt.setVariable(SQL_KEY_ID, new StringValue(keyInfo.id));
+        pStmt.setVariable(SQL_CID, new StringValue(cid));
 
         // Nested "try" to avoid resource leak warning on qReq because of
         // set... methods below.
@@ -387,8 +376,9 @@ abstract class CollectionCommandsBase extends CommandsBase {
         String cid = CollectionHeader.getCid(valInfo.val);
         PreparedStatement pStmt = pstmtCache.getByRef(getSQLSelElems());
 
-        pStmt.setVariable("$var1", new StringValue(keyInfo.id));
-        pStmt.setVariable("$var2", new StringValue(cid));
+        pStmt.setVariable(SQL_SLOT, new IntegerValue(keyInfo.slot));
+        pStmt.setVariable(SQL_KEY_ID, new StringValue(keyInfo.id));
+        pStmt.setVariable(SQL_CID, new StringValue(cid));
 
         WriteMultipleRequest wmReq = new WriteMultipleRequest();
         String tblName = getElemsTblName();
@@ -420,8 +410,9 @@ abstract class CollectionCommandsBase extends CommandsBase {
         String cid = CollectionHeader.getCid(srcValInfo.val);
         PreparedStatement pStmt = pstmtCache.getByRef(getSQLSelElems());
 
-        pStmt.setVariable("$var1", new StringValue(srcKeyInfo.id));
-        pStmt.setVariable("$var2", new StringValue(cid));
+        pStmt.setVariable(SQL_SLOT, new IntegerValue(srcKeyInfo.slot));
+        pStmt.setVariable(SQL_KEY_ID, new StringValue(srcKeyInfo.id));
+        pStmt.setVariable(SQL_CID, new StringValue(cid));
 
         String newCid = UUID.randomUUID().toString();
 
@@ -443,6 +434,7 @@ abstract class CollectionCommandsBase extends CommandsBase {
                     }
                     
                     // replace primary key - destination key id and new cid
+                    row.put(FLD_SLOT, dstKeyInfo.slot);
                     row.put(FLD_ID, dstKeyInfo.id);
                     row.put(FLD_CID, newCid);
 

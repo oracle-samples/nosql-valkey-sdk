@@ -34,40 +34,33 @@ abstract class ListCommandsBase extends CollectionCommandsBase {
     protected static final String LIMIT_VAR3 = " LIMIT $var3";
     protected static final String OFFSET_VAR2 = " OFFSET $var2";
     // private static final String ELEM_VAL = ", $l.value AS elemVal";
-    protected static final String ELEM_VAL_VAR2 = " AND $l.value = $var2";
+    protected static final String ELEM_VAL_VAR2 = " AND $l.value = $var2 ";
     protected static final String VAL_LEN = ", $r.value.len AS len";
+    protected static final String FROM_LOJ = makeFromLOJ("redis.lists", "$l");
 
     protected static final String SQL_SEL_ELEMS = String.format(
         SQL_SEL_ELEMS_FMT, LIST_TABLE_NAME);
     protected static final String SQL_DEL_ELEMS = String.format(
         SQL_DEL_ELEMS_FMT, LIST_TABLE_NAME);
 
-    // The commented line below currently not working for DESC order 
-    // because of a bug, so we use this variation for now.
-    protected static final String SQL_ELEMS_FMT =
-        "DECLARE $var1 STRING; %sSELECT row_version($r) AS ver, $r.key, " +
-        "$r.value, $l.elemId%s FROM redis $r LEFT OUTER JOIN redis.lists $l " +
-        //"ON $r.id = $l.id WHERE $r.id = $var1%s AND $l.cid = $r.value.cid " +
-        "ON $r.id = $l.id AND $r.id = $var1 WHERE $l.cid = $r.value.cid%s " +
-        "ORDER BY $l.id%s, $l.elemId%s%s%s";
+    protected static final String SQL_ELEMS_FMT = DECL_KEY_ID + 
+        "%sSELECT row_version($r) AS ver, $r.key, $r.value, $l.elemId%s " +
+        FROM_LOJ + WHERE_KEY_ID_COND + "%sORDER BY $l.elemId%s%s%s";
     
     protected static final String SQL_LPUSH = String.format(SQL_ELEMS_FMT, "",
-        "", "", "", "", LIMIT_1, "");
+        "", "", "", LIMIT_1, "");
     protected static final String SQL_RPUSH = String.format(SQL_ELEMS_FMT, "",
-        "", "", DESC, DESC, LIMIT_1, "");
+        "", "", DESC, LIMIT_1, "");
     protected static final String SQL_LPOP = String.format(SQL_ELEMS_FMT,
-        VAR2_LONG, "", "", "", "", LIMIT_VAR2, "");
+        VAR2_LONG, "", "", "", LIMIT_VAR2, "");
     protected static final String SQL_RPOP = String.format(SQL_ELEMS_FMT,
-        VAR2_LONG, "", "", DESC, DESC, LIMIT_VAR2, "");
+        VAR2_LONG, "", "", DESC, LIMIT_VAR2, "");
 
     // Queries element ids less/greater than given element id in order of
     // element id. Currently only used in ListSetInsert.java.
-    protected static final String SQL_ELEM_ID_FMT =
-        "DECLARE $var1 STRING; $var2 NUMBER; SELECT $l.elemId FROM redis $r " +
-        "LEFT OUTER JOIN redis.lists $l " +
-        // "ON $r.id = $l.id WHERE $r.id = $var1 AND $l.cid = $r.value.cid " +
-        "ON $r.id = $l.id AND $r.id = $var1 WHERE $l.cid = $r.value.cid " +
-        "AND $l.elemId %s $var2 ORDER BY $l.id%s, $l.elemId%s%s";
+    protected static final String SQL_ELEM_ID_FMT = DECL_KEY_ID +
+        "$var2 NUMBER; SELECT $l.elemId " + FROM_LOJ + WHERE_KEY_ID_COND +
+        "AND $l.elemId %s $var2 ORDER BY $l.elemId%s%s";
 
     protected static final BigDecimal VALUE_TWO = new BigDecimal(2);
 
@@ -166,8 +159,8 @@ abstract class ListCommandsBase extends CollectionCommandsBase {
     protected static PutRequest makePutElemReq(RedisKeyInfo keyInfo,
         BigDecimal elemId, String cid, FieldValue val) {
         return new PutRequest().setTableName(LIST_TABLE_NAME)
-            .setValue(new MapValue().put(FLD_ID, keyInfo.id)
-            .put(FLD_ELEM_ID, elemId).put(FLD_CID, cid)
+            .setValue(new MapValue().put(FLD_SLOT, keyInfo.slot)
+            .put(FLD_ID, keyInfo.id).put(FLD_ELEM_ID, elemId).put(FLD_CID, cid)
             .put(FLD_VALUE, val));
     }
 
@@ -180,8 +173,8 @@ abstract class ListCommandsBase extends CollectionCommandsBase {
     protected static DeleteRequest makeDeleteElemReq(RedisKeyInfo keyInfo,
         BigDecimal elemId, boolean returnExisting) {
         return new DeleteRequest().setTableName(LIST_TABLE_NAME)
-            .setKey(new MapValue().put(FLD_ID, keyInfo.id)
-                .put(FLD_ELEM_ID, elemId))
+            .setKey(new MapValue().put(FLD_SLOT, keyInfo.slot)
+            .put(FLD_ID, keyInfo.id).put(FLD_ELEM_ID, elemId))
             .setReturnRow(returnExisting);
     }
 
@@ -244,12 +237,15 @@ abstract class ListCommandsBase extends CollectionCommandsBase {
         ListValueInfo res = new ListValueInfo(val);
         
         BigDecimal elemId0 = rowToElemId(row0, allowNoElems);
-        if (allowNoElems && elemId0 == null) {
-            chkSingleResult(rows);
-            return new CollectionValueResult<>(val, res);
+        if (elemId0 == null) {
+            if (allowNoElems) {
+                chkSingleResult(rows);
+                return new CollectionValueResult<>(val, res);
+            }
+            throw RedisResponseException.corrupt(
+                "Found list header with no elements");
         }
 
-        assert elemId0 != null;
         res.elemIds.add(elemId0);
         int cnt = rows.size();
 

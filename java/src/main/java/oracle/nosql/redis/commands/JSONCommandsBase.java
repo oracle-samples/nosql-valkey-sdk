@@ -28,6 +28,7 @@ import oracle.nosql.driver.ops.QueryRequest;
 import oracle.nosql.driver.ops.QueryResult;
 import oracle.nosql.driver.values.ArrayValue;
 import oracle.nosql.driver.values.FieldValue;
+import oracle.nosql.driver.values.IntegerValue;
 import oracle.nosql.driver.values.JsonNullValue;
 import oracle.nosql.driver.values.MapValue;
 import oracle.nosql.driver.values.StringValue;
@@ -55,22 +56,14 @@ abstract class JSONCommandsBase extends CommandsBase {
     protected static final String VALUE_PAD = "pad";
     protected static final String FLD_RES = "res";
     protected static final String FLD_IS_JSON = "isJSON";
-    protected static final String KEY_ID_COND = "$r.id = $keyId ";
-    protected static final String KEY_IDS_COND = "$r.id IN $keyIds[]";
     protected static final String AND_IS_JSON = "AND (EXISTS $r.value.json)";
     protected static final String SQL_IS_JSON =
         ", (EXISTS $r.value.json) AS isJSON";
     protected static final String SQL_EXISTS_COND =
         KEY_ID_COND + AND_NOT_EXPIRED;
     protected static final String SQL_VAL = "$val";
-    protected static final String SQL_DECLARE = "DECLARE ";
-    protected static final String DECL_KEY_ID =
-        SQL_DECLARE + " $keyId STRING; ";
-    protected static final String DECL_KEY_IDS =
-        SQL_DECLARE + " $keyIds ARRAY(STRING); ";
     protected static final String DECL_KEY_ID_VAL =
         DECL_KEY_ID + SQL_VAL + " JSON; ";
-    protected static final String SQL_RETURNING = " RETURNING ";
     protected static final String SQL_RETURNING_PAD = SQL_RETURNING +
         "$r.value.pad AS res";
     protected static final String VAL_FILTER_FMT = "$value IS OF TYPE (%s)";
@@ -507,17 +500,14 @@ abstract class JSONCommandsBase extends CommandsBase {
     protected PreparedStatement getPrepStmt(RedisKeyInfo keyInfo, String sql,
         TranslateResult tr) {
         PreparedStatement pStmt = pstmtCache.getByVal(sql);
-        pStmt.setVariable("$keyId", new StringValue(keyInfo.id));
+        pStmt.setVariable(SQL_SLOT, new IntegerValue(keyInfo.slot));
+        pStmt.setVariable(SQL_KEY_ID, new StringValue(keyInfo.id));
         tr.vars.forEach(
             (varName, varVal) -> pStmt.setVariable(varName, varVal));
         return pStmt;
     }
 
     protected RedisResponseException processNoSQLException(Exception ex) {
-        if (ex instanceof RedisResponseException) {
-            return (RedisResponseException)ex;
-        }
-
         // If provided or retrieved (via embedded json path) regular
         // expression pattern is unsupported or invalid, we want to avoid
         // returning raw nosql error and signal the user that the problem is
@@ -531,7 +521,7 @@ abstract class JSONCommandsBase extends CommandsBase {
             }
         }
 
-        return RedisResponseException.nosql(ex);
+        return super.processNoSQLException(ex);
     }
 
     // We need this overload when need to set additional options in

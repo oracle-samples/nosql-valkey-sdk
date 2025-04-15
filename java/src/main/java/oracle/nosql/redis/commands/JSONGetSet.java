@@ -2,7 +2,6 @@ package oracle.nosql.redis.commands;
 
 import static oracle.nosql.redis.util.Utils.byteBufToString;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 
@@ -11,13 +10,11 @@ import io.netty.handler.codec.redis.FullBulkStringRedisMessage;
 import io.netty.handler.codec.redis.RedisMessage;
 import oracle.nosql.driver.NoSQLHandle;
 import oracle.nosql.driver.ops.PreparedStatement;
-import oracle.nosql.driver.ops.QueryIterableResult;
-import oracle.nosql.driver.ops.QueryRequest;
 import oracle.nosql.driver.values.ArrayValue;
 import oracle.nosql.driver.values.FieldValue;
+import oracle.nosql.driver.values.IntegerValue;
 import oracle.nosql.driver.values.JsonOptions;
 import oracle.nosql.driver.values.MapValue;
-import oracle.nosql.driver.values.StringValue;
 import oracle.nosql.redis.CommandHandlers.CommandHandler;
 import oracle.nosql.redis.RawCommand;
 import oracle.nosql.redis.RedisClientContext;
@@ -42,7 +39,7 @@ public class JSONGetSet extends JSONCommandsBase {
         "%sSELECT [%s] AS res " + SQL_IS_JSON + " FROM redis $r WHERE " +
         SQL_EXISTS_COND;
     private static final String SQL_MGET_FMT = DECL_KEY_IDS +
-        "%sSELECT id, [%s] AS res FROM redis $r WHERE " + KEY_IDS_COND +
+        "%sSELECT id, [%s] AS res FROM redis $r " + WHERE_KEY_IDS_COND +
         AND_NOT_EXPIRED + AND_IS_JSON;
 
     private static final String[] MAP_FILTER_ARR = new String[] { MAP_FILTER };
@@ -296,9 +293,9 @@ public class JSONGetSet extends JSONCommandsBase {
     public RedisMessage handleJSONMGet(RedisClientContext client,
         RawCommand cmd) throws RedisResponseException {
         chkMinNumArgs(cmd, 2);
-        ArrayValue keyIds = new ArrayValue().addAll(
-            Arrays.stream(cmd.args, 0, cmd.args.length - 1).map(
-                val -> new StringValue(makeRedisKeyInfo(val).id)));
+        RedisKeyInfo[] keyInfos = makeRedisMultiKeyInfo(cmd.args, 0,
+            cmd.args.length - 1);
+        ArrayValue keyIds = makeKeyIdsValue(keyInfos);
         String path = byteBufToString(cmd.args[cmd.args.length - 1]);
 
         TranslateResult tr = translatePath(path);
@@ -306,7 +303,8 @@ public class JSONGetSet extends JSONCommandsBase {
             tr.sqlPath);
 
         PreparedStatement pStmt = pstmtCache.getByVal(sql);
-        pStmt.setVariable("$keyIds", keyIds);
+        pStmt.setVariable(SQL_SLOT, new IntegerValue(keyInfos[0].slot));
+        pStmt.setVariable(SQL_KEY_IDS, keyIds);
         tr.vars.forEach(
             (varName, varVal) -> pStmt.setVariable(varName, varVal));
         
@@ -315,22 +313,9 @@ public class JSONGetSet extends JSONCommandsBase {
         // keys or keys of wrong type, so we need to collect query results
         // first to create the final result.
         HashMap<String,ArrayValue> resMap = new HashMap<>();
-        try(QueryRequest qReq = new QueryRequest()) {
-            qReq.setPreparedStatement(pStmt);
-            try(QueryIterableResult qir = nosqlHandle.queryIterable(qReq)) {
-                for(MapValue row : qir) {
-                    FieldValue fldId = row.get(FLD_ID);
-                    if (fldId == null || !fldId.isString()) {
-                        throw RedisResponseException.corrupt(
-                            "Missing or invalid key id");
-                    }
-                    ArrayValue arrRes = getArrRes(row);
-                    resMap.put(fldId.getString(), untransformValues(arrRes));
-                }
-            }
-        } catch(Exception ex) {
-            throw processNoSQLException(ex);
-        }
+        processQuery(pStmt, row -> {
+            resMap.put(getId(row), untransformValues(getArrRes(row)));
+        });
 
         ArrayList<RedisMessage> res = new ArrayList<>();
         for(FieldValue keyId: keyIds) {

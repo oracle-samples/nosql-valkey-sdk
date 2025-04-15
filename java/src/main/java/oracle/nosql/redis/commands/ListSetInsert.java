@@ -47,42 +47,40 @@ public class ListSetInsert extends ListCommandsBase {
     private static final String REINDEX_LIMIT = " LIMIT " + REINDEX_STEP_CNT;
 
     private static final String SQL_LSET = String.format(SQL_ELEMS_FMT,
-        VAR2_LONG, "", "", "", "", LIMIT_1, OFFSET_VAR2);
+        VAR2_LONG, "", "", "", LIMIT_1, OFFSET_VAR2);
     private static final String SQL_LSET_DESC = String.format(SQL_ELEMS_FMT,
-        VAR2_LONG, "", "", DESC, DESC, LIMIT_1, OFFSET_VAR2);
+        VAR2_LONG, "", "", DESC, LIMIT_1, OFFSET_VAR2);
 
     // The query to find pivot elemId for LINSERT command.
     // Note that per return value spec, we are required to differentiate
     // between the case when list key does not exist and the case when list
     // exists but the pivot is not found.
-    private static final String SQL_LINSERT_PIVOT =
-        "DECLARE $var1 STRING; $var2 STRING; SELECT row_version($r) AS ver, " +
-        "$r.key, $r.value, $l.elemId FROM redis $r LEFT OUTER JOIN " +
-        "redis.lists $l ON $r.id = $l.id " + ELEM_VAL_VAR2 +
-        " WHERE $r.id = $var1 AND $l.cid = $r.value.cid ORDER BY " +
-        "$l.id, $l.elemId" + LIMIT_1;
+    private static final String SQL_LINSERT_PIVOT = DECL_KEY_ID +
+        "$var2 STRING; SELECT row_version($r) AS ver, $r.key, $r.value, " +
+        "$l.elemId " + FROM_LOJ + ELEM_VAL_VAR2 + WHERE_KEY_ID_COND +
+        "ORDER BY $l.elemId" + LIMIT_1;
 
     private static final String SQL_ELEM_IDS_RIGHT = String.format(
-        SQL_ELEM_ID_FMT, ">=", "", "", "");
+        SQL_ELEM_ID_FMT, ">=", "", "");
     private static final String SQL_ELEM_IDS_LEFT = String.format(
-        SQL_ELEM_ID_FMT, "<=", DESC, DESC, "");
+        SQL_ELEM_ID_FMT, "<=", DESC, "");
 
     private static final String SQL_ELEMS_AFTER = String.format(SQL_ELEMS_FMT,
         VAR2_NUM_VAR3_NUM, ELEM_VAL,
-        " AND $l.elemId > $var2 AND $l.elemId < $var3", "", "", REINDEX_LIMIT,
+        " AND $l.elemId > $var2 AND $l.elemId < $var3 ", "", REINDEX_LIMIT,
         "");
     private static final String SQL_ELEMS_BEFORE = String.format(SQL_ELEMS_FMT,
         VAR2_NUM_VAR3_NUM, ELEM_VAL,
-        " AND $l.elemId < $var2 AND $l.elemId > $var3", DESC, DESC,
-        REINDEX_LIMIT, "");
+        " AND $l.elemId < $var2 AND $l.elemId > $var3 ", DESC, REINDEX_LIMIT,
+        "");
 
     // Selects 1 element either before or after the pivot (given by its
     // elemId). Unfortunately, since subquery is not supported, we cannot find
     // pivot and the id before/after in a single query.
     private static final String SQL_LINSERT_AFTER = String.format(
-        SQL_ELEM_ID_FMT, ">", "", "", LIMIT_1);
+        SQL_ELEM_ID_FMT, ">", "", LIMIT_1);
     private static final String SQL_LINSERT_BEFORE = String.format(
-        SQL_ELEM_ID_FMT, "<", DESC, DESC, LIMIT_1);
+        SQL_ELEM_ID_FMT, "<", DESC, LIMIT_1);
 
     // To avoid unlimited growth of elemId size when there are repeated
     // inserts near the same location, we cap the elemId scale at certain max
@@ -436,7 +434,7 @@ public class ListSetInsert extends ListCommandsBase {
             CollectionValueResult<ListValueInfo> res =
                 queryListElems(ki, SQL_LINSERT_PIVOT, true,
                 new StringValue(makeStrVal(pivot)));
-            if (res.data.elemIds.isEmpty()) {
+            if (res.data == null || res.data.elemIds.isEmpty()) {
                 // either the list itself or the pivot is not found
                 return res;
             }
@@ -507,12 +505,14 @@ public class ListSetInsert extends ListCommandsBase {
     public RedisMessage handleLSet(RedisClientContext client, RawCommand cmd)
         throws RedisResponseException {
         chkExactNumArgs(cmd, 3);
-        long idx = Utils.byteBufToLong(cmd.args[1]);
+        long idxArg = Utils.byteBufToLong(cmd.args[1]);
+        final boolean isAsc = idxArg >= 0;
+        // need another variable idx to make it effectively final
+        final long idx = isAsc ? idxArg : -idxArg - 1;
 
         return doMultiUpdate(makeRedisKeyInfo(cmd.args[0]), (ki) -> {
-            List<MapValue> rows = doQuery(ki,
-                idx >= 0 ? SQL_LSET : SQL_LSET_DESC,
-                new LongValue(Math.abs(idx)));
+            List<MapValue> rows = doQuery(ki, isAsc ? SQL_LSET : SQL_LSET_DESC,
+                new LongValue(idx));
 
             if (rows.isEmpty()) {
                 throw new RedisResponseException(ErrorPrefix.ERR,

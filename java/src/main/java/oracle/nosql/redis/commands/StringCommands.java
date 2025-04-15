@@ -9,26 +9,53 @@ package oracle.nosql.redis.commands;
 
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.List;
-
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.handler.codec.redis.ArrayRedisMessage;
 import io.netty.handler.codec.redis.FullBulkStringRedisMessage;
 import io.netty.handler.codec.redis.IntegerRedisMessage;
 import io.netty.handler.codec.redis.RedisMessage;
+import oracle.nosql.driver.NoSQLException;
 import oracle.nosql.driver.NoSQLHandle;
+import oracle.nosql.driver.ops.PreparedStatement;
+import oracle.nosql.driver.ops.PutRequest;
+import oracle.nosql.driver.ops.WriteMultipleRequest;
+import oracle.nosql.driver.ops.WriteMultipleResult;
+import oracle.nosql.driver.values.ArrayValue;
+import oracle.nosql.driver.values.FieldValue;
+import oracle.nosql.driver.values.IntegerValue;
 import oracle.nosql.driver.values.MapValue;
+import oracle.nosql.driver.values.StringValue;
 import oracle.nosql.redis.CommandHandlers.CommandHandler;
+import oracle.nosql.redis.NoSQLRedisServer;
 import oracle.nosql.redis.RawCommand;
 import oracle.nosql.redis.RedisClientContext;
 import oracle.nosql.redis.RedisResponseException;
 import oracle.nosql.redis.RedisResponseException.ErrorPrefix;
 import oracle.nosql.redis.util.PreparedStatementCache;
 import oracle.nosql.redis.util.Utils;
+import oracle.nosql.redis.util.Utils.RedisRetryException;
 import oracle.nosql.redis.util.Utils.ThrowingFunction;
 
 public class StringCommands extends CommandsBase {
+
+    private static final String AND_IS_STRING =
+        "AND $r.value.type = '" + TYPE_STRING + "'";
+    private static final String SQL_GET_DEL = DECL_KEY_ID +
+        "DELETE FROM redis $r WHERE " + KEY_ID_COND + AND_NOT_EXPIRED +
+        AND_IS_STRING + SQL_RETURNING + "$r.value.data AS value";
+    private static final String SQL_MGET = DECL_KEY_IDS +
+        "SELECT $r.id, $r.value.data AS data FROM redis $r " +
+        WHERE_KEY_IDS_COND + AND_NOT_EXPIRED + AND_IS_STRING;
+    // This query is used for MSETNX to check if there are existing keys. If
+    // there are any existing non-expired keys, MSETNX will not proceed. Note
+    // that the key may be expired but still exist in the table. We retrieve
+    // these keys and get their versions, so that their update can be version-
+    // conditioned in order to make MSETNX operation atomic (for non-existing
+    // keys will will use if-absent instead).
+    private static final String SQL_MSET_GET = DECL_KEY_IDS +
+        "SELECT $r.id, row_version($r) AS ver, $r.key.exp  AS exp FROM " +
+        "redis $r " + WHERE_KEY_IDS_COND;
 
     public static final String CMD_GET = "GET";
     public static final String CMD_GETRANGE = "GETRANGE";
@@ -47,6 +74,7 @@ public class StringCommands extends CommandsBase {
     public static final String CMD_DECRBY = "DECRBY";
     public static final String CMD_MGET = "MGET";
     public static final String CMD_MSET = "MSET";
+    public static final String CMD_MSETNX = "MSETNX";
     public static final String CMD_GETDEL = "GETDEL";
     public static final String CMD_GETSET = "GETSET";
 
@@ -179,6 +207,83 @@ public class StringCommands extends CommandsBase {
                 val -> new IntegerRedisMessage(Utils.byteBufToLong(val)));
     }
 
+    private RedisMessage handleMSet(RedisClientContext client, RawCommand cmd,
+        boolean isNX) throws RedisResponseException {
+        if (cmd.args == null || cmd.args.length < 2 ||
+            cmd.args.length % 2 == 1) {
+            throw RedisResponseException.numArgs(cmd.name);
+        }
+
+        if (cmd.args.length > 2 * MAX_WM_CNT) {
+            throw new RedisResponseException(ErrorPrefix.ERR, String.format(
+                "Atomic update of more than %s keys is not supported",
+                MAX_WM_CNT));
+        }
+
+        RedisKeyInfo[] keyInfos = makeRedisMultiKeyInfo(cmd.args, 0,
+            cmd.args.length / 2, 2);
+
+        HashMap<String, oracle.nosql.driver.Version> expVers = null;
+        if (isNX) {
+            ArrayValue keyIds = makeKeyIdsValue(keyInfos);
+            PreparedStatement pStmt = pstmtCache.getByRef(SQL_MSET_GET);
+            pStmt.setVariable(SQL_SLOT, new IntegerValue(keyInfos[0].slot));
+            pStmt.setVariable(SQL_KEY_IDS, keyIds);
+    
+            final HashMap<String, oracle.nosql.driver.Version> hs =
+                new HashMap<>();
+            if (processQuery(pStmt, row -> {
+                // we are retrieving "exp" field so we use the key function
+                if (!isKeyExpired(row)) {
+                    return true;
+                }
+                hs.put(getId(row), rowToVer(row));
+                return false;
+            })) {
+                // processQuery will return true if it encounters an unexpired
+                // key
+                return zeroReply;
+            };
+
+            expVers = hs;
+        }
+
+        WriteMultipleRequest wmReq = new WriteMultipleRequest();
+        for(int i = 0; i < keyInfos.length; i++) {
+            RedisKeyInfo ki = keyInfos[i];
+            MapValue row = new MapValue().put(FLD_SLOT, ki.slot)
+                .put(FLD_ID, ki.id).put(FLD_KEY, makeRedisKey(ki))
+                // cmd.args alternate keys and values
+                .put(FLD_VALUE, makeStringValue(cmd.args[i * 2 + 1]));
+            PutRequest putReq = new PutRequest()
+                .setTableName(NoSQLRedisServer.MAIN_TABLE_NAME)
+                .setValue(row);
+            if (isNX) {
+                oracle.nosql.driver.Version expVer = expVers.get(ki.id);
+                if (expVer == null) {
+                    putReq.setOption(PutRequest.Option.IfAbsent);
+                } else {
+                    putReq.setOption(PutRequest.Option.IfVersion);
+                    putReq.setMatchVersion(expVer);                
+                }
+            }
+            wmReq.add(putReq, true);
+        }
+        
+        try {
+            WriteMultipleResult res = nosqlHandle.writeMultiple(wmReq);
+            if (!res.getSuccess()) {
+                if (isNX) {
+                    throw new RedisRetryException();
+                }
+                throw RedisResponseException.nosql(ERR_WM_FAIL);
+            }
+            return isNX ? oneReply : okReply;
+        } catch(NoSQLException ex) {
+            throw RedisResponseException.nosql(ex);
+        }
+    }
+
     public void registerCommands(HashMap<String, CommandHandler> cmdMap) {
         cmdMap.put(CMD_GET, this::handleGet);
         cmdMap.put(CMD_MGET, this::handleMGet);
@@ -198,6 +303,7 @@ public class StringCommands extends CommandsBase {
         cmdMap.put(CMD_DECR, this::handleDecr);
         cmdMap.put(CMD_DECRBY, this::handleDecrBy);
         cmdMap.put(CMD_MSET, this::handleMSet);
+        cmdMap.put(CMD_MSETNX, this::handleMSetNX);
         cmdMap.put(CMD_GETDEL, this::handleGetDel);
         cmdMap.put(CMD_GETSET, this::handleGetSet);
     }
@@ -211,13 +317,33 @@ public class StringCommands extends CommandsBase {
     public RedisMessage handleMGet(RedisClientContext client, RawCommand cmd)
         throws RedisResponseException {
         chkMinNumArgs(cmd, 1);
+   
+        RedisKeyInfo[] keyInfos = makeRedisMultiKeyInfo(cmd.args, 0,
+            cmd.args.length);
+        ArrayValue keyIds = makeKeyIdsValue(keyInfos);
 
-        List<RedisMessage> ls = new ArrayList<RedisMessage>();
-        for(ByteBuf arg : cmd.args) {
-            ls.add(doGetString(arg));
+        PreparedStatement pStmt = pstmtCache.getByRef(SQL_MGET);
+        pStmt.setVariable(SQL_SLOT, new IntegerValue(keyInfos[0].slot));
+        pStmt.setVariable(SQL_KEY_IDS, keyIds);
+
+        // We need to return results for all provided keys in order, but the
+        // query results may be in different order and/or missing non-existent
+        // keys or keys of wrong type, so we need to collect query results
+        // first to create the final result.
+        HashMap<String,String> resMap = new HashMap<>();
+        processQuery(pStmt, row ->  {
+            resMap.put(getId(row), getData(row));
+        });
+
+        ArrayList<RedisMessage> res = new ArrayList<>();
+        for(FieldValue keyId: keyIds) {
+            String data = resMap.get(keyId.getString());
+            res.add(data != null ?
+                new FullBulkStringRedisMessage(getStrVal(data)) :
+                FullBulkStringRedisMessage.NULL_INSTANCE);
         }
 
-        return new ArrayRedisMessage(ls);
+        return new ArrayRedisMessage(res);
     }
 
     public RedisMessage handleGetRange(RedisClientContext client,
@@ -408,18 +534,32 @@ public class StringCommands extends CommandsBase {
         RawCommand cmd) throws RedisResponseException {
         chkExactNumArgs(cmd, 1);
         RedisKeyInfo keyInfo = makeRedisKeyInfo(cmd.args[0]);
-        // Note that we cannot use doDelGetVal() here because we have to check
-        // that the value is of type String before deleting it.
-        return doGetDel(keyInfo,
-            (oldVal) -> oldVal.exists() ? getStringValue(oldVal.val) : null,
-            (oldVal, iRes) -> iRes != null ?
-                new FullBulkStringRedisMessage(iRes) :
-                FullBulkStringRedisMessage.NULL_INSTANCE);
+        PreparedStatement pStmt = pstmtCache.getByRef(SQL_GET_DEL);
+        pStmt.setVariable(SQL_SLOT, new IntegerValue(keyInfo.slot));
+        pStmt.setVariable(SQL_KEY_ID, new StringValue(keyInfo.id));
+
+        final String [] val = new String[1];
+        processQuery(pStmt, row -> {
+            if (val[0] != null) {
+                throw RedisResponseException.nosql(ERR_NO_SINGLE_RES);
+            }
+            val[0] = getStringField(row, FLD_VALUE);
+        });
+
+        return val != null ?
+            new FullBulkStringRedisMessage(getStrVal(val[0])) :
+            FullBulkStringRedisMessage.NULL_INSTANCE;
     }
 
     public RedisMessage handleMSet(RedisClientContext client, RawCommand cmd)
         throws RedisResponseException {
-        throw RedisResponseException.unknownCommand(cmd);
+        return handleMSet(client, cmd, false);
+    }
+
+    public RedisMessage handleMSetNX(RedisClientContext client, RawCommand cmd)
+        throws RedisResponseException {
+        return Utils.doWithRetries(() -> handleMSet(client, cmd, true),
+            ATOMIC_SET_TRIES);
     }
 
 }

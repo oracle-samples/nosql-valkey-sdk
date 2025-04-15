@@ -38,33 +38,34 @@ public class HashRead extends HashCommandsBase {
     // We only need value from redis main table if the hash is in smallVal
     // format, we use CASE expr. to avoid returning it otherwise. Same for
     // scan.
-    private static final String SQL_READ_FMT =
-        "DECLARE $var1 STRING;%s SELECT (CASE WHEN $h.keyId IS NULL " +
-        "THEN $r.value ELSE NULL END) AS hashVal%s " + FROM_LOJ +
-        " WHERE $r.id = $var1 " + AND_NOT_EXPIRED + "%s";
+    private static final String SQL_READ_FMT = DECL_KEY_ID +
+        "%s SELECT (CASE WHEN $h.keyId IS NULL THEN $r.value ELSE NULL END) " +
+        "AS hashVal%s " + FROM_LOJ + "%s " + WHERE_KEY_ID_COND +
+        AND_NOT_EXPIRED + "%s";
 
     private static final String SEL_FLD_KEY = ", $h.key.data AS fldKey";
     private static final String SEL_FLD_VAL = ", $h.value";
     private static final String SEL_FLD_KEY_VAL = SEL_FLD_KEY + SEL_FLD_VAL;
     
     private static final String SQL_HGET_KEYVALS = String.format(SQL_READ_FMT,
-        VAR2_STRING_ARRAY, ", $h.keyId" + SEL_FLD_VAL, HKEYID_IN_ARRAY_VAR2);
+        VAR2_STRING_ARRAY, ", $h.keyId" + SEL_FLD_VAL, HKEYID_IN_ARRAY_VAR2,
+        "");
     private static final String SQL_HGET_VAL = String.format(SQL_READ_FMT,
-        VAR2_STRING, SEL_FLD_VAL, HKEYID_EQ_VAL_VAR2);
+        VAR2_STRING, SEL_FLD_VAL, HKEYID_EQ_VAL_VAR2, "");
     //private static final String SQL_HGET_EXISTS = String.format(SQL_READ_FMT,
-        //VAR2_STRING, "", HKEYID_EQ_VAL_VAR2);
+        //VAR2_STRING, "", HKEYID_EQ_VAL_VAR2, "");
     
     private static final String SQL_GET_KEYS = String.format(SQL_READ_FMT, "",
-        SEL_FLD_KEY, "");
+        SEL_FLD_KEY, "", "");
     private static final String SQL_GET_VALS = String.format(SQL_READ_FMT, "",
-        SEL_FLD_VAL, "");
+        SEL_FLD_VAL, "", "");
     private static final String SQL_GET_ALL = String.format(SQL_READ_FMT, "",
-        SEL_FLD_KEY_VAL, "");
+        SEL_FLD_KEY_VAL, "", "");
     
     private static class HashScan extends QueryScan {
 
         private static final String SQL_SCAN_FMT = String.format(SQL_READ_FMT,
-            " $var2 LONG;", ", $h.key%s",
+            " $var2 LONG;", ", $h.key%s", "",
             "AND ($h.keyId IS NULL OR $h.key.scanId >= $var2) " +
             "ORDER BY $h.key.scanId");
         private static final String SQL_SCAN = String.format(SQL_SCAN_FMT,
@@ -205,8 +206,7 @@ public class HashRead extends HashCommandsBase {
         List<MapValue> rows = doQuery(makeRedisKeyInfo(keyBuf),
             SQL_HGET_VAL, new StringValue(keyId));
         if (rows.size() > 1) {
-            throw RedisResponseException.corrupt(
-                "Expected at most a single result, got multiple");
+            throw RedisResponseException.corrupt(ERR_NO_SINGLE_RES);
         }
 
         if (rows.size() == 0) {
