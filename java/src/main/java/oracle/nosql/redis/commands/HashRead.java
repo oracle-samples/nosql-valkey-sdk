@@ -28,6 +28,9 @@ import oracle.nosql.redis.RedisResponseException.ErrorPrefix;
 import oracle.nosql.redis.util.PreparedStatementCache;
 import oracle.nosql.redis.util.Utils;
 
+import static oracle.nosql.redis.util.Utils.getMapField;
+import static oracle.nosql.redis.util.Utils.getStringField;
+
 public class HashRead extends HashCommandsBase {
 
     // Here we will alias the hash key value as hashVal and keep name "value"

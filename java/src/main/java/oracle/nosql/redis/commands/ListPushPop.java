@@ -150,7 +150,7 @@ public class ListPushPop extends ListCommandsBase {
                     MapValue val = opRes.getExistingValue();
                     if (val == null) {
                         throw RedisResponseException.nosql(
-                            "Missing existing value in operation result");
+                            ERR_MISSING_EXISTING_VAL);
                     }
                     vals.add(new FullBulkStringRedisMessage(
                         getStrVal(rowToElemVal(val))));

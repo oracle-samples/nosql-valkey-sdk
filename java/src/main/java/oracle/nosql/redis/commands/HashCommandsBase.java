@@ -11,6 +11,8 @@ import oracle.nosql.redis.RedisResponseException;
 import oracle.nosql.redis.util.PreparedStatementCache;
 import oracle.nosql.redis.util.Utils.ThrowingBiFunction;
 
+import static oracle.nosql.redis.util.Utils.getStringField;
+
 public class HashCommandsBase extends CollectionCommandsBase {
 
     // We convert to multi-row format as soon as the size exceeds

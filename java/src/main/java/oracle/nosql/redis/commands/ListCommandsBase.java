@@ -20,6 +20,8 @@ import oracle.nosql.driver.values.StringValue;
 import oracle.nosql.redis.RedisResponseException;
 import oracle.nosql.redis.util.PreparedStatementCache;
 
+import static oracle.nosql.redis.util.Utils.getStringField;
+
 abstract class ListCommandsBase extends CollectionCommandsBase {
 
     protected static final String LIST_TABLE_NAME = "redis.lists";

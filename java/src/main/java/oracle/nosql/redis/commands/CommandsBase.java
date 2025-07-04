@@ -47,6 +47,9 @@ import oracle.nosql.redis.util.Utils.ThrowingBiFunction;
 import oracle.nosql.redis.util.Utils.ThrowingConsumer;
 import oracle.nosql.redis.util.Utils.ThrowingFunction;
 
+import static oracle.nosql.redis.util.Utils.getMapField;
+import static oracle.nosql.redis.util.Utils.getStringField;
+
 public abstract class CommandsBase {
 
     // TTLMode == null means no expiration.
@@ -78,6 +81,8 @@ public abstract class CommandsBase {
     static final String FLD_DATA = "data";
     // Used to retrieve row version in query.
     static final String FLD_VER = "ver";
+    // Some result from query.
+    static final String FLD_RES = "res";
     static final String KEY_DATA = FLD_DATA;
     static final String KEY_SCAN_ID = "scanId";
     static final String KEY_EXP = "exp";
@@ -108,6 +113,10 @@ public abstract class CommandsBase {
         "Expected single result, got multiple";
     static final String ERR_WM_FAIL =
         "Unsuccessful result from writeMultiple";
+    static final String ERR_UNCONDITIONAL_PUT_FAIL =
+        "Unconditional put operation failed";
+    static final String ERR_MISSING_EXISTING_VAL =
+        "Missing existing value or version in result";
 
     public static final String TYPE_STRING = "string";
     public static final String TYPE_LIST = "list";
@@ -126,6 +135,10 @@ public abstract class CommandsBase {
     // WriteMultipleRequest can do max of 50 ops.
     static final int MAX_WM_CNT = 50;
 
+    static final String ERR_TOO_MANY_KEYS = String.format(
+        "Atomic update of more than %s keys is not supported",
+        MAX_WM_CNT);
+
     static final SimpleStringRedisMessage okReply =
         new SimpleStringRedisMessage("OK");
     static final IntegerRedisMessage zeroReply = new IntegerRedisMessage(0);
@@ -143,7 +156,7 @@ public abstract class CommandsBase {
 
         // One potential issue: if expiration is given as TTL (not expiry
         // timestamp) and put takes several tries (because of version
-        // conflicts, see doSet), is it still ok to compute expire timestamp
+        // conflicts, see doSet(), is it still ok to compute expire timestamp
         // only once before the whole operation rather than before each retry?
         // (considering HTTP requests may take on the order of 100ms for a
         // slower network)
@@ -175,8 +188,12 @@ public abstract class CommandsBase {
             this.exp = exp;
         }
 
-        static boolean isExpired(long expTime, long currTime) {
+        static boolean isTimeExpired(long expTime, long currTime) {
             return expTime != NO_EXP && currTime > expTime;
+        }
+
+        static boolean isTimeExpired(long expTime) {
+            return expTime != NO_EXP && System.currentTimeMillis() > expTime;
         }
 
         boolean exists() {
@@ -184,16 +201,16 @@ public abstract class CommandsBase {
         }
 
         boolean isValid(long currTime) {
-            return val != null && !isExpired(exp, currTime);
+            return val != null && !isTimeExpired(exp, currTime);
         }
 
         boolean isValid() {
-            return val != null && !isExpired(exp, System.currentTimeMillis());
+            return val != null && !isTimeExpired(exp, System.currentTimeMillis());
         }
 
         // the key exists but has expired
         boolean isExpired(long currTime) {
-            return isExpired(exp, currTime);
+            return isTimeExpired(exp, currTime);
         }
 
         boolean isExpired() {
@@ -272,6 +289,93 @@ public abstract class CommandsBase {
             }
         }
         return Utils.crc16(key) & 0x3FFF;
+    }
+
+    private static PutRequest makePutReqForSet(RedisKeyInfo keyInfo, long exp,
+        MapValue val) {
+        MapValue row = new MapValue().put(FLD_SLOT, keyInfo.slot)
+            .put(FLD_ID, keyInfo.id)
+            .put(FLD_KEY, makeRedisKey(keyInfo, exp))
+            .put(FLD_VALUE, val);
+        PutRequest putReq = new PutRequest()
+            .setTableName(NoSQLRedisServer.MAIN_TABLE_NAME)
+            .setValue(row);
+
+        long currTime = System.currentTimeMillis();
+        // Redis default for SET command is to remove expiration from
+        // existing key unless KEEPTTL is specified.
+        // In case exp is already in the past (exp < currTime), we follow
+        // Redis's behavior and treat the key as already expired.  This
+        // will be already indicated by the "exp" field inside the key and
+        // we can avoid setting the row's TTL (so that we don't set it to
+        // negative TTL).  We also don't set TTL if exp = KEEP_TTL.
+        if (exp == NO_EXP || exp >= currTime) {
+            putReq.setTTL(exp == NO_EXP ? TimeToLive.DO_NOT_EXPIRE :
+                TimeToLive.fromExpirationTime(exp, currTime));
+        }
+        return putReq;
+    }
+
+    private void doSetAlways(RedisKeyInfo keyInfo, MapValue val, long exp)
+        throws RedisResponseException {
+        PutRequest putReq = makePutReqForSet(keyInfo, exp, val);
+        try {
+            PutResult putRes = nosqlHandle.put(putReq);
+            if (putRes.getVersion() == null) {
+                throw RedisResponseException.nosql(ERR_UNCONDITIONAL_PUT_FAIL);
+            }
+        } catch(NoSQLException ex) {
+            throw RedisResponseException.nosql(ex);
+        }
+    }
+
+    // First try IfAbsent. If there is existing row, check if it's expired. If
+    // not, NX fails. Otherwise, we can retry put, but condition it on
+    // the existing version instead.
+    private boolean doSetNX(RedisKeyInfo keyInfo, MapValue val, long exp)
+        throws RedisResponseException {
+        oracle.nosql.driver.Version existingVer = null;
+        for(int i = 0; i < ATOMIC_SET_TRIES; i++) {
+            PutRequest putReq = makePutReqForSet(keyInfo, exp, val);
+
+            if (existingVer == null) {
+                putReq.setOption(PutRequest.Option.IfAbsent);
+            } else {
+                putReq.setOption(PutRequest.Option.IfVersion);
+                putReq.setMatchVersion(existingVer);
+            }
+
+            putReq.setReturnRow(true);
+
+            try {
+                PutResult putRes = nosqlHandle.put(putReq);
+                if (putRes.getVersion() != null) {
+                    return true;
+                }
+
+                MapValue existingRow = putRes.getExistingValue();
+                if (existingRow == null) {
+                    // If we tried IfAbsent and failed, there must be existing
+                    // row.
+                    if (existingVer == null) {
+                        throw RedisResponseException.nosql(
+                            ERR_MISSING_EXISTING_VAL);
+                    }
+                    // There is a small chance that the DB has expired the row
+                    // before this try, so we do IfAbsent again on the next
+                    // try.
+                    existingVer = null;
+                    continue;
+                }
+                if (!isRowExpired(existingRow)) {
+                    return false;
+                }
+            } catch (NoSQLException ex) {
+                throw RedisResponseException.nosql(ex);
+            }
+        }
+
+        throw failedAtomicRetries();
     }
 
     static void chkExactNumArgs(RawCommand cmd, int numArgs)
@@ -393,44 +497,6 @@ public abstract class CommandsBase {
 
     static MapValue makeRedisKey(RedisKeyInfo keyInfo) {
         return makeRedisKey(keyInfo, keyInfo.exp);
-    }
-
-    static String getStringField(MapValue mapVal, String fieldName,
-        boolean allowNull) throws RedisResponseException {
-        FieldValue fldVal = mapVal.get(fieldName);
-        if (allowNull && fldVal != null && fldVal.isAnyNull()) {
-            return null;
-        }
-        if (fldVal == null || !fldVal.isString()) {
-            throw RedisResponseException.corrupt(
-                "Missing or invalid field " + fieldName);
-        }
-
-        return fldVal.getString();
-    }
-
-    static String getStringField(MapValue mapVal, String fieldName)
-        throws RedisResponseException {
-        return getStringField(mapVal, fieldName, false);
-    }
-
-    static MapValue getMapField(MapValue mapVal, String fieldName,
-        boolean allowNull) throws RedisResponseException {
-        FieldValue fldVal = mapVal.get(fieldName);
-        if (allowNull && fldVal != null && fldVal.isAnyNull()) {
-            return null;
-        }
-        if (fldVal == null || !fldVal.isMap()) {
-            throw RedisResponseException.corrupt(
-                "Missing or invalid field " + fieldName);
-        }
-
-        return fldVal.asMap();
-    }
-
-    static MapValue getMapField(MapValue mapVal, String fieldName)
-        throws RedisResponseException {
-        return getMapField(mapVal, fieldName, false);
     }
 
     static MapValue rowToKey(MapValue row) throws RedisResponseException {
@@ -590,60 +656,41 @@ public abstract class CommandsBase {
         return doGet(makeRedisKeyInfo(keyBuf));
     }
 
-    boolean doSet(RedisKeyInfo keyInfo, MapValue val, long exp, SetOpt setOpt)
+    // Note that we cannot handle XX here without reading the row first. This
+    // is because if the existing row contains expired key, putIfPresent will
+    // still succeed and overwrite the row. The best way to handle XX is
+    // through SQL UPDATE query.
+    boolean doSet(RedisKeyInfo keyInfo, MapValue val, long exp, boolean isNX)
         throws RedisResponseException {
-        MapValue row = new MapValue().put(FLD_SLOT, keyInfo.slot)
-            .put(FLD_ID, keyInfo.id)
-            .put(FLD_KEY, makeRedisKey(keyInfo, exp))
-            .put(FLD_VALUE, val);
-        PutRequest putReq = new PutRequest()
-            .setTableName(NoSQLRedisServer.MAIN_TABLE_NAME)
-            .setValue(row);
-
-        long currTime = System.currentTimeMillis();
-        // see doGetSet()
-        if (exp == NO_EXP || exp >= currTime) {
-            putReq.setTTL(exp == NO_EXP ? TimeToLive.DO_NOT_EXPIRE :
-                TimeToLive.fromExpirationTime(exp, currTime));
+        if (isNX) {
+            return doSetNX(keyInfo, val, exp);
         }
-
-        if (setOpt != null) {
-            putReq.setOption(setOpt == SetOpt.NX ?
-                PutRequest.Option.IfAbsent : PutRequest.Option.IfPresent);
-        }
-    
-        try {
-            PutResult putRes = nosqlHandle.put(putReq);
-            return putRes.getVersion() != null;
-        } catch(NoSQLException ex) {
-            throw RedisResponseException.nosql(ex);
-        }
+        doSetAlways(keyInfo, val, exp);
+        return true;
     }
 
-    boolean doSet(ByteBuf keyBuf, MapValue val, long exp, SetOpt setOpt)
+    boolean doSet(ByteBuf keyBuf, MapValue val, long exp, boolean isNX)
         throws RedisResponseException {
-        return doSet(makeRedisKeyInfo(keyBuf, exp), val, exp, setOpt);
+        return doSet(makeRedisKeyInfo(keyBuf, exp), val, exp, isNX);
     }
 
     // All-purpose function for atomic get-set sequence.
     // needSet - predicate to determine if set should proceed.  E.g. when
-    // using Set.NX or SetOpt in StringCommands or TTLOpt in GenericCommands.
+    // using SetOpt in StringCommands or TTLOpt in GenericCommands.
     // getNewVal - function to compute new value from the old value (it can
     // just return provided value for SET commands).  Note that it will also
     // determine new expiration time and set it as part of RedisValueInfo.
     // getResult - function to compute the result of the command based on old
     // and new values (mostly one or the other).
-    // needOldVal - whether it is required to obtain an old value first, if
-    // not, we can avoid extra request and use RedisValueInfo.NONE.  E.g. old
-    // value is not required for unconditional SET commands.
+    // Note that this function is not used for unconditional SET or SETNX, for
+    // that see doSet().
     <R> R doGetSet(
         RedisKeyInfo keyInfo,
         Predicate<RedisValueInfo> needSet,
         ThrowingFunction<RedisValueInfo,RedisValueInfo,RedisResponseException>
             getNewVal,
         ThrowingBiFunction<RedisValueInfo, RedisValueInfo, R,
-            RedisResponseException> getResult,
-        boolean needOldVal) throws RedisResponseException {
+            RedisResponseException> getResult) throws RedisResponseException {
 
         // Note that we have to check whether any existing
         // key has already expired and if so, treat it as non-existing.
@@ -657,8 +704,7 @@ public abstract class CommandsBase {
         // https://redis.io/commands/setnx/
 
         for(int i = 0; i < ATOMIC_SET_TRIES; i++) {
-            RedisValueInfo oldVal = needOldVal ?
-                doGet(keyInfo) : RedisValueInfo.NONE;
+            RedisValueInfo oldVal = doGet(keyInfo);
 
             long currTime = System.currentTimeMillis();
             boolean isValid = oldVal.isValid(currTime);
@@ -672,34 +718,15 @@ public abstract class CommandsBase {
             long exp = (!isValid && newVal.exp == KEEP_TTL) ?
                 NO_EXP : newVal.exp;
 
-            MapValue row = new MapValue().put(FLD_SLOT, keyInfo.slot)
-                .put(FLD_ID, keyInfo.id)
-                .put(FLD_KEY, makeRedisKey(keyInfo, exp))
-                .put(FLD_VALUE, newVal.val);
-            PutRequest putReq = new PutRequest()
-                .setTableName(NoSQLRedisServer.MAIN_TABLE_NAME)
-                .setValue(row);
-    
-            // Redis default for SET command is to remove expiration from
-            // existing key unless KEEPTTL is specified.
-            // In case exp is already in the past (exp < currTime), we follow
-            // Redis's behavior and treat the key as already expired.  This
-            // will be already indicated by the "exp" field inside the key and
-            // we can avoid setting the row's TTL (so that we don't set it to
-            // negative TTL).  We also don't set TTL if exp = KEEP_TTL.
-            if (exp == NO_EXP || exp >= currTime) {
-                putReq.setTTL(exp == NO_EXP ? TimeToLive.DO_NOT_EXPIRE :
-                    TimeToLive.fromExpirationTime(exp, currTime));
-            }
+            PutRequest putReq = makePutReqForSet(keyInfo, exp, newVal.val);
         
             // For atomicity, put is conditional on existing version if
             // any (including expired row) or ifAbsent if old value doesn't
-            // exist but was needed (e.g. if using SetMode.NX).  Otherwise,
-            // the put is unconditional.
+            // exist.
             if (oldVal.ver != null) {
                 putReq.setOption(PutRequest.Option.IfVersion);
                 putReq.setMatchVersion(oldVal.ver);                        
-            } else if (needOldVal) {
+            } else {
                 putReq.setOption(PutRequest.Option.IfAbsent);
             }
             try {
@@ -721,10 +748,9 @@ public abstract class CommandsBase {
         ThrowingFunction<RedisValueInfo,RedisValueInfo,RedisResponseException>
             getNewVal,
         ThrowingBiFunction<RedisValueInfo, RedisValueInfo, R,
-            RedisResponseException> getResult,
-        boolean needOldVal) throws RedisResponseException {
+            RedisResponseException> getResult) throws RedisResponseException {
         return doGetSet(makeRedisKeyInfo(keyBuf), needSet, getNewVal,
-            getResult, needOldVal);
+            getResult);
     }
 
     RedisValueInfo doDelGetVal(RedisKeyInfo keyInfo)
@@ -741,8 +767,7 @@ public abstract class CommandsBase {
             MapValue row = delRes.getExistingValue();
             oracle.nosql.driver.Version ver = delRes.getExistingVersion();
             if (row == null || ver == null) {
-                throw RedisResponseException.corrupt(
-                    "Delete result missing existing value or version");
+                throw RedisResponseException.nosql(ERR_MISSING_EXISTING_VAL);
             }
             RedisValueInfo res = new RedisValueInfo(rowToValue(row), ver,
                 getExpTime(rowToKey(row)));

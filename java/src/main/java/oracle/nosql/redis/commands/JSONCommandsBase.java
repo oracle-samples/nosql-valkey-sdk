@@ -1,7 +1,5 @@
 package oracle.nosql.redis.commands;
 
-import static oracle.nosql.redis.util.Utils.byteBufToString;
-
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -39,6 +37,8 @@ import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser;
 import oracle.nosql.redis.util.PreparedStatementCache;
 import oracle.nosql.redis.util.Utils;
 
+import static oracle.nosql.redis.util.Utils.*;
+
 abstract class JSONCommandsBase extends CommandsBase {
 
     protected static final String ROOT_PATH = "$";
@@ -54,7 +54,6 @@ abstract class JSONCommandsBase extends CommandsBase {
     protected static final String ARRAY_CONV_KEY = "v";
     protected static final String VALUE_JSON = "json";
     protected static final String VALUE_PAD = "pad";
-    protected static final String FLD_RES = "res";
     protected static final String FLD_IS_JSON = "isJSON";
     protected static final String AND_IS_JSON = "AND (EXISTS $r.value.json)";
     protected static final String SQL_IS_JSON =
@@ -103,6 +102,7 @@ abstract class JSONCommandsBase extends CommandsBase {
     public static final String CMD_JSON_CLEAR = "JSON.CLEAR";
     public static final String CMD_JSON_MGET = "JSON.MGET";
     public static final String CMD_JSON_MERGE = "JSON.MERGE";
+    public static final String CMD_JSON_MSET = "JSON.MSET";
 
     protected static class TranslateResult {
         final String sqlPath;
@@ -236,7 +236,7 @@ abstract class JSONCommandsBase extends CommandsBase {
         return path.startsWith("[") ? ROOT_PATH + path : ROOT_PATH_PFX + path;
     }
 
-    private static ParseTree parsePath(String path) {
+    protected static ParseTree parsePath(String path) {
         JSONPathLexer lexer = new JSONPathLexer(CharStreams.fromString(
             canonizePath(path)));
         CommonTokenStream tokenStream = new CommonTokenStream(lexer);
@@ -465,36 +465,19 @@ abstract class JSONCommandsBase extends CommandsBase {
     // Returns array stored in field named "res".
     protected static ArrayValue getArrRes(MapValue row)
         throws RedisResponseException {
-        FieldValue val = row.get(FLD_RES);
-        if (val == null) {
-            throw RedisResponseException.nosql("Missing result field res");
-        }
-        if (!val.isArray()) {
-            throw RedisResponseException.nosql(ERR_NOT_ARRAY);
-        }
-        return val.asArray();
+        return getArrField(row, FLD_RES);
     }
 
     // Returns boolean stored in field named "res".
     protected static boolean getBoolRes(MapValue row)
         throws RedisResponseException {
-        FieldValue val = row.get(FLD_RES);
-        if (val == null || !val.isBoolean()) {
-            throw RedisResponseException.nosql(
-                "result missing or not boolean");
-        }
-        return val.getBoolean();
+        return getBoolField(row, FLD_RES);
     }
 
     // Returns integer stored in field named "res".
     protected static int getIntRes(MapValue row)
         throws RedisResponseException {
-        FieldValue val = row.get(FLD_RES);
-        if (val == null || !val.isInteger()) {
-            throw RedisResponseException.nosql(
-                "result missing or not integer");
-        }
-        return val.getInt();
+        return getIntField(row, FLD_RES);
     }
 
     protected PreparedStatement getPrepStmt(RedisKeyInfo keyInfo, String sql,

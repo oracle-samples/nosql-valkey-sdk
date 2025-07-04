@@ -15,7 +15,6 @@ import oracle.nosql.driver.JsonParseException;
 import oracle.nosql.driver.values.FieldValue;
 import oracle.nosql.driver.values.IntegerValue;
 import oracle.nosql.driver.values.StringValue;
-import oracle.nosql.redis.commands.jsonpath.parser.JSONPathBaseVisitor;
 import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser;
 import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.AndExprContext;
 import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.ArraySelectorContext;
@@ -25,9 +24,8 @@ import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.FilterExprCont
 import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.MapSelectorContext;
 import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.PathOrValContext;
 import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.SegmentsContext;
-import oracle.nosql.redis.util.Utils;
 
-public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
+public class JSONPathToSQLVisitor extends JSONPathVisitorBase<String> {
 
 	private static final String IDX_SIZE_PFX = "size($) + ";
 
@@ -109,8 +107,7 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 	// merge with the parent path instead, but the patch object used for this
 	// will be an object containing leafFields with values assigned to the
 	// user-provided patch.
-	private ArrayList<String> leafFields = new ArrayList<>();
-	private String input; // for error reporting
+	private ArrayList<String> leafFields = new ArrayList<>(4);
 	private String sqlPath;
 
 	// lastSegment keeps track of the last segment in the sqlPath. Knowing
@@ -127,34 +124,10 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 	// on any parent array.
 	private String parentFilter;
 
-	// Note that since filter can contain arbitrary JSON Path expressions, it
-	// is possible for filters to be nested.
-	private int inFilterCnt;
-	private boolean inLastSegment;
 	private boolean inParentSegment;
 
 	public JSONPathToSQLVisitor(String root) {
 		this.root = root;
-	}
-
-	private static String unquote(String s) {
-		assert s != null && s.length() >= 2;
-		String quote = null;
-		if (s.charAt(0) == '"' && s.charAt(s.length() - 1) == '"') {
-			quote = "\"";
-		} else if (s.charAt(0) == '\'' && s.charAt(s.length() - 1) == '\'') {
-			quote = "'";
-		} else {
-			// The grammar should disallow any other cases.
-			assert false;
-		}
-
-		// We need to take care of escape sequences.
-		s = s.substring(1, s.length() - 1).replace("\\" + quote, quote);
-		// The grammar would not allow unescaped quotes in the string.
-		assert !s.contains(quote);
-
-		return s;
 	}
 
 	private static boolean isLastSegment(ParserRuleContext ctx) {
@@ -170,22 +143,6 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 		String name = "$var" + variables.size();
 		variables.put(name, val);
 		return name;
-	}
-
-	private boolean inFilter() {
-		assert inFilterCnt >= 0;
-		return inFilterCnt > 0;
-	}
-
-	private RuntimeException parseException(ParserRuleContext ctx,
-		String msg, Throwable cause) {
-		return Utils.parseException(input,
-			ctx.getStart().getCharPositionInLine(), msg, cause);
-	}
-
-	private RuntimeException parseException(ParserRuleContext ctx,
-		String msg) {
-		return parseException(ctx, msg, null);
 	}
 
 	private String applyWildcard() {
@@ -267,9 +224,9 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 	public void run(ParseTree parseTree, String input) {
 		lastSegment = null;
 		leafFields.clear();
-		assert(inFilterCnt == 0);
-		assert(!inLastSegment);
-		assert(!inParentSegment);
+		assert inFilterCnt == 0;
+		assert !inLastSegment;
+		assert !inParentSegment;
 
 		assert input != null;
 		this.input = input;
@@ -537,6 +494,7 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 						throw parseException(ctx,
 							"Slice step must be positive");
 					};
+					break;
 				default:
 					assert(false);
 			}
@@ -638,7 +596,7 @@ public class JSONPathToSQLVisitor extends JSONPathBaseVisitor<String> {
 		BasicExprContext basicExpr = ctx.basicExpr();
 		assert basicExpr != null;
 		AndExprContext andExpr = ctx.andExpr();
-		// We rely on the fact that in SQL "AND" had lower presedence than
+		// We rely on the fact that in SQL "AND" had lower precedence than
 		// any constructs in basic expr.
 		return andExpr == null ?
 			visit(basicExpr) : visit(basicExpr) + " AND " + visit(andExpr);

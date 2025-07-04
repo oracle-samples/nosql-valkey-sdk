@@ -3,25 +3,35 @@ package oracle.nosql.redis.commands;
 import static oracle.nosql.redis.util.Utils.byteBufToString;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 
+import io.netty.buffer.ByteBuf;
 import io.netty.handler.codec.redis.ArrayRedisMessage;
 import io.netty.handler.codec.redis.FullBulkStringRedisMessage;
 import io.netty.handler.codec.redis.RedisMessage;
+import oracle.nosql.driver.NoSQLException;
 import oracle.nosql.driver.NoSQLHandle;
+import oracle.nosql.driver.TimeToLive;
 import oracle.nosql.driver.ops.PreparedStatement;
+import oracle.nosql.driver.ops.PutRequest;
+import oracle.nosql.driver.ops.WriteMultipleRequest;
+import oracle.nosql.driver.ops.WriteMultipleResult;
 import oracle.nosql.driver.values.ArrayValue;
 import oracle.nosql.driver.values.FieldValue;
 import oracle.nosql.driver.values.IntegerValue;
 import oracle.nosql.driver.values.JsonOptions;
 import oracle.nosql.driver.values.MapValue;
 import oracle.nosql.redis.CommandHandlers.CommandHandler;
+import oracle.nosql.redis.NoSQLRedisServer;
 import oracle.nosql.redis.RawCommand;
 import oracle.nosql.redis.RedisClientContext;
 import oracle.nosql.redis.RedisResponseException;
+import oracle.nosql.redis.commands.jsonpath.JSONPathValueVisitor;
 import oracle.nosql.redis.util.PreparedStatementCache;
 import oracle.nosql.redis.util.Utils;
 import oracle.nosql.redis.util.Utils.RedisRetryException;
+import org.antlr.v4.runtime.tree.ParseTree;
 
 public class JSONGetSet extends JSONCommandsBase {
 
@@ -47,6 +57,9 @@ public class JSONGetSet extends JSONCommandsBase {
         "%sUPDATE redis $r JSON MERGE %s WITH PATCH %s WHERE " +
         SQL_EXISTS_COND + SQL_RETURNING +  "(EXISTS %s) AS res" +
         SQL_IS_JSON;
+    private static final String SQL_MSET_GET = DECL_KEY_IDS +
+        "SELECT $r.id, row_version($r) AS ver, $r.key.exp AS exp, " +
+        "$r.value.json AS json FROM redis $r " + WHERE_KEY_IDS_COND;
 
     public JSONGetSet(NoSQLHandle nosqlHandle,
         PreparedStatementCache pstmtCache) {
@@ -79,7 +92,7 @@ public class JSONGetSet extends JSONCommandsBase {
             // statement in hope that the key exists only perform another
             // request (doSet) if it doesn't.
             if (path.equals(ROOT_PATH)) {
-                return doSet(keyInfo, makeJSONValue(val), NO_EXP, SetOpt.NX);
+                return doSet(keyInfo, makeJSONValue(val), NO_EXP, true);
             }
 
             // Note that SQL_UPDATE_PUT_NX_FMT uses array filter step
@@ -128,7 +141,7 @@ public class JSONGetSet extends JSONCommandsBase {
             }
 
             assert setOpt == null; // we handled other cases above
-            if (!doSet(keyInfo, makeJSONValue(val), NO_EXP, null)) {
+            if (!doSet(keyInfo, makeJSONValue(val), NO_EXP, false)) {
                 // This is rare case when another client just concurrently
                 // inserted a new key.
                 throw new RedisRetryException();
@@ -161,12 +174,123 @@ public class JSONGetSet extends JSONCommandsBase {
             untransformValues(res) : makeMultiResult(paths, res);
     }
 
+    private boolean doJSONMSet(ByteBuf[] args) throws RedisResponseException {
+        RedisKeyInfo[] keyInfos = makeRedisMultiKeyInfo(args, 0,
+            args.length / 3, 3);
+
+        HashMap<String, MapValue> byId = new HashMap<>();
+        ArrayValue keyIds = makeKeyIdsValue(keyInfos);
+        PreparedStatement pStmt = pstmtCache.getByRef(SQL_MSET_GET);
+        pStmt.setVariable(SQL_SLOT, new IntegerValue(keyInfos[0].slot));
+        pStmt.setVariable(SQL_KEY_IDS, keyIds);
+        processQuery(pStmt, row -> { byId.put(getId(row), row); });
+
+        WriteMultipleRequest wmReq = new WriteMultipleRequest();
+        HashSet<String> chkDupSet = new HashSet<>();
+        JSONPathValueVisitor visitor = new JSONPathValueVisitor();
+
+        // Backward iteration to handle duplicate keys, same as for
+        // StringCommands.handleMSet().
+        for(int i = keyInfos.length - 1; i >= 0; i--) {
+            RedisKeyInfo ki = keyInfos[i];
+            if (!chkDupSet.add(ki.id)) {
+                continue;
+            }
+            // Note that oldRow is query result in different format than
+            // redis table row.
+            MapValue oldRow = byId.get(ki.id);
+            FieldValue oldVal = null;
+            if (oldRow != null) {
+                ki.exp = getExpTime(oldRow);
+                if (!RedisValueInfo.isTimeExpired(ki.exp)) {
+                    oldVal = oldRow.get("json");
+                    if (oldVal == null) {
+                        // Absence of "json" field in existing Redis key means
+                        // it is not of type JSON.
+                        throw RedisResponseException.wrongType();
+                    }
+                } else {
+                    ki.exp = NO_EXP;
+                }
+            }
+
+            String path = Utils.byteBufToString(args[i * 3 + 1]);
+            FieldValue valToSet = byteBufToJson(args[i * 3 + 2]);
+
+            FieldValue newVal;
+            // We handle root path outside the visitor.
+            if (path.equals(ROOT_PATH)) {
+                newVal = transformValue(valToSet);
+            } else {
+                if (oldVal == null) {
+                    throw new RedisResponseException(ERR_NEW_VAL_NOT_ROOT);
+                }
+                // Because we store values in transformed form and the visitor
+                // operates on untransformed values, we have to untransform and
+                // then transform back.
+                newVal = untransformValue(oldVal);
+                ParseTree parseTree = parsePath(path);
+                // If we fail to set any values according to the provided path
+                // (e.g. because parent field doesn't exist), there is no need
+                // to update this row.
+                if (!visitor.jsonSet(newVal, valToSet, parseTree, path)) {
+                    continue;
+                };
+                newVal = transformValue(newVal);
+            }
+
+            // We could've avoided conditional puts on root path since they
+            // would be overwritten anyway. However, we have to preserve the
+            // expiration times for existing keys since JSON.MSET keeps them.
+
+            MapValue row = new MapValue().put(FLD_SLOT, ki.slot)
+                .put(FLD_ID, ki.id).put(FLD_KEY, makeRedisKey(ki))
+                // cmd.args alternate keys and values
+                .put(FLD_VALUE, makeJSONValue(newVal));
+            PutRequest putReq = new PutRequest()
+                .setTableName(NoSQLRedisServer.MAIN_TABLE_NAME)
+                .setValue(row);
+            if (oldRow != null) {
+                // Unlike MSET, JSON.MSET will keep expiration time for
+                // existing keys. We only need to remove expiration time from
+                // expired keys since they are treated as non-existent.
+                if (oldVal == null) {
+                    putReq.setTTL(TimeToLive.DO_NOT_EXPIRE);
+                }
+
+                // Make conditional on existing version.
+                putReq.setOption(PutRequest.Option.IfVersion);
+                putReq.setMatchVersion(rowToVer(oldRow));
+            } else {
+                putReq.setOption(PutRequest.Option.IfAbsent);
+            }
+
+            wmReq.add(putReq, true);
+        }
+
+        // Possible if provided paths did not update any values (see
+        // visitor.jsonSet above).
+        if (wmReq.getNumOperations() == 0) {
+            return false;
+        }
+
+        try {
+            WriteMultipleResult res = nosqlHandle.writeMultiple(wmReq);
+            if (res.getSuccess()) {
+                return true;
+            }
+            throw new RedisRetryException();
+        } catch(NoSQLException ex) {
+            throw RedisResponseException.nosql(ex);
+        }
+    }
+
     private boolean doJSONMerge(RedisKeyInfo keyInfo, String path,
         FieldValue val) throws RedisResponseException {
 
         // If val is not an object, then the merge operation should just
-        // replace the target with val. Particulary, we cannot use merge when
-        // val = null, since if we do merge via parent path (see below), the
+        // replace the target with val. Particularly, we cannot use merge when
+        // val = null, since if we do merge via parent path (see below), then
         // this would remove the target field(s) rather than assign null to it
         // as expected in this case.
         if (!val.isMap()) {
@@ -176,7 +300,7 @@ public class JSONGetSet extends JSONCommandsBase {
         // SQL merge patch does not allow us to merge with non-existing field.
         // This is similar situation to JSON.SET (see leafFields in
         // JSONPathToSQLVisitor). In this case we merge with the parent path
-        // intead. E.g. to merge a.b.new_field with patch p, we merge a.b with
+        // instead. E.g. to merge a.b.new_field with patch p, we merge a.b with
         // patch { new_field: p }. Note that this is only needed when
         // leafFields exist, since all other paths can only point to existing
         // values. However, we want to avoid cases when parent (e.g. a.b) is
@@ -202,7 +326,7 @@ public class JSONGetSet extends JSONCommandsBase {
             }
 
             // Merge to non-existing key is just assigning the patch to it.
-            if (!doSet(keyInfo, makeJSONValue(val), NO_EXP, SetOpt.NX)) {
+            if (!doSet(keyInfo, makeJSONValue(val), NO_EXP, true)) {
                 throw new RedisRetryException();
             };
 
@@ -217,6 +341,7 @@ public class JSONGetSet extends JSONCommandsBase {
         cmdMap.put(CMD_JSON_SET, this::handleJSONSet);
         cmdMap.put(CMD_JSON_GET, this::handleJSONGet);
         cmdMap.put(CMD_JSON_MGET, this::handleJSONMGet);
+        cmdMap.put(CMD_JSON_MSET, this::handleJSONMSet);
         cmdMap.put(CMD_JSON_MERGE, this::handleJSONMerge);
     }
 
@@ -327,6 +452,27 @@ public class JSONGetSet extends JSONCommandsBase {
         }
 
         return new ArrayRedisMessage(res);
+    }
+
+    public RedisMessage handleJSONMSet(RedisClientContext client,
+        RawCommand cmd) throws RedisResponseException {
+        if (cmd.args == null || cmd.args.length < 3 ||
+            cmd.args.length % 3 != 0) {
+            throw RedisResponseException.numArgs(cmd.name);
+        }
+
+        if (cmd.args.length > 3 * MAX_WM_CNT) {
+            throw new RedisResponseException(
+                RedisResponseException.ErrorPrefix.ERR,
+                ERR_TOO_MANY_KEYS);
+        }
+
+        Utils.doWithRetries(() -> doJSONMSet(cmd.args),
+            ATOMIC_SET_TRIES);
+        // We follow Redis spec and behavior that returns "OK" result even if
+        // no values were set because of non-existent parent paths, although
+        // it would make more sense to return more informative result.
+        return okReply;
     }
 
     public RedisMessage handleJSONMerge(RedisClientContext client,

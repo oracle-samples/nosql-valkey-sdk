@@ -25,6 +25,8 @@ import oracle.nosql.redis.util.PreparedStatementCache;
 import oracle.nosql.redis.util.Utils;
 import oracle.nosql.redis.util.Utils.ThrowingFunction;
 
+import static oracle.nosql.redis.util.Utils.getStringField;
+
 public class HashUpdate extends HashCommandsBase {
     
     private static class HSetResult {

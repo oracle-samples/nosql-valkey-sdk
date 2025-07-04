@@ -8,11 +8,16 @@
 package oracle.nosql.redis.util;
 
 import java.security.MessageDigest;
+import java.util.List;
+
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import io.netty.handler.codec.base64.Base64;
 import io.netty.util.CharsetUtil;
+import oracle.nosql.driver.values.ArrayValue;
+import oracle.nosql.driver.values.FieldValue;
+import oracle.nosql.driver.values.MapValue;
 import oracle.nosql.redis.RedisResponseException;
 import oracle.nosql.redis.RedisResponseException.ErrorPrefix;
 
@@ -94,6 +99,12 @@ public class Utils {
         0xEF1F, 0xFF3E, 0xCF5D, 0xDF7C, 0xAF9B, 0xBFBA, 0x8FD9, 0x9FF8,
         0x6E17, 0x7E36, 0x4E55, 0x5E74, 0x2E93, 0x3EB2, 0x0ED1, 0x1EF0
     };
+
+    private static RedisResponseException missingOrInvalidField(String name,
+        String type) {
+        return RedisResponseException.corrupt(String.format(
+            "Missing or invalid %s field %s", type, name));
+    }
 
     public static String byteBufToString(ByteBuf buf)
         throws RedisResponseException {
@@ -216,6 +227,80 @@ public class Utils {
 
     public static int crc16(ByteBuf buf) {
         return crc16(ByteBufUtil.getBytes(buf, 0, buf.readableBytes(), false));
+    }
+
+    public static String getStringField(MapValue mapVal, String fieldName,
+        boolean allowNull) throws RedisResponseException {
+        FieldValue fldVal = mapVal.get(fieldName);
+        if (allowNull && fldVal != null && fldVal.isAnyNull()) {
+            return null;
+        }
+        if (fldVal == null || !fldVal.isString()) {
+            throw missingOrInvalidField(fieldName, "string");
+        }
+
+        return fldVal.getString();
+    }
+
+    public static String getStringField(MapValue mapVal, String fieldName)
+        throws RedisResponseException {
+        return getStringField(mapVal, fieldName, false);
+    }
+
+    public static int getIntField(MapValue mapVal, String fieldName)
+        throws RedisResponseException {
+        FieldValue fldVal = mapVal.get(fieldName);
+        if (fldVal == null || !fldVal.isInteger()) {
+            throw missingOrInvalidField(fieldName, "integer");
+        }
+
+        return fldVal.getInt();
+    }
+
+    public static boolean getBoolField(MapValue mapVal, String fieldName)
+        throws RedisResponseException {
+        FieldValue fldVal = mapVal.get(fieldName);
+        if (fldVal == null || !fldVal.isBoolean()) {
+            throw missingOrInvalidField(fieldName, "boolean");
+        }
+
+        return fldVal.getBoolean();
+    }
+
+    public static ArrayValue getArrField(MapValue mapVal, String fieldName,
+        boolean allowNull) throws RedisResponseException {
+        FieldValue fldVal = mapVal.get(fieldName);
+        if (allowNull && fldVal != null && fldVal.isAnyNull()) {
+            return null;
+        }
+        if (fldVal == null || !fldVal.isArray()) {
+            throw missingOrInvalidField(fieldName, "array");
+        }
+
+        return fldVal.asArray();
+    }
+
+    public static ArrayValue getArrField(MapValue mapVal, String fieldName)
+        throws RedisResponseException {
+        return getArrField(mapVal, fieldName, false);
+    }
+
+    public static MapValue getMapField(MapValue mapVal, String fieldName,
+        boolean allowNull) throws RedisResponseException {
+        FieldValue fldVal = mapVal.get(fieldName);
+        if (allowNull && fldVal != null && fldVal.isAnyNull()) {
+            return null;
+        }
+        if (fldVal == null || !fldVal.isMap()) {
+            throw missingOrInvalidField(fieldName, "map");
+        }
+
+        return fldVal.asMap();
+    }
+
+    public static MapValue getMapField(MapValue mapVal, String fieldName)
+        throws RedisResponseException {
+        return getMapField(mapVal, fieldName, false);
     }
 
 }

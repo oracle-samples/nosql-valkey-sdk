@@ -9,6 +9,8 @@ package oracle.nosql.redis.commands;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
+
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.handler.codec.redis.ArrayRedisMessage;
@@ -17,6 +19,7 @@ import io.netty.handler.codec.redis.IntegerRedisMessage;
 import io.netty.handler.codec.redis.RedisMessage;
 import oracle.nosql.driver.NoSQLException;
 import oracle.nosql.driver.NoSQLHandle;
+import oracle.nosql.driver.TimeToLive;
 import oracle.nosql.driver.ops.PreparedStatement;
 import oracle.nosql.driver.ops.PutRequest;
 import oracle.nosql.driver.ops.WriteMultipleRequest;
@@ -37,6 +40,8 @@ import oracle.nosql.redis.util.Utils;
 import oracle.nosql.redis.util.Utils.RedisRetryException;
 import oracle.nosql.redis.util.Utils.ThrowingFunction;
 
+import static oracle.nosql.redis.util.Utils.getStringField;
+
 public class StringCommands extends CommandsBase {
 
     private static final String AND_IS_STRING =
@@ -52,7 +57,7 @@ public class StringCommands extends CommandsBase {
     // that the key may be expired but still exist in the table. We retrieve
     // these keys and get their versions, so that their update can be version-
     // conditioned in order to make MSETNX operation atomic (for non-existing
-    // keys will will use if-absent instead).
+    // keys will use if-absent instead).
     private static final String SQL_MSET_GET = DECL_KEY_IDS +
         "SELECT $r.id, row_version($r) AS ver, $r.key.exp  AS exp FROM " +
         "redis $r " + WHERE_KEY_IDS_COND;
@@ -143,9 +148,11 @@ public class StringCommands extends CommandsBase {
         throws RedisResponseException {
         // If the result does not depend on the old value, we don't need
         // version-conditioned put or retries done by doGetSet().
-        if (!toGetOldVal && exp != KEEP_TTL) {
-            return doSet(keyBuf, makeStringValue(valBuf), exp, setOpt) ?
-                successReply : failureReply;
+        // Note that doSet() cannot handle SetOpt.XX.
+        // Todo: for SetOpt.XX, use update query instead of put.
+        if (!toGetOldVal && exp != KEEP_TTL && setOpt != SetOpt.XX) {
+            return doSet(keyBuf, makeStringValue(valBuf), exp,
+                setOpt == SetOpt.NX) ? successReply : failureReply;
         }
         return doGetSet(
             keyBuf,
@@ -165,7 +172,7 @@ public class StringCommands extends CommandsBase {
                 assert(setOpt != null || newVal.exists());
                 return toGetOldVal ? valInfoToResp(oldVal) :
                     (newVal.exists() ? successReply : failureReply);
-            }, true);
+            });
     }
 
     private RedisMessage doSetString(ByteBuf keyBuf, long exp, ByteBuf valBuf,
@@ -190,8 +197,7 @@ public class StringCommands extends CommandsBase {
         return doGetSet(keyBuf, (oldVal) -> true,
             (oldVal) -> new RedisValueInfo(makeStringValue(
                 getNewVal.apply(getStringValue(oldVal.val))), null, NO_EXP),
-            (oldVal, newVal) -> getResult.apply(getStringValue(newVal.val)),
-            true);
+            (oldVal, newVal) -> getResult.apply(getStringValue(newVal.val)));
     }
 
     private RedisMessage doIncrBy(ByteBuf keyBuf, final long arg)
@@ -215,9 +221,8 @@ public class StringCommands extends CommandsBase {
         }
 
         if (cmd.args.length > 2 * MAX_WM_CNT) {
-            throw new RedisResponseException(ErrorPrefix.ERR, String.format(
-                "Atomic update of more than %s keys is not supported",
-                MAX_WM_CNT));
+            throw new RedisResponseException(ErrorPrefix.ERR,
+                ERR_TOO_MANY_KEYS);
         }
 
         RedisKeyInfo[] keyInfos = makeRedisMultiKeyInfo(cmd.args, 0,
@@ -229,15 +234,20 @@ public class StringCommands extends CommandsBase {
             PreparedStatement pStmt = pstmtCache.getByRef(SQL_MSET_GET);
             pStmt.setVariable(SQL_SLOT, new IntegerValue(keyInfos[0].slot));
             pStmt.setVariable(SQL_KEY_IDS, keyIds);
-    
-            final HashMap<String, oracle.nosql.driver.Version> hs =
-                new HashMap<>();
+
+            // Avoid allocating hashmap, since in most cases we won't need it.
+            @SuppressWarnings("unchecked")
+            final HashMap<String,oracle.nosql.driver.Version>[] hs =
+                new HashMap[1];
             if (processQuery(pStmt, row -> {
                 // we are retrieving "exp" field so we use the key function
                 if (!isKeyExpired(row)) {
                     return true;
                 }
-                hs.put(getId(row), rowToVer(row));
+                if (hs[0] == null) {
+                    hs[0] = new HashMap<>();
+                }
+                hs[0].put(getId(row), rowToVer(row));
                 return false;
             })) {
                 // processQuery will return true if it encounters an unexpired
@@ -245,21 +255,31 @@ public class StringCommands extends CommandsBase {
                 return zeroReply;
             };
 
-            expVers = hs;
+            expVers = hs[0];
         }
 
         WriteMultipleRequest wmReq = new WriteMultipleRequest();
-        for(int i = 0; i < keyInfos.length; i++) {
+        HashSet<String> chkDupSet = new HashSet<>();
+        // The order of sub-requests in WriteMultipleRequest shouldn't matter.
+        // However, we have to check for duplicate keys. The behavior on MSET
+        // if duplicate keys are provided is to use the last provided value for
+        // that key, hence our backward iteration.
+        for(int i = keyInfos.length - 1; i >= 0; i--) {
             RedisKeyInfo ki = keyInfos[i];
+            if (!chkDupSet.add(ki.id)) {
+                continue;
+            }
             MapValue row = new MapValue().put(FLD_SLOT, ki.slot)
                 .put(FLD_ID, ki.id).put(FLD_KEY, makeRedisKey(ki))
                 // cmd.args alternate keys and values
                 .put(FLD_VALUE, makeStringValue(cmd.args[i * 2 + 1]));
+            // Note that MSET removes any existing expiration time from a key.
             PutRequest putReq = new PutRequest()
                 .setTableName(NoSQLRedisServer.MAIN_TABLE_NAME)
-                .setValue(row);
+                .setValue(row).setTTL(TimeToLive.DO_NOT_EXPIRE);
             if (isNX) {
-                oracle.nosql.driver.Version expVer = expVers.get(ki.id);
+                oracle.nosql.driver.Version expVer =
+                    expVers == null ? null : expVers.get(ki.id);
                 if (expVer == null) {
                     putReq.setOption(PutRequest.Option.IfAbsent);
                 } else {

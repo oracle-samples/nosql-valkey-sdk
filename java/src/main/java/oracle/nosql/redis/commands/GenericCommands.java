@@ -7,25 +7,19 @@
  
  package oracle.nosql.redis.commands;
 
-import static oracle.nosql.redis.util.Utils.millisToSeconds;
-
+import java.util.HashSet;
 import java.util.List;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.function.LongBinaryOperator;
 
 import io.netty.buffer.ByteBuf;
-import io.netty.handler.codec.redis.ArrayRedisMessage;
-import io.netty.handler.codec.redis.IntegerRedisMessage;
-import io.netty.handler.codec.redis.RedisMessage;
-import io.netty.handler.codec.redis.SimpleStringRedisMessage;
+import io.netty.handler.codec.redis.*;
 import oracle.nosql.driver.NoSQLException;
 import oracle.nosql.driver.NoSQLHandle;
 import oracle.nosql.driver.TimeToLive;
-import oracle.nosql.driver.ops.DeleteRequest;
-import oracle.nosql.driver.ops.WriteMultipleRequest;
-import oracle.nosql.driver.ops.WriteMultipleResult;
-import oracle.nosql.driver.values.MapValue;
+import oracle.nosql.driver.ops.*;
+import oracle.nosql.driver.values.*;
 import oracle.nosql.redis.CommandHandlers;
 import oracle.nosql.redis.CommandHandlers.CommandHandler;
 import oracle.nosql.redis.NoSQLRedisServer;
@@ -36,6 +30,9 @@ import oracle.nosql.redis.RedisResponseException.ErrorPrefix;
 import oracle.nosql.redis.util.PreparedStatementCache;
 import oracle.nosql.redis.util.Utils;
 import oracle.nosql.redis.util.Utils.ThrowingPredicate;
+import oracle.nosql.redis.util.Utils.RedisRetryException;
+
+import static oracle.nosql.redis.util.Utils.*;
 
 public class GenericCommands extends CommandsBase {
 
@@ -95,6 +92,12 @@ public class GenericCommands extends CommandsBase {
         }
     }
 
+    private static final String SQL_EXISTS_ONE = DECL_KEY_ID +
+        "SELECT 1 FROM redis $r" + WHERE_KEY_ID_COND + AND_NOT_EXPIRED;
+    private static final String SQL_EXISTS = DECL_KEY_IDS +
+        "SELECT COUNT(*) AS res FROM redis $r " + WHERE_KEY_IDS_COND +
+        AND_NOT_EXPIRED;
+
     private final CommandHandlers cmdHandlers;
 
     private static int compExp(long exp1, long exp2) {
@@ -142,7 +145,7 @@ public class GenericCommands extends CommandsBase {
                     return oneReply;
                 }
                 return zeroReply;
-            }, true);
+            });
     }
 
     // For all commands as above except PERSIST.
@@ -188,8 +191,12 @@ public class GenericCommands extends CommandsBase {
         RedisKeyInfo[] keyInfos = makeRedisMultiKeyInfo(keys, off, cnt);
 
         WriteMultipleRequest wmReq = new WriteMultipleRequest();
+        HashSet<String> chkDupSet = new HashSet<>();
         for(int i = 0; i < keyInfos.length; i++) {
             RedisKeyInfo ki = keyInfos[i];
+            if (!chkDupSet.add(ki.id)) {
+                continue;
+            }
             MapValue pk = new MapValue().put(FLD_SLOT, ki.slot)
                 .put(FLD_ID, ki.id);
             DeleteRequest delReq = new DeleteRequest()
@@ -209,7 +216,7 @@ public class GenericCommands extends CommandsBase {
         }
 
         List<WriteMultipleResult.OperationResult> ls = wmRes.getResults();
-        if (ls.size() != keyInfos.length) {
+        if (ls.size() != chkDupSet.size()) {
             throw RedisResponseException.nosql(String.format(
                 "Mismatched result count from writeMultiple, " +
                 "expected %d, got %d", ls.size(), keyInfos.length));
@@ -218,7 +225,13 @@ public class GenericCommands extends CommandsBase {
         long currTime = System.currentTimeMillis();
         int delCnt = 0;
 
+        // Todo: perhaps consider eliminating duplicates from the input "keys"
+        // array via Stream.distinct() instead of using chkDupSet twice.
+        chkDupSet.clear();
         for(int i = 0; i < keyInfos.length; i++) {
+            if (!chkDupSet.add(keyInfos[i].id)) {
+                continue;
+            }
             WriteMultipleResult.OperationResult opRes = ls.get(i);
             if (!opRes.getSuccess()) {
                 continue;
@@ -226,8 +239,7 @@ public class GenericCommands extends CommandsBase {
 
             MapValue row = opRes.getExistingValue();
             if (row == null) {
-                throw RedisResponseException.nosql(
-                    "Missing existing value from delete");
+                throw RedisResponseException.nosql(ERR_MISSING_EXISTING_VAL);
             }
 
             RedisValueInfo valInfo = new RedisValueInfo(rowToValue(row),
@@ -259,7 +271,44 @@ public class GenericCommands extends CommandsBase {
         return true;
     }
 
-    // Copy is not atomic since src and dst can be on different shards.
+    private boolean doExists(RedisKeyInfo keyInfo)
+        throws RedisResponseException {
+        PreparedStatement pStmt = pstmtCache.getByRef(SQL_EXISTS_ONE);
+        pStmt.setVariable(SQL_SLOT, new IntegerValue(keyInfo.slot));
+        pStmt.setVariable(SQL_KEY_ID, new StringValue(keyInfo.id));
+
+        // returns true if there are any results, false otherwise
+        return processQuery(pStmt, row -> true);
+    }
+
+    private int doExists(RedisKeyInfo[] keyInfos)
+        throws RedisResponseException {
+        ArrayValue keyIds = makeKeyIdsValue(keyInfos);
+        PreparedStatement pStmt = pstmtCache.getByRef(SQL_EXISTS_ONE);
+        pStmt.setVariable(SQL_SLOT, new IntegerValue(keyInfos[0].slot));
+        pStmt.setVariable(SQL_KEY_IDS, keyIds);
+
+        final int [] res = { -1 };
+        if (!processQuery(pStmt, row -> {
+            if (res[0] != -1) {
+                throw RedisResponseException.nosql(ERR_NO_SINGLE_RES);
+            }
+            res[0] = getIntField(row, FLD_RES);
+            return true;
+        })) {
+            throw RedisResponseException.nosql("Missing query result");
+        };
+
+        return res[0];
+    }
+
+    // It is not clear how important it is for COPY to be atomic since we are
+    // only updating one key. The problem is that it is not easy to condition
+    // on the source version, since we are not updating the source key. For
+    // existing destination, we could use SQL UPDATE statement, but not if the
+    // destination doesn't exist yet. It seems the only way in this case would
+    // be to perform unnecessary write on the source, which is not desirable.
+    // This needs to be further discussed.
     private boolean doCopy(ByteBuf srcKeyBuf, ByteBuf dstKeyBuf,
         boolean toReplace, boolean throwIfNotFound)
         throws RedisResponseException {
@@ -273,26 +322,87 @@ public class GenericCommands extends CommandsBase {
         }
 
         RedisKeyInfo dstKeyInfo = makeRedisKeyInfo(dstKeyBuf);
+
         CommandsBase cmds = cmdHandlers.getCommandsByValueType(
             getValueType(srcVal.val));
         MapValue newVal = cmds.doCopy(srcKeyInfo, srcVal, dstKeyInfo);
-        return doSet(dstKeyInfo, newVal, srcVal.exp,
-            toReplace ? null : SetOpt.NX);
+        return doSet(dstKeyInfo, newVal, srcVal.exp, !toReplace);
     }
-    
-    // Note that it is impossible for us to make rename atomic, since it needs
-    // to delete existing key, because the source and destination could be on
-    // different shards.
+
+    // Rename must be atomic, which means source and destination keys must
+    // be in the same hash slot.
     private boolean doRename(ByteBuf srcKeyBuf, ByteBuf dstKeyBuf,
         boolean isNX) throws RedisResponseException {
-        boolean success = doCopy(srcKeyBuf, dstKeyBuf, !isNX, true);
-        if (isNX && !success) {
-            return false;
+        RedisKeyInfo srcKeyInfo = makeRedisKeyInfo(srcKeyBuf);
+        RedisKeyInfo dstKeyInfo = makeRedisKeyInfo(dstKeyBuf);
+        if (srcKeyInfo.slot != dstKeyInfo.slot) {
+            throw RedisResponseException.crossSlot();
         }
-        assert success;
-        success = doDel(srcKeyBuf);
-        // success could be false if the key was concurrently deleted
-        return true;
+        // renaming to the same name is a no-op
+        if (srcKeyInfo.id == dstKeyInfo.id) {
+            return true;
+        }
+
+        RedisValueInfo srcVal = doGet(srcKeyInfo);
+        long currTime = System.currentTimeMillis();
+        if (!srcVal.isValid(currTime)) {
+            throw new RedisResponseException(ErrorPrefix.ERR, "no such key");
+        }
+
+        RedisValueInfo dstVal = null;
+        if (isNX) {
+            dstVal = doGet(dstKeyInfo);
+            if (dstVal != null && dstVal.isValid(currTime)) {
+                return false;
+            }
+        }
+
+        // RENAME transfers the source expiration time to the destination.
+        dstKeyInfo.exp = srcVal.exp;
+
+        CommandsBase cmds = cmdHandlers.getCommandsByValueType(
+            getValueType(srcVal.val));
+        MapValue newVal = cmds.doCopy(srcKeyInfo, srcVal, dstKeyInfo);
+
+        WriteMultipleRequest wmReq = new WriteMultipleRequest();
+        MapValue row = new MapValue().put(FLD_SLOT, dstKeyInfo.slot)
+            .put(FLD_ID, dstKeyInfo.id).put(FLD_KEY, makeRedisKey(dstKeyInfo))
+            .put(FLD_VALUE, newVal);
+
+        PutRequest putReq = new PutRequest()
+            .setTableName(NoSQLRedisServer.MAIN_TABLE_NAME)
+            .setValue(row)
+            .setTTL(dstKeyInfo.exp == NO_EXP ? TimeToLive.DO_NOT_EXPIRE :
+                TimeToLive.fromExpirationTime(dstKeyInfo.exp, currTime));
+        if (isNX) {
+            if (dstVal == null) {
+                putReq.setOption(PutRequest.Option.IfAbsent);
+            } else {
+                // condition on version of expired key
+                putReq.setOption(PutRequest.Option.IfVersion);
+                putReq.setMatchVersion(dstVal.ver);
+            }
+        }
+        wmReq.add(putReq, true);
+
+        DeleteRequest delReq = new DeleteRequest()
+            .setTableName(NoSQLRedisServer.MAIN_TABLE_NAME)
+            .setKey(makePrimaryKey(srcKeyInfo)).setMatchVersion(srcVal.ver);
+        wmReq.add(delReq, true);
+
+        try {
+            WriteMultipleResult wmRes = nosqlHandle.writeMultiple(wmReq);
+            if (!wmRes.getSuccess()) {
+                if (!isNX && wmRes.getFailedOperationIndex() == 0) {
+                    throw RedisResponseException.nosql(
+                        ERR_UNCONDITIONAL_PUT_FAIL);
+                }
+                throw new RedisRetryException();
+            }
+            return true;
+        } catch(NoSQLException ex) {
+            throw RedisResponseException.nosql(ex);
+        }
     }
 
     public GenericCommands(NoSQLHandle nosqlHandle,
@@ -344,14 +454,9 @@ public class GenericCommands extends CommandsBase {
     public RedisMessage handleExists(RedisClientContext client,
         RawCommand cmd) throws RedisResponseException {
         chkMinNumArgs(cmd, 1);
-        int cnt = 0;
-        long currTime = System.currentTimeMillis();
-        for(int i = 0; i < cmd.args.length; i++) {
-            RedisValueInfo valInfo = doGet(cmd.args[i]);
-            if (valInfo.isValid(currTime)) {
-                cnt++;
-            }
-        }
+        int cnt = cmd.args.length == 1 ?
+            (doExists(makeRedisKeyInfo(cmd.args[0])) ? 1 : 0) :
+            doExists(makeRedisMultiKeyInfo(cmd.args, 0, cmd.args.length));
         return new IntegerRedisMessage(cnt);
     }
 
@@ -444,16 +549,20 @@ public class GenericCommands extends CommandsBase {
     public RedisMessage handleRename(RedisClientContext client, 
         RawCommand cmd) throws RedisResponseException {
         chkExactNumArgs(cmd, 2);
-        boolean success = doRename(cmd.args[0], cmd.args[1], false);
-        assert success;
+        boolean res = Utils.doWithRetries(
+            () -> doRename(cmd.args[0], cmd.args[1], false),
+            ATOMIC_SET_TRIES);
+        assert res;
         return okReply;
     }
 
     public RedisMessage handleRenameNX(RedisClientContext client, 
         RawCommand cmd) throws RedisResponseException {
         chkExactNumArgs(cmd, 2);
-        boolean success = doRename(cmd.args[0], cmd.args[1], true);
-        return success ? oneReply : zeroReply;
+        boolean res = Utils.doWithRetries(
+            () -> doRename(cmd.args[0], cmd.args[1], true),
+            ATOMIC_SET_TRIES);
+        return res ? oneReply : zeroReply;
     }
 
     public RedisMessage handleScan(RedisClientContext client, RawCommand cmd)
