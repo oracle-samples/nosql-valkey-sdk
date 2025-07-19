@@ -22,11 +22,8 @@ import oracle.nosql.driver.values.FieldValue;
 import oracle.nosql.driver.values.IntegerValue;
 import oracle.nosql.driver.values.JsonOptions;
 import oracle.nosql.driver.values.MapValue;
+import oracle.nosql.redis.*;
 import oracle.nosql.redis.CommandHandlers.CommandHandler;
-import oracle.nosql.redis.NoSQLRedisServer;
-import oracle.nosql.redis.RawCommand;
-import oracle.nosql.redis.RedisClientContext;
-import oracle.nosql.redis.RedisResponseException;
 import oracle.nosql.redis.commands.jsonpath.JSONPathValueVisitor;
 import oracle.nosql.redis.util.PreparedStatementCache;
 import oracle.nosql.redis.util.Utils;
@@ -61,9 +58,9 @@ public class JSONGetSet extends JSONCommandsBase {
         "SELECT $r.id, row_version($r) AS ver, $r.key.exp AS exp, " +
         "$r.value.json AS json FROM redis $r " + WHERE_KEY_IDS_COND;
 
-    public JSONGetSet(NoSQLHandle nosqlHandle,
+    public JSONGetSet(NoSQLHandle nosqlHandle, RedisServerConfig config,
         PreparedStatementCache pstmtCache) {
-        super(nosqlHandle, pstmtCache);
+        super(nosqlHandle, config, pstmtCache);
     }
 
     // Behavior when path has multiple items:
@@ -367,9 +364,8 @@ public class JSONGetSet extends JSONCommandsBase {
         }
 
         final SetOpt setOpt = setOptArg;
-        return Utils.doWithRetries(() ->
-            doJSONSet(makeRedisKeyInfo(cmd.args[0]), path, val, setOpt),
-            ATOMIC_SET_TRIES) ?
+        return doWithRetries(() ->
+            doJSONSet(makeRedisKeyInfo(cmd.args[0]), path, val, setOpt)) ?
             okReply : FullBulkStringRedisMessage.NULL_INSTANCE;
     }
 
@@ -467,8 +463,7 @@ public class JSONGetSet extends JSONCommandsBase {
                 ERR_TOO_MANY_KEYS);
         }
 
-        Utils.doWithRetries(() -> doJSONMSet(cmd.args),
-            ATOMIC_SET_TRIES);
+        doWithRetries(() -> doJSONMSet(cmd.args));
         // We follow Redis spec and behavior that returns "OK" result even if
         // no values were set because of non-existent parent paths, although
         // it would make more sense to return more informative result.
@@ -481,9 +476,8 @@ public class JSONGetSet extends JSONCommandsBase {
         String path = Utils.byteBufToString(cmd.args[1]);
         FieldValue val = transformValue(byteBufToJson(cmd.args[2]));
 
-        return Utils.doWithRetries(() ->
-            doJSONMerge(makeRedisKeyInfo(cmd.args[0]), path, val),
-                ATOMIC_SET_TRIES) ?
+        return doWithRetries(() ->
+            doJSONMerge(makeRedisKeyInfo(cmd.args[0]), path, val)) ?
                 okReply : FullBulkStringRedisMessage.NULL_INSTANCE;
     }
 

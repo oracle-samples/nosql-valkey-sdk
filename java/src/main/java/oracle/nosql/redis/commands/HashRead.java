@@ -25,6 +25,7 @@ import oracle.nosql.redis.RawCommand;
 import oracle.nosql.redis.RedisClientContext;
 import oracle.nosql.redis.RedisResponseException;
 import oracle.nosql.redis.RedisResponseException.ErrorPrefix;
+import oracle.nosql.redis.RedisServerConfig;
 import oracle.nosql.redis.util.PreparedStatementCache;
 import oracle.nosql.redis.util.Utils;
 
@@ -233,9 +234,9 @@ public class HashRead extends HashCommandsBase {
         return val != null ? getStrVal(val) : null;
     }
 
-    public HashRead(NoSQLHandle nosqlHandle,
+    public HashRead(NoSQLHandle nosqlHandle, RedisServerConfig config,
         PreparedStatementCache pstmtCache) {
-        super(nosqlHandle, pstmtCache);
+        super(nosqlHandle, config, pstmtCache);
     }
 
     public void registerCommands(HashMap<String, CommandHandler> cmdMap) {

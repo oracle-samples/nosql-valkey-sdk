@@ -17,6 +17,7 @@ import oracle.nosql.redis.CommandHandlers.CommandHandler;
 import oracle.nosql.redis.RawCommand;
 import oracle.nosql.redis.RedisClientContext;
 import oracle.nosql.redis.RedisResponseException;
+import oracle.nosql.redis.RedisServerConfig;
 import oracle.nosql.redis.util.PreparedStatementCache;
 
 public class ConnectionCommands extends CommandsBase {
@@ -27,8 +28,8 @@ public class ConnectionCommands extends CommandsBase {
     public static final String CMD_INFO = "INFO";
 	 
     public ConnectionCommands(NoSQLHandle nosqlHandle,
-        PreparedStatementCache pstmtCache) {
-        super(nosqlHandle, pstmtCache);
+        RedisServerConfig config, PreparedStatementCache pstmtCache) {
+        super(nosqlHandle, config, pstmtCache);
     }
 
     public void registerCommands(HashMap<String, CommandHandler> cmdMap) {

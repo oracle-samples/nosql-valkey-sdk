@@ -26,6 +26,7 @@ import oracle.nosql.redis.RawCommand;
 import oracle.nosql.redis.RedisClientContext;
 import oracle.nosql.redis.RedisResponseException;
 import oracle.nosql.redis.RedisResponseException.ErrorPrefix;
+import oracle.nosql.redis.RedisServerConfig;
 import oracle.nosql.redis.util.PreparedStatementCache;
 import oracle.nosql.redis.util.Utils;
 
@@ -40,47 +41,46 @@ public class ListSetInsert extends ListCommandsBase {
     private static final int MAX_REINDEX_ATTEMPTS = 3;
     private static final int MAX_LINSERT_ATTEMPS = 3;
 
-    private static final String FLD_ELEM_VAL = "elemVal";
     private static final String VAR2_NUM_VAR3_NUM =
         "$var2 NUMBER; $var3 NUMBER; ";
-    private static final String ELEM_VAL = ", $l.value AS elemVal";
     private static final String REINDEX_LIMIT = " LIMIT " + REINDEX_STEP_CNT;
 
     private static final String SQL_LSET = String.format(SQL_ELEMS_FMT,
-        VAR2_LONG, "", "", "", LIMIT_1, OFFSET_VAR2);
+        VAR2_LONG, "", "", PK_COLS, LIMIT_1, OFFSET_VAR2);
     private static final String SQL_LSET_DESC = String.format(SQL_ELEMS_FMT,
-        VAR2_LONG, "", "", DESC, LIMIT_1, OFFSET_VAR2);
+        VAR2_LONG, "", "", PK_COLS_DESC, LIMIT_1, OFFSET_VAR2);
 
     // The query to find pivot elemId for LINSERT command.
     // Note that per return value spec, we are required to differentiate
     // between the case when list key does not exist and the case when list
     // exists but the pivot is not found.
     private static final String SQL_LINSERT_PIVOT = DECL_KEY_ID +
-        "$var2 STRING; SELECT row_version($r) AS ver, $r.key, $r.value, " +
-        "$l.elemId " + FROM_LOJ + ELEM_VAL_VAR2 + WHERE_KEY_ID_COND +
-        "ORDER BY $l.elemId" + LIMIT_1;
+        "$var2 STRING; SELECT" + LIST_IDX_HINT +
+        "row_version($r) AS ver, $r.key, $r.value, $l.elemId " +
+        FROM_JOIN_WHERE_KEY_ID + ELEM_VAL_VAR2 + "ORDER BY " + PK_COLS +
+        LIMIT_1;
 
     private static final String SQL_ELEM_IDS_RIGHT = String.format(
-        SQL_ELEM_ID_FMT, ">=", "", "");
+        SQL_ELEM_ID_FMT, ">=", PK_COLS, "");
     private static final String SQL_ELEM_IDS_LEFT = String.format(
-        SQL_ELEM_ID_FMT, "<=", DESC, "");
+        SQL_ELEM_ID_FMT, "<=", PK_COLS_DESC, "");
 
     private static final String SQL_ELEMS_AFTER = String.format(SQL_ELEMS_FMT,
         VAR2_NUM_VAR3_NUM, ELEM_VAL,
-        " AND $l.elemId > $var2 AND $l.elemId < $var3 ", "", REINDEX_LIMIT,
-        "");
+        " AND $l.elemId > $var2 AND $l.elemId < $var3 ", PK_COLS,
+        REINDEX_LIMIT, "");
     private static final String SQL_ELEMS_BEFORE = String.format(SQL_ELEMS_FMT,
         VAR2_NUM_VAR3_NUM, ELEM_VAL,
-        " AND $l.elemId < $var2 AND $l.elemId > $var3 ", DESC, REINDEX_LIMIT,
-        "");
+        " AND $l.elemId < $var2 AND $l.elemId > $var3 ", PK_COLS_DESC,
+        REINDEX_LIMIT, "");
 
     // Selects 1 element either before or after the pivot (given by its
     // elemId). Unfortunately, since subquery is not supported, we cannot find
     // pivot and the id before/after in a single query.
     private static final String SQL_LINSERT_AFTER = String.format(
-        SQL_ELEM_ID_FMT, ">", "", LIMIT_1);
+        SQL_ELEM_ID_FMT, ">", PK_COLS, LIMIT_1);
     private static final String SQL_LINSERT_BEFORE = String.format(
-        SQL_ELEM_ID_FMT, "<", DESC, LIMIT_1);
+        SQL_ELEM_ID_FMT, "<", PK_COLS_DESC, LIMIT_1);
 
     // To avoid unlimited growth of elemId size when there are repeated
     // inserts near the same location, we cap the elemId scale at certain max
@@ -122,26 +122,6 @@ public class ListSetInsert extends ListCommandsBase {
         BigDecimal.ONE.movePointLeft(ELEM_ID_PREF_MAX_SCALE);
     private static final BigDecimal HALF = new BigDecimal(0.5);
 
-    private static class ListReindexInfo extends ListValueInfo {
-        final ArrayValue elemVals = new ArrayValue();
-
-        ListReindexInfo(RedisValueInfo val) throws RedisResponseException {
-            super(val);
-        }
-
-        void addElemRow(MapValue elemRow) throws RedisResponseException {
-            BigDecimal elemId = rowToElemId(elemRow);
-            FieldValue elemVal = elemRow.get(FLD_ELEM_VAL);
-            if (elemVal == null || !elemVal.isString()) {
-                throw RedisResponseException.corrupt(
-                    "Missing or invalid elemVal field");
-            }
-
-            elemIds.add(elemId);
-            elemVals.add(elemVal);
-        }
-    }
-
     // We use this class to distinguish between 3 cases:
     // 1) Reindex finished, we return null.
     // 2) To continue reindexing we return new ReindexBatchResult(nextFromId).
@@ -181,9 +161,9 @@ public class ListSetInsert extends ListCommandsBase {
         }
     }
 
-    public ListSetInsert(NoSQLHandle nosqlHandle,
+    public ListSetInsert(NoSQLHandle nosqlHandle, RedisServerConfig config,
         PreparedStatementCache pstmtCache) {
-        super(nosqlHandle, pstmtCache);
+        super(nosqlHandle, config, pstmtCache);
     }
 
     // Shift left but make sure we cap at the max preferable scale by rounding
@@ -291,11 +271,7 @@ public class ListSetInsert extends ListCommandsBase {
             MapValue row0 = rows.get(0);
             RedisValueInfo val = new RedisValueInfo(rowToValue(row0),
                 rowToVer(row0), getExpTime(rowToKey(row0)));
-            ListReindexInfo res = new ListReindexInfo(val);
-
-            for(MapValue row : rows) {
-                res.addElemRow(row);
-            }
+            ListValueInfo res = new ListValueInfo(val, rows, true);
 
             return new CollectionValueResult<>(val, res);
         },
@@ -305,6 +281,7 @@ public class ListSetInsert extends ListCommandsBase {
             }
             ListHeader header = lvi.header;
             assert !lvi.elemIds.isEmpty();
+            assert lvi.elemVals != null;
             assert lvi.elemIds.size() == lvi.elemVals.size();
 
             upInfo.addPutKeyReq(header);
@@ -317,10 +294,10 @@ public class ListSetInsert extends ListCommandsBase {
             // ids could coinside with old element ids and we cannot add both
             // put and delete request for the same key.
             int delIdx = 0;
-            
+
             for(int putIdx = 0; putIdx < cnt; putIdx++) {
                 BigDecimal elemId = lvi.elemIds.get(putIdx);
-                FieldValue elemVal = lvi.elemVals.get(putIdx);
+                FieldValue elemVal = new StringValue(lvi.elemVals.get(putIdx));
 
                 currId = isLeft ?
                     reindexShiftLeft(currId) : reindexShiftRight(currId);
@@ -523,10 +500,7 @@ public class ListSetInsert extends ListCommandsBase {
             MapValue row0 = rows.get(0);
             RedisValueInfo val = new RedisValueInfo(rowToValue(row0),
                 rowToVer(row0), getExpTime(rowToKey(row0)));
-            ListValueInfo res = new ListValueInfo(val);
-            BigDecimal elemId = rowToElemId(row0);
-            assert elemId != null;
-            res.elemIds.add(elemId);
+            ListValueInfo res = new ListValueInfo(val, rows);
             return new CollectionValueResult<>(val, res);
             }, (ki, lvi, upInfo) -> {
                 ListHeader header = lvi.header;

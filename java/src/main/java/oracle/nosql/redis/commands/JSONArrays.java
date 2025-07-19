@@ -19,6 +19,7 @@ import oracle.nosql.redis.CommandHandlers.CommandHandler;
 import oracle.nosql.redis.RawCommand;
 import oracle.nosql.redis.RedisClientContext;
 import oracle.nosql.redis.RedisResponseException;
+import oracle.nosql.redis.RedisServerConfig;
 import oracle.nosql.redis.util.PreparedStatementCache;
 import oracle.nosql.redis.util.Utils;
 
@@ -82,9 +83,9 @@ public class JSONArrays extends JSONCommandsBase {
         String.format("$pos < %s OR $pos > %s", SQL_START_EXPR,
         SQL_STOP_EXPR);
 
-    public JSONArrays(NoSQLHandle nosqlHandle,
+    public JSONArrays(NoSQLHandle nosqlHandle, RedisServerConfig config,
         PreparedStatementCache pstmtCache) {
-        super(nosqlHandle, pstmtCache);
+        super(nosqlHandle, config, pstmtCache);
     }
 
     // Used to confine position/offset within int32 bounds, even though Redis

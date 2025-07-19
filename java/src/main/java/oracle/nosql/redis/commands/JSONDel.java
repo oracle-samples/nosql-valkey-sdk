@@ -13,6 +13,7 @@ import oracle.nosql.redis.CommandHandlers.CommandHandler;
 import oracle.nosql.redis.RawCommand;
 import oracle.nosql.redis.RedisClientContext;
 import oracle.nosql.redis.RedisResponseException;
+import oracle.nosql.redis.RedisServerConfig;
 import oracle.nosql.redis.util.PreparedStatementCache;
 import oracle.nosql.redis.util.Utils;
 
@@ -45,9 +46,9 @@ public class JSONDel extends JSONCommandsBase {
         "size([%s]), SET %s = {}, SET %s = [], SET %s = 0 WHERE " +
         SQL_EXISTS_COND + SQL_RETURNING_PAD + SQL_IS_JSON;
     
-    public JSONDel(NoSQLHandle nosqlHandle,
+    public JSONDel(NoSQLHandle nosqlHandle, RedisServerConfig config,
         PreparedStatementCache pstmtCache) {
-        super(nosqlHandle, pstmtCache);
+        super(nosqlHandle, config, pstmtCache);
     }
 
     public void registerCommands(HashMap<String, CommandHandler> cmdMap) {

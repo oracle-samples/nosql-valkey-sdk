@@ -8,6 +8,7 @@
 package oracle.nosql.redis;
 
 import java.util.HashMap;
+import java.util.concurrent.ExecutorService;
 
 import io.netty.handler.codec.redis.RedisMessage;
 import oracle.nosql.driver.NoSQLHandle;
@@ -31,6 +32,7 @@ public class CommandHandlers {
 
     private final HashMap<String, CommandHandler> cmdMap = new HashMap<>();
     private final NoSQLHandle nosqlHandle;
+    private final RedisServerConfig config;
     private final PreparedStatementCache pstmtCache;
 
     private ConnectionCommands connCommands;
@@ -40,18 +42,19 @@ public class CommandHandlers {
     private HashCommands hashCommands;
     private JSONCommands jsonCommands;
     
-    CommandHandlers(NoSQLHandle nosqlHandle) {
+    CommandHandlers(NoSQLHandle nosqlHandle, RedisServerConfig config) {
         this.nosqlHandle = nosqlHandle;
+        this.config = config;
         pstmtCache = new PreparedStatementCache(nosqlHandle);        
     }
 
     void init() {
-        connCommands = new ConnectionCommands(nosqlHandle, pstmtCache);
+        connCommands = new ConnectionCommands(nosqlHandle, config, pstmtCache);
         genericCommands = new GenericCommands(nosqlHandle, pstmtCache, this);
-        stringCommands = new StringCommands(nosqlHandle, pstmtCache);
-        listCommands = new ListCommands(nosqlHandle, pstmtCache);
-        hashCommands = new HashCommands(nosqlHandle, pstmtCache);
-        jsonCommands = new JSONCommands(nosqlHandle, pstmtCache);
+        stringCommands = new StringCommands(nosqlHandle, config, pstmtCache);
+        listCommands = new ListCommands(nosqlHandle, config, pstmtCache);
+        hashCommands = new HashCommands(nosqlHandle, config, pstmtCache);
+        jsonCommands = new JSONCommands(nosqlHandle, config, pstmtCache);
 
         connCommands.registerCommands(cmdMap);
         genericCommands.registerCommands(cmdMap);
@@ -61,9 +64,17 @@ public class CommandHandlers {
         jsonCommands.registerCommands(cmdMap);
     }
 
+
     CommandHandler getHandler(String name) {
         return cmdMap.get(name);
     }
+
+    void scheduleElemTablesCleanup(ExecutorService execSvc) {
+        execSvc.execute(() -> { listCommands.cleanupElemsTable(); });
+        execSvc.execute(() -> { hashCommands.cleanupElemsTable(); });
+    }
+
+    public RedisServerConfig getConfig() { return config; }
 
     public CommandsBase getCommandsByValueType(String type)
         throws RedisResponseException {

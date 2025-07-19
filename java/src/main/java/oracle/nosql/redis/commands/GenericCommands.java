@@ -407,7 +407,7 @@ public class GenericCommands extends CommandsBase {
 
     public GenericCommands(NoSQLHandle nosqlHandle,
         PreparedStatementCache pstmtCache, CommandHandlers cmdHandlers) {
-        super(nosqlHandle, pstmtCache);
+        super(nosqlHandle, cmdHandlers.getConfig(), pstmtCache);
         this.cmdHandlers = cmdHandlers;
     }
 
@@ -549,9 +549,8 @@ public class GenericCommands extends CommandsBase {
     public RedisMessage handleRename(RedisClientContext client, 
         RawCommand cmd) throws RedisResponseException {
         chkExactNumArgs(cmd, 2);
-        boolean res = Utils.doWithRetries(
-            () -> doRename(cmd.args[0], cmd.args[1], false),
-            ATOMIC_SET_TRIES);
+        boolean res = doWithRetries(
+            () -> doRename(cmd.args[0], cmd.args[1], false));
         assert res;
         return okReply;
     }
@@ -559,9 +558,8 @@ public class GenericCommands extends CommandsBase {
     public RedisMessage handleRenameNX(RedisClientContext client, 
         RawCommand cmd) throws RedisResponseException {
         chkExactNumArgs(cmd, 2);
-        boolean res = Utils.doWithRetries(
-            () -> doRename(cmd.args[0], cmd.args[1], true),
-            ATOMIC_SET_TRIES);
+        boolean res = doWithRetries(
+            () -> doRename(cmd.args[0], cmd.args[1], true));
         return res ? oneReply : zeroReply;
     }
 

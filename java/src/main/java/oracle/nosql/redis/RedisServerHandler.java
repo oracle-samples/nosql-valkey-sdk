@@ -58,7 +58,7 @@ class RedisServerHandler extends SimpleChannelInboundHandler<RedisMessage> {
 
         ChannelFuture f = ctx.writeAndFlush(res);
 
-        if (cmd.name == "QUIT") {
+        if (cmd.name.equals("QUIT")) {
             f.addListener(ChannelFutureListener.CLOSE);
         }
     }

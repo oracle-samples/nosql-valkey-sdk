@@ -20,15 +20,16 @@ import oracle.nosql.redis.CommandHandlers.CommandHandler;
 import oracle.nosql.redis.RawCommand;
 import oracle.nosql.redis.RedisClientContext;
 import oracle.nosql.redis.RedisResponseException;
+import oracle.nosql.redis.RedisServerConfig;
 import oracle.nosql.redis.util.PreparedStatementCache;
 import oracle.nosql.redis.util.Utils;
 
 public class ListTrimRemove extends ListCommandsBase {
 
     private static final String SQL_LREM = String.format(SQL_ELEMS_FMT,
-        VAR2_STR_VAR3_INT, "", ELEM_VAL_VAR2, "", LIMIT_VAR3, "");
+        VAR2_STR_VAR3_INT, "", ELEM_VAL_VAR2, PK_COLS, LIMIT_VAR3, "");
     private static final String SQL_LREM_DESC = String.format(SQL_ELEMS_FMT,
-        VAR2_STR_VAR3_INT, "", ELEM_VAL_VAR2, DESC, LIMIT_VAR3, "");
+        VAR2_STR_VAR3_INT, "", ELEM_VAL_VAR2, PK_COLS_DESC, LIMIT_VAR3, "");
 
     private static class ListTrimInfo extends ListValueInfo {
         long start;
@@ -42,9 +43,9 @@ public class ListTrimRemove extends ListCommandsBase {
         }
     }
 
-    public ListTrimRemove(NoSQLHandle nosqlHandle,
+    public ListTrimRemove(NoSQLHandle nosqlHandle, RedisServerConfig config,
         PreparedStatementCache pstmtCache) {
-        super(nosqlHandle, pstmtCache);
+        super(nosqlHandle, config, pstmtCache);
     }
 
     private Integer doLRem(RedisKeyInfo keyInfo, ByteBuf val, int cnt,
@@ -52,7 +53,7 @@ public class ListTrimRemove extends ListCommandsBase {
         return doMultiUpdate(keyInfo,
             (ki) -> queryListElems(ki, isDesc ? SQL_LREM_DESC : SQL_LREM,
                 new StringValue(makeStrVal(val)), new LongValue(cnt)),
-            (ki, lvi, upInfo) -> makeDeleteListElems(ki, lvi, upInfo, false),
+            (ki, lvi, upInfo) -> addDeleteListElems(ki, lvi, upInfo, false),
             (header, res) -> {
                 if (header == null) {
                     return 0;
@@ -258,7 +259,7 @@ public class ListTrimRemove extends ListCommandsBase {
         do {
             ListTrimInfo trimRes = doMultiUpdate(keyInfo,
                 (ki) -> queryElemsForTrim(keyInfo, bounds[0], bounds[1]),
-                (ki, lvi, upInfo) -> makeDeleteListElems(keyInfo, lvi, upInfo,
+                (ki, lvi, upInfo) -> addDeleteListElems(keyInfo, lvi, upInfo,
                     false),
                 (trimInfo, header, res) -> trimInfo);
 

@@ -41,6 +41,7 @@ import oracle.nosql.redis.NoSQLRedisServer;
 import oracle.nosql.redis.RawCommand;
 import oracle.nosql.redis.RedisResponseException;
 import oracle.nosql.redis.RedisResponseException.ErrorPrefix;
+import oracle.nosql.redis.RedisServerConfig;
 import oracle.nosql.redis.util.PreparedStatementCache;
 import oracle.nosql.redis.util.Utils;
 import oracle.nosql.redis.util.Utils.ThrowingBiFunction;
@@ -128,9 +129,6 @@ public abstract class CommandsBase {
 
     static final int NO_EXP = -1;
     static final int KEEP_TTL = -2;
-
-    //static final int ATOMIC_SET_TRIES = 20;
-    static final int ATOMIC_SET_TRIES = 10000000;
 
     // WriteMultipleRequest can do max of 50 ops.
     static final int MAX_WM_CNT = 50;
@@ -262,12 +260,14 @@ public abstract class CommandsBase {
 
     }
 
-    protected NoSQLHandle nosqlHandle;
-    protected PreparedStatementCache pstmtCache;
+    protected final NoSQLHandle nosqlHandle;
+    protected final RedisServerConfig config;
+    protected final PreparedStatementCache pstmtCache;
 
-    public CommandsBase(NoSQLHandle nosqlHandle,
+    public CommandsBase(NoSQLHandle nosqlHandle, RedisServerConfig config,
         PreparedStatementCache pstmtCache) {
         this.nosqlHandle = nosqlHandle;
+        this.config = config;
         this.pstmtCache = pstmtCache;
     }
 
@@ -335,7 +335,7 @@ public abstract class CommandsBase {
     private boolean doSetNX(RedisKeyInfo keyInfo, MapValue val, long exp)
         throws RedisResponseException {
         oracle.nosql.driver.Version existingVer = null;
-        for(int i = 0; i < ATOMIC_SET_TRIES; i++) {
+        for(int i = 0; i < config.maxAtomicRetries; i++) {
             PutRequest putReq = makePutReqForSet(keyInfo, exp, val);
 
             if (existingVer == null) {
@@ -621,10 +621,16 @@ public abstract class CommandsBase {
         }
     }
 
-    static RedisResponseException failedAtomicRetries() {
+    RedisResponseException failedAtomicRetries() {
         return new RedisResponseException(ErrorPrefix.NOSQL,
             "Failed to perform atomic read-update sequence after " +
-            ATOMIC_SET_TRIES + " tries");
+                config.maxAtomicRetries + " tries");
+    }
+
+    <R> R doWithRetries(
+        Utils.ThrowingNoArgFunction<R, RedisResponseException> func)
+        throws RedisResponseException {
+        return Utils.doWithRetries(func, config.maxAtomicRetries);
     }
 
     boolean isCollectionType() {
@@ -703,7 +709,7 @@ public abstract class CommandsBase {
         // implement the locking algorithm described here:
         // https://redis.io/commands/setnx/
 
-        for(int i = 0; i < ATOMIC_SET_TRIES; i++) {
+        for(int i = 0; i < config.maxAtomicRetries; i++) {
             RedisValueInfo oldVal = doGet(keyInfo);
 
             long currTime = System.currentTimeMillis();
@@ -833,6 +839,9 @@ public abstract class CommandsBase {
         RedisValueInfo srcValInfo, RedisKeyInfo dstKeyInfo)
         throws RedisResponseException {
         return srcValInfo.val;
+    }
+
+    public void cleanupElemsTable() {
     }
 
     public void registerCommands(HashMap<String, CommandHandler> cmdMap) {}

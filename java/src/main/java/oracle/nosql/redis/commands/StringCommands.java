@@ -29,11 +29,8 @@ import oracle.nosql.driver.values.FieldValue;
 import oracle.nosql.driver.values.IntegerValue;
 import oracle.nosql.driver.values.MapValue;
 import oracle.nosql.driver.values.StringValue;
+import oracle.nosql.redis.*;
 import oracle.nosql.redis.CommandHandlers.CommandHandler;
-import oracle.nosql.redis.NoSQLRedisServer;
-import oracle.nosql.redis.RawCommand;
-import oracle.nosql.redis.RedisClientContext;
-import oracle.nosql.redis.RedisResponseException;
 import oracle.nosql.redis.RedisResponseException.ErrorPrefix;
 import oracle.nosql.redis.util.PreparedStatementCache;
 import oracle.nosql.redis.util.Utils;
@@ -87,9 +84,9 @@ public class StringCommands extends CommandsBase {
     // than just value (in particular, key).  We can adjust this later.
     static final int MAX_STR_LEN = 256 * 1024;
 
-    public StringCommands(NoSQLHandle nosqlHandle,
+    public StringCommands(NoSQLHandle nosqlHandle, RedisServerConfig config,
         PreparedStatementCache pstmtCache) {
-        super(nosqlHandle, pstmtCache);
+        super(nosqlHandle, config, pstmtCache);
     }
 
     private static ByteBuf getStringValue(MapValue val)
@@ -578,8 +575,7 @@ public class StringCommands extends CommandsBase {
 
     public RedisMessage handleMSetNX(RedisClientContext client, RawCommand cmd)
         throws RedisResponseException {
-        return Utils.doWithRetries(() -> handleMSet(client, cmd, true),
-            ATOMIC_SET_TRIES);
+        return doWithRetries(() -> handleMSet(client, cmd, true));
     }
 
 }

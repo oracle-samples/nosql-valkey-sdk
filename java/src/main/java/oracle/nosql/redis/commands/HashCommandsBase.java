@@ -8,6 +8,7 @@ import oracle.nosql.driver.values.FieldValue;
 import oracle.nosql.driver.values.MapValue;
 import oracle.nosql.driver.values.StringValue;
 import oracle.nosql.redis.RedisResponseException;
+import oracle.nosql.redis.RedisServerConfig;
 import oracle.nosql.redis.util.PreparedStatementCache;
 import oracle.nosql.redis.util.Utils.ThrowingBiFunction;
 
@@ -293,9 +294,9 @@ public class HashCommandsBase extends CollectionCommandsBase {
         return new HashHeader(copyRes.cid, null, copyRes.cnt).makeValue();
     }
 
-    public HashCommandsBase(NoSQLHandle nosqlHandle,
+    public HashCommandsBase(NoSQLHandle nosqlHandle, RedisServerConfig config,
         PreparedStatementCache pstmtCache) {
-        super(nosqlHandle, pstmtCache);
+        super(nosqlHandle, config, pstmtCache);
     }
 
 }

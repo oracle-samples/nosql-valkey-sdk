@@ -20,6 +20,7 @@ import oracle.nosql.redis.CommandHandlers.CommandHandler;
 import oracle.nosql.redis.RawCommand;
 import oracle.nosql.redis.RedisClientContext;
 import oracle.nosql.redis.RedisResponseException;
+import oracle.nosql.redis.RedisServerConfig;
 import oracle.nosql.redis.util.PreparedStatementCache;
 import oracle.nosql.redis.util.Utils;
 
@@ -68,9 +69,9 @@ public class JSONValueOps extends JSONCommandsBase {
         "size($) ELSE NULL END)] AS res" + SQL_IS_JSON +
         " FROM redis $r WHERE " +  SQL_EXISTS_COND;
 
-    public JSONValueOps(NoSQLHandle nosqlHandle,
+    public JSONValueOps(NoSQLHandle nosqlHandle, RedisServerConfig config,
         PreparedStatementCache pstmtCache) {
-        super(nosqlHandle, pstmtCache);
+        super(nosqlHandle, config, pstmtCache);
     }
 
     private RedisMessage handleJSONNumIncrMult(RedisClientContext client,

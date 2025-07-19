@@ -31,7 +31,7 @@ abstract class Scan extends CommandsBase implements AutoCloseable {
     static final long DEFAULT_COUNT = 10;
 
     Scan(CommandsBase cmds) {
-        super(cmds.nosqlHandle, cmds.pstmtCache);
+        super(cmds.nosqlHandle, cmds.config, cmds.pstmtCache);
     }
 
     private static int getLimit(long count) {

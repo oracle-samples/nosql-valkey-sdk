@@ -49,6 +49,9 @@ public class NoSQLRedisServer {
     public static final String CREATE_LIST_TABLE =
         "CREATE TABLE IF NOT EXISTS redis.lists(elemId NUMBER, " +
         "cid STRING AS UUID, value STRING, PRIMARY KEY(elemId))";
+    public static final String CREATE_LIST_PK2_IDX =
+        "CREATE INDEX IF NOT EXISTS listPK2Idx ON " +
+        "redis.lists(slot, id, elemId)";
     public static final String CREATE_LISTID_IDX =
         "CREATE INDEX IF NOT EXISTS listIdIdx ON redis.lists(cid)";
     public static final String CREATE_HASH_TABLE =
@@ -64,6 +67,7 @@ public class NoSQLRedisServer {
     private Channel serverChannel;
     private final String host;
     private final int port;
+    private final RedisServerConfig config = new RedisServerConfig();
     private final NoSQLHandle nosqlHandle;
     private final CommandHandlers cmdHandlers;
     private final ExecutorService cmdWorkerPool =
@@ -79,6 +83,8 @@ public class NoSQLRedisServer {
         nosqlHandle.doTableRequest(new TableRequest()
             .setStatement(CREATE_LIST_TABLE), 30000, 500);
         nosqlHandle.doTableRequest(new TableRequest()
+            .setStatement(CREATE_LIST_PK2_IDX), 30000, 500);
+        nosqlHandle.doTableRequest(new TableRequest()
             .setStatement(CREATE_LISTID_IDX), 30000, 500);
         nosqlHandle.doTableRequest(new TableRequest()
             .setStatement(CREATE_HASH_TABLE), 30000, 500);
@@ -86,6 +92,10 @@ public class NoSQLRedisServer {
             .setStatement(CREATE_HASHID_IDX), 30000, 500);
         nosqlHandle.doTableRequest(new TableRequest()
             .setStatement(CREATE_HSCANID_IDX), 30000, 500);
+
+        if (config.cleanupElemsTablesOnStartup) {
+            cmdHandlers.scheduleElemTablesCleanup(cmdWorkerPool);
+        }
     }
 
     public NoSQLRedisServer(String host, int port, NoSQLHandle nosqlHandle) {
@@ -93,7 +103,7 @@ public class NoSQLRedisServer {
         this.port = port;
         this.nosqlHandle = nosqlHandle;
         
-        cmdHandlers = new CommandHandlers(nosqlHandle);
+        cmdHandlers = new CommandHandlers(nosqlHandle, config);
         cmdHandlers.init();
 
         initDB();

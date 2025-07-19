@@ -14,10 +14,12 @@ import io.netty.buffer.ByteBuf;
 import oracle.nosql.driver.NoSQLHandle;
 import oracle.nosql.driver.ops.DeleteRequest;
 import oracle.nosql.driver.ops.PutRequest;
+import oracle.nosql.driver.ops.WriteMultipleRequest;
 import oracle.nosql.driver.values.FieldValue;
 import oracle.nosql.driver.values.MapValue;
 import oracle.nosql.driver.values.StringValue;
 import oracle.nosql.redis.RedisResponseException;
+import oracle.nosql.redis.RedisServerConfig;
 import oracle.nosql.redis.util.PreparedStatementCache;
 
 import static oracle.nosql.redis.util.Utils.getStringField;
@@ -26,8 +28,8 @@ abstract class ListCommandsBase extends CollectionCommandsBase {
 
     protected static final String LIST_TABLE_NAME = "redis.lists";
     protected static final String FLD_ELEM_ID = "elemId";
+    protected static final String FLD_ELEM_VAL = "elemVal";
 
-    protected static final String DESC = " DESC";
     protected static final String LIMIT_1 = " LIMIT 1";
     protected static final String VAR2_LONG = "$var2 LONG; ";
     protected static final String VAR2_STR_VAR3_INT =
@@ -35,10 +37,17 @@ abstract class ListCommandsBase extends CollectionCommandsBase {
     protected static final String LIMIT_VAR2 = " LIMIT $var2";
     protected static final String LIMIT_VAR3 = " LIMIT $var3";
     protected static final String OFFSET_VAR2 = " OFFSET $var2";
-    // private static final String ELEM_VAL = ", $l.value AS elemVal";
+    protected static final String ELEM_VAL = ", $l.value AS elemVal";
     protected static final String ELEM_VAL_VAR2 = " AND $l.value = $var2 ";
     protected static final String VAL_LEN = ", $r.value.len AS len";
-    protected static final String FROM_LOJ = makeFromLOJ("redis.lists", "$l");
+    protected static final String LIST_IDX_HINT =
+        " /*+ FORCE_INDEX(redis.lists listPK2Idx) */ ";
+    protected static final String FROM_JOIN_WHERE_KEY_ID =
+        "FROM NESTED TABLES(redis.lists $l ANCESTORS(redis $r)) " +
+            WHERE_KEY_ID_COND + "AND $l.cid = $r.value.cid ";
+    protected static final String PK_COLS = "$l.slot, $l.id, $l.elemId";
+    protected static final String PK_COLS_DESC =
+        "$l.slot DESC, $l.id DESC, $l.elemId DESC";
 
     protected static final String SQL_SEL_ELEMS = String.format(
         SQL_SEL_ELEMS_FMT, LIST_TABLE_NAME);
@@ -46,23 +55,25 @@ abstract class ListCommandsBase extends CollectionCommandsBase {
         SQL_DEL_ELEMS_FMT, LIST_TABLE_NAME);
 
     protected static final String SQL_ELEMS_FMT = DECL_KEY_ID + 
-        "%sSELECT row_version($r) AS ver, $r.key, $r.value, $l.elemId%s " +
-        FROM_LOJ + WHERE_KEY_ID_COND + "%sORDER BY $l.elemId%s%s%s";
-    
+        "%sSELECT" + LIST_IDX_HINT +
+        "row_version($r) AS ver, $r.key, $r.value, $l.elemId%s " +
+        FROM_JOIN_WHERE_KEY_ID + "%sORDER BY %s%s%s";
+
     protected static final String SQL_LPUSH = String.format(SQL_ELEMS_FMT, "",
-        "", "", "", LIMIT_1, "");
+        "", "", PK_COLS, LIMIT_1, "");
     protected static final String SQL_RPUSH = String.format(SQL_ELEMS_FMT, "",
-        "", "", DESC, LIMIT_1, "");
+        "", "", PK_COLS_DESC, LIMIT_1, "");
+    // Used for L/RPOP and LTRIM.
     protected static final String SQL_LPOP = String.format(SQL_ELEMS_FMT,
-        VAR2_LONG, "", "", "", LIMIT_VAR2, "");
+        VAR2_LONG, "", "", PK_COLS, LIMIT_VAR2, "");
     protected static final String SQL_RPOP = String.format(SQL_ELEMS_FMT,
-        VAR2_LONG, "", "", DESC, LIMIT_VAR2, "");
+        VAR2_LONG, "", "", PK_COLS_DESC, LIMIT_VAR2, "");
 
     // Queries element ids less/greater than given element id in order of
     // element id. Currently only used in ListSetInsert.java.
     protected static final String SQL_ELEM_ID_FMT = DECL_KEY_ID +
-        "$var2 NUMBER; SELECT $l.elemId " + FROM_LOJ + WHERE_KEY_ID_COND +
-        "AND $l.elemId %s $var2 ORDER BY $l.elemId%s%s";
+        "$var2 NUMBER; SELECT" + LIST_IDX_HINT + "$l.elemId " +
+        FROM_JOIN_WHERE_KEY_ID + "AND $l.elemId %s $var2 ORDER BY %s%s";
 
     protected static final BigDecimal VALUE_TWO = new BigDecimal(2);
 
@@ -81,9 +92,11 @@ abstract class ListCommandsBase extends CollectionCommandsBase {
     public static final String CMD_LTRIM = "LTRIM";
     public static final String CMD_LPOS = "LPOS";
     public static final String CMD_LINSERT = "LINSERT";
+    public static final String CMD_LMOVE = "LMOVE";
     public static final String CMD_BLPOP = "BLPOP";
     public static final String CMD_BRPOP = "BRPOP";
     public static final String CMD_BLMPOP = "BLMPOP";
+    public static final String CMD_BLMOVE = "BLMOVE";
 
     protected static class ListHeader extends CollectionHeader {
         long len;
@@ -115,20 +128,51 @@ abstract class ListCommandsBase extends CollectionCommandsBase {
 
     static class ListValueInfo {
         final ListHeader header;
-        final ArrayList<BigDecimal> elemIds = new ArrayList<>();
+        final List<BigDecimal> elemIds = new ArrayList<>();
+        final List<String> elemVals;
 
         ListValueInfo(ListHeader header) {
             this.header = header;
+            elemVals = null;
         }
 
-        ListValueInfo(RedisValueInfo valInfo) throws RedisResponseException {
-            this(new ListHeader(valInfo.val));
+        ListValueInfo(RedisValueInfo valInfo, List<MapValue> rows,
+            boolean toGetElemVals) throws RedisResponseException {
+            header = new ListHeader(valInfo.val);
+            elemVals = toGetElemVals ? new ArrayList<>() : null;
+            if (rows == null) {
+                return;
+            }
+
+            // We should not have more elements that are in the list.
+            if (rows.size() > header.len) {
+                throw RedisResponseException.corrupt(
+                    "Invalid list header or query result");
+            }
+
+            for(MapValue row : rows) {
+                elemIds.add(rowToElemId(row));
+                if (toGetElemVals) {
+                    elemVals.add(rowToElemVal(row));
+                }
+            }
         }
+
+        ListValueInfo(RedisValueInfo valInfo, List<MapValue> rows)
+            throws RedisResponseException {
+            this(valInfo, rows, false);
+        }
+
+        ListValueInfo(RedisValueInfo valInfo)
+            throws RedisResponseException {
+            this(valInfo, null, false);
+        }
+
     }
 
-    ListCommandsBase(NoSQLHandle nosqlHandle,
+    ListCommandsBase(NoSQLHandle nosqlHandle, RedisServerConfig config,
         PreparedStatementCache pstmtCache) {
-        super(nosqlHandle, pstmtCache);
+        super(nosqlHandle, config, pstmtCache);
     }
 
     protected static BigDecimal rowToElemId(MapValue row, boolean allowNull)
@@ -150,7 +194,7 @@ abstract class ListCommandsBase extends CollectionCommandsBase {
 
     protected static String rowToElemVal(MapValue row)
         throws RedisResponseException {
-        return getStringField(row, FLD_VALUE);
+        return getStringField(row, FLD_ELEM_VAL);
     }
 
     protected static long valToLen(MapValue val)
@@ -180,10 +224,10 @@ abstract class ListCommandsBase extends CollectionCommandsBase {
             .setReturnRow(returnExisting);
     }
 
-    protected static ListHeader makeDeleteListElems(RedisKeyInfo keyInfo,
-        ListValueInfo val, CollectionUpdateInfo upInfo,
-        boolean returnExisting) throws RedisResponseException {
-        
+    protected static ListHeader addDeleteListElems(RedisKeyInfo keyInfo,
+        ListValueInfo val, WriteMultipleRequest wmReq, RedisValueInfo oldVal,
+        long currTime, boolean returnExisting) throws RedisResponseException {
+
         if (val == null) {
             return null;
         }
@@ -200,68 +244,59 @@ abstract class ListCommandsBase extends CollectionCommandsBase {
         if (header.len > delCnt) {
             // Can remove delCnt elements without emptying the list.
             header.len -= delCnt;
-            upInfo.addPutKeyReq(header);
+            wmReq.add(makePutKeyRequest(keyInfo, header, oldVal, currTime),
+                true);
         } else { // header.len == delCnt
             // Remove all elements from the list and delete the list.
-            upInfo.addDeleteKeyReq();
+            wmReq.add(makeDeleteKeyReq(keyInfo, oldVal), true);
         }
 
         for(BigDecimal elemId : val.elemIds) {
-            upInfo.addElemReq(makeDeleteElemReq(keyInfo, elemId,
-                returnExisting));
+            wmReq.add(makeDeleteElemReq(keyInfo, elemId, returnExisting),
+                false);
         }
 
         return header;
+    }
+
+    protected static ListHeader addDeleteListElems(RedisKeyInfo keyInfo,
+        ListValueInfo val, CollectionUpdateInfo upInfo,
+        boolean returnExisting) throws RedisResponseException {
+        return addDeleteListElems(keyInfo, val, upInfo.wmReq, upInfo.oldVal,
+            upInfo.currTime, returnExisting);
     }
 
     // We don't worry about expired list key here, since it will be handled
     // in doMultiUpdate().
     protected CollectionValueResult<ListValueInfo> queryListElems(
         RedisKeyInfo keyInfo, String sql, boolean allowNoElems,
-        FieldValue... vars) throws RedisResponseException {
+        boolean toGetElemVals, FieldValue... vars)
+        throws RedisResponseException {
         List<MapValue> rows = doQuery(keyInfo, sql, vars);
 
-        // Note that the situation where we get no list elements matching list
-        // key or cid of the list while still having valid list header, is not
-        // possible, it would imply corrupted data (the elements with
-        // different cid are possible after list deletion before these
-        // elements are cleaned up, or if the list is expired and new one is
-        // created, but in these cases the list header would be already
-        // deleted and/or replaced with another valid list).
         if (rows.isEmpty()) {
-            return CollectionValueResult.none(); // list does not exist
+            // If allowNoElems is true, it is possible that list does exist,
+            // but the query has no matching results, in this case we have to
+            // check for existence of list header. If allowNoElems is false,
+            // we assume the list doesn't exist (otherwise it would imply
+            // corrupted data).
+            return allowNoElems ?
+                doGetList(keyInfo) : CollectionValueResult.none();
         }
-        
+
         MapValue row0 = rows.get(0);
 
         RedisValueInfo val = new RedisValueInfo(rowToValue(row0),
             rowToVer(row0), getExpTime(rowToKey(row0)));
-        ListValueInfo res = new ListValueInfo(val);
-        
-        BigDecimal elemId0 = rowToElemId(row0, allowNoElems);
-        if (elemId0 == null) {
-            if (allowNoElems) {
-                chkSingleResult(rows);
-                return new CollectionValueResult<>(val, res);
-            }
-            throw RedisResponseException.corrupt(
-                "Found list header with no elements");
-        }
-
-        res.elemIds.add(elemId0);
-        int cnt = rows.size();
-
-        // The query should not return more elements that are in the list.
-        if (cnt > res.header.len) {
-            throw RedisResponseException.corrupt(
-                "Invalid list header or query result");
-        }
-
-        for(int i = 1; i < cnt; i++) {
-            res.elemIds.add(rowToElemId(rows.get(i)));
-        }
-
+        ListValueInfo res = new ListValueInfo(val, rows, toGetElemVals);
         return new CollectionValueResult<>(val, res);
+    }
+
+    protected CollectionValueResult<ListValueInfo> queryListElems(
+        RedisKeyInfo keyInfo, String sql, boolean allowNoElems,
+        FieldValue... vars)
+        throws RedisResponseException {
+        return queryListElems(keyInfo, sql, allowNoElems, false, vars);
     }
 
     protected CollectionValueResult<ListValueInfo> queryListElems(

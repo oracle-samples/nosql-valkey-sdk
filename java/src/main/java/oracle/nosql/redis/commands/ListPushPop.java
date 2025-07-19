@@ -13,12 +13,14 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Arrays;
+
 import io.netty.buffer.ByteBuf;
 import io.netty.handler.codec.redis.ArrayRedisMessage;
 import io.netty.handler.codec.redis.FullBulkStringRedisMessage;
 import io.netty.handler.codec.redis.IntegerRedisMessage;
 import io.netty.handler.codec.redis.RedisMessage;
 import oracle.nosql.driver.NoSQLHandle;
+import oracle.nosql.driver.ops.WriteMultipleRequest;
 import oracle.nosql.driver.ops.WriteMultipleResult.OperationResult;
 import oracle.nosql.driver.values.LongValue;
 import oracle.nosql.driver.values.MapValue;
@@ -27,8 +29,10 @@ import oracle.nosql.redis.RawCommand;
 import oracle.nosql.redis.RedisClientContext;
 import oracle.nosql.redis.RedisResponseException;
 import oracle.nosql.redis.RedisResponseException.ErrorPrefix;
+import oracle.nosql.redis.RedisServerConfig;
 import oracle.nosql.redis.util.PreparedStatementCache;
 import oracle.nosql.redis.util.Utils;
+import oracle.nosql.redis.util.Utils.ThrowingNoArgFunction;
 
 public class ListPushPop extends ListCommandsBase {
 
@@ -40,9 +44,67 @@ public class ListPushPop extends ListCommandsBase {
     private static final int MAX_ADD_RND_DELAY_MS = 50;
     private static final int MAX_DELAY_MS = 5000;
 
-    public ListPushPop(NoSQLHandle nosqlHandle,
+    private static final String SQL_LMOVE_LEFT = String.format(SQL_ELEMS_FMT,
+        "", ELEM_VAL, "", PK_COLS, LIMIT_1, "");
+    private static final String SQL_LMOVE_RIGHT = String.format(SQL_ELEMS_FMT,
+        "", ELEM_VAL, "", PK_COLS_DESC, LIMIT_1, "");
+
+    public ListPushPop(NoSQLHandle nosqlHandle, RedisServerConfig config,
         PreparedStatementCache pstmtCache) {
-        super(nosqlHandle, pstmtCache);
+        super(nosqlHandle, config, pstmtCache);
+    }
+
+    private static boolean getIsLeft(ByteBuf buf)
+        throws RedisResponseException {
+        String leftRight = Utils.byteBufToString(buf);
+        if (leftRight.equalsIgnoreCase(LEFT)) {
+            return true;
+        };
+
+        if (!leftRight.equalsIgnoreCase(RIGHT)) {
+            throw RedisResponseException.syntaxError();
+        }
+
+        return false;
+    }
+
+    // Next new id for push.
+    private static BigDecimal getNextNewId(BigDecimal id, boolean isLeft) {
+        return isLeft ?
+            id.setScale(0, RoundingMode.HALF_DOWN).subtract(BigDecimal.ONE) :
+            id.setScale(0, RoundingMode.HALF_UP).add(BigDecimal.ONE);
+    }
+
+    private static ListHeader addPushListElems(RedisKeyInfo keyInfo,
+        ListValueInfo lvi, ByteBuf []  elems, int off, int cnt, boolean isLeft,
+        boolean ifExists, WriteMultipleRequest wmReq, RedisValueInfo oldVal,
+        long currTime) {
+        ListHeader header = lvi != null ? lvi.header : null;
+        BigDecimal startId;
+        if (header != null) {
+            assert lvi.elemIds.size() == 1;
+            startId = getNextNewId(lvi.elemIds.get(0), isLeft);
+            header.len += cnt;
+        } else { // The list doesn't exist or expired.
+            if (ifExists) {
+                return null;
+            }
+            startId = BigDecimal.ZERO;
+            // Create new list with cnt elements.
+            header = new ListHeader(cnt);
+        }
+
+        wmReq.add(makePutKeyRequest(keyInfo, header, oldVal, currTime), true);
+
+        int end = off + cnt;
+        for(int i = off; i < end; i++) {
+            wmReq.add(makePutElemReq(keyInfo, startId, header.cid, elems[i]),
+                false);
+            startId = isLeft ? startId.subtract(BigDecimal.ONE) :
+                startId.add(BigDecimal.ONE);
+        }
+
+        return header;
     }
 
     private ListHeader doLRPush(RedisKeyInfo keyInfo, ByteBuf[] elems,
@@ -51,43 +113,10 @@ public class ListPushPop extends ListCommandsBase {
         assert cnt > 0;
         return doMultiUpdate(keyInfo, (ki) -> queryListElems(ki,
                 isLeft ? SQL_LPUSH : SQL_RPUSH),
-            (ki, lvi, upInfo) -> {
-                ListHeader header = lvi != null ? lvi.header : null;
-
-                BigDecimal startId;
-                if (header != null) {
-                    assert lvi.elemIds.size() == 1;
-                    if (isLeft) {
-                        startId = lvi.elemIds.get(0)
-                            .setScale(0, RoundingMode.HALF_DOWN)
-                            .subtract(BigDecimal.ONE);
-                    } else {
-                        startId = lvi.elemIds.get(0)
-                            .setScale(0, RoundingMode.HALF_UP)
-                            .add(BigDecimal.ONE);
-                    }
-                    header.len += cnt;
-                } else { // The list doesn't exist or expired.
-                    if (ifExists) {
-                        return null;
-                    }
-                    startId = BigDecimal.ZERO;
-                    // Create new list with cnt elements.
-                    header = new ListHeader(cnt);
-                }
-
-                upInfo.addPutKeyReq(header);
-                
-                int end = off + cnt;
-                for(int i = off; i < end; i++) {
-                    upInfo.addElemReq(makePutElemReq(ki, startId, header.cid,
-                        elems[i]));
-                    startId = isLeft ? startId.subtract(BigDecimal.ONE) :
-                        startId.add(BigDecimal.ONE);
-                }
-
-                return header;
-            }, (header, res) -> header);
+            (ki, lvi, upInfo) -> addPushListElems(ki, lvi, elems, off, cnt,
+                isLeft, ifExists, upInfo.wmReq, upInfo.oldVal,
+                upInfo.currTime),
+            (header, res) -> header);
     }
 
     private RedisMessage handleLRPush(RedisClientContext client,
@@ -123,13 +152,13 @@ public class ListPushPop extends ListCommandsBase {
         return doMultiUpdate(keyInfo,
             (ki) -> queryListElems(ki, isLeft ? SQL_LPOP : SQL_RPOP,
                 new LongValue(cnt)),
-            (ki, lvi, upInfo) -> makeDeleteListElems(ki, lvi, upInfo, true),
+            (ki, lvi, upInfo) -> addDeleteListElems(ki, lvi, upInfo, true),
             (header, res) -> {
                 if (res == null) {
                     return null;
                 }
 
-                List<OperationResult> opsRes = res.getResults(); 
+                List<OperationResult> opsRes = res.getResults();
                 if (opsRes.size() < 2) {
                     throw RedisResponseException.nosql(
                         "Invalid number of delete results: " + opsRes.size());
@@ -153,7 +182,7 @@ public class ListPushPop extends ListCommandsBase {
                             ERR_MISSING_EXISTING_VAL);
                     }
                     vals.add(new FullBulkStringRedisMessage(
-                        getStrVal(rowToElemVal(val))));
+                        getStrVal(Utils.getStringField(val, FLD_VALUE))));
                 }
 
                 return vals;
@@ -226,7 +255,7 @@ public class ListPushPop extends ListCommandsBase {
         return handleLRPop(client, cmd.args[0], cnt, isLeft);
     }
 
-    private RedisMessage doNonBlockingPop(RedisClientContext client,
+    private RedisMessage doMultiKeyPop(RedisClientContext client,
         ByteBuf[] keys, int keyOff, int keyCnt, int cnt,
         boolean isLeft) throws RedisResponseException {
         // TODO: we can optimize this to query elements of multiple lists in a
@@ -246,11 +275,66 @@ public class ListPushPop extends ListCommandsBase {
         return FullBulkStringRedisMessage.NULL_INSTANCE;
     }
 
+    private RedisMessage doLMove(RedisKeyInfo srcKeyInfo,
+        RedisKeyInfo dstKeyInfo, boolean isSrcLeft, boolean isDstLeft)
+        throws RedisResponseException {
+        if (srcKeyInfo.slot != dstKeyInfo.slot) {
+            throw RedisResponseException.crossSlot();
+        }
+
+        long currTime = System.currentTimeMillis();
+        CollectionValueResult<ListValueInfo> srcValInfo = queryListElems(
+            srcKeyInfo, isSrcLeft ? SQL_LMOVE_LEFT : SQL_LMOVE_RIGHT, false,
+            true);
+        if (!srcValInfo.val.isValid(currTime)) {
+            // Source list doesn't exist or expired.
+            return FullBulkStringRedisMessage.NULL_INSTANCE;
+        }
+
+        chkSingleResult(srcValInfo.data.elemIds);
+        ByteBuf retVal = getStrVal(srcValInfo.data.elemVals.get(0));
+
+        boolean isSameKey = srcKeyInfo.id.equals(dstKeyInfo.id);
+        if (isSameKey && isSrcLeft == isDstLeft) {
+            return new FullBulkStringRedisMessage(retVal);
+        }
+
+        CollectionValueResult<ListValueInfo> dstValInfo = queryListElems(
+            dstKeyInfo, isDstLeft ? SQL_LPUSH : SQL_RPUSH);
+
+        WriteMultipleRequest wmReq = new WriteMultipleRequest();
+
+        if (isSameKey) {
+            // Special case when src and dst keys are the same and the element
+            // is rotated within the same list. In this case we don't update
+            // the parent row.
+            wmReq.add(makeDeleteElemReq(srcKeyInfo,
+                srcValInfo.data.elemIds.get(0), false), false);
+            wmReq.add(makePutElemReq(dstKeyInfo,
+                getNextNewId(dstValInfo.data.elemIds.get(0), isDstLeft),
+                dstValInfo.data.header.cid, retVal), false);
+        } else {
+            addDeleteListElems(srcKeyInfo, srcValInfo.data, wmReq,
+                srcValInfo.val, currTime, false);
+            addPushListElems(dstKeyInfo, dstValInfo.data,
+                new ByteBuf[]{retVal}, 0, 1, isDstLeft, false, wmReq,
+                dstValInfo.val, currTime);
+        }
+
+        doWM(wmReq, true);
+        return new FullBulkStringRedisMessage(retVal);
+    }
+
     // We do exponential backoff until delay reaches MAX_DELAY_MS, then we
     // retry with constant delay until timeout expires.
-    private RedisMessage doBlockingPop(RedisClientContext client,
-        ByteBuf[] keys, int keyOff, int keyCnt, double timeout, int cnt,
-        boolean isLeft) throws RedisResponseException {
+    private RedisMessage doBlockingOp(
+        ThrowingNoArgFunction<RedisMessage, RedisResponseException> op,
+        double timeout) throws RedisResponseException {
+        if (timeout < 0) {
+            throw new RedisResponseException(ErrorPrefix.ERR,
+                "timeout is negative");
+        }
+
         long timeoutMs = (long)Math.ceil(timeout * 1000);
         long delay = MIN_DELAY_MS +
             (int)(Math.random() * MAX_ADD_RND_DELAY_MS);
@@ -259,8 +343,7 @@ public class ListPushPop extends ListCommandsBase {
             System.currentTimeMillis() + timeoutMs : Long.MAX_VALUE;
 
         while(true) {
-            RedisMessage res = doNonBlockingPop(client, keys, keyOff, keyCnt,
-                cnt, isLeft);
+            RedisMessage res = op.apply();
             if (res != FullBulkStringRedisMessage.NULL_INSTANCE) {
                 return res;
             }
@@ -290,8 +373,8 @@ public class ListPushPop extends ListCommandsBase {
         chkMinNumArgs(cmd, 2);
         int keyCnt = cmd.args.length - 1;
         double timeout = Utils.byteBufToDouble(cmd.args[cmd.args.length - 1]);
-        return doBlockingPop(client, cmd.args, 0, keyCnt, timeout, 1,
-            isLeft);
+        return doBlockingOp(() -> doMultiKeyPop(client, cmd.args, 0, keyCnt,
+            1, isLeft), timeout);
     }
 
     private RedisMessage handleLMPop(RedisClientContext client,
@@ -321,12 +404,7 @@ public class ListPushPop extends ListCommandsBase {
             throw RedisResponseException.numArgs(cmd.name);
         }
 
-        String leftRight = Utils.byteBufToString(
-            cmd.args[(int)numKeys + nkOff + 1]);
-        boolean isLeft = leftRight.equalsIgnoreCase(LEFT);
-        if (!isLeft && !leftRight.equalsIgnoreCase(RIGHT)) {
-            throw RedisResponseException.syntaxError();
-        }
+        boolean isLeft = getIsLeft(cmd.args[(int)numKeys + nkOff + 1]);
 
         long cnt = 1;
         // The only args following LEFT/RIGHT can be: COUNT <count_value>.
@@ -341,13 +419,32 @@ public class ListPushPop extends ListCommandsBase {
                 throw new RedisResponseException(ErrorPrefix.ERR,
                     "count should be greater than 0");
             }
+        }
+
+        final int elemCnt = (int)cnt;
+        return isBlocking ?
+            doBlockingOp(() -> doMultiKeyPop(client, cmd.args, 2,
+                (int)numKeys, elemCnt, isLeft), timeout) :
+            doMultiKeyPop(client, cmd.args, 1, (int)numKeys, (int)cnt,
+                isLeft);
     }
 
-        return isBlocking ?
-            doBlockingPop(client, cmd.args, 2, (int)numKeys, timeout,
-                (int)cnt, isLeft) :
-            doNonBlockingPop(client, cmd.args, 1, (int)numKeys, (int)cnt,
-                isLeft);
+    private RedisMessage handleLMove(RedisClientContext client, RawCommand cmd,
+        boolean isBlocking) throws RedisResponseException {
+        chkExactNumArgs(cmd, isBlocking ? 5 : 4);
+        RedisKeyInfo srcKeyInfo = makeRedisKeyInfo(cmd.args[0]);
+        RedisKeyInfo dstKeyInfo = makeRedisKeyInfo(cmd.args[1]);
+        boolean isSrcLeft = getIsLeft(cmd.args[2]);
+        boolean isDstLeft = getIsLeft(cmd.args[3]);
+
+        if (isBlocking) {
+            double timeout = Utils.byteBufToDouble(cmd.args[4]);
+            return doBlockingOp(() -> doLMove(srcKeyInfo, dstKeyInfo,
+                isSrcLeft, isDstLeft), timeout);
+        }
+
+        return doWithRetries(
+            () -> doLMove(srcKeyInfo, dstKeyInfo, isSrcLeft, isDstLeft));
     }
 
     public void registerCommands(HashMap<String, CommandHandler> cmdMap) {
@@ -361,6 +458,8 @@ public class ListPushPop extends ListCommandsBase {
         cmdMap.put(CMD_BLPOP, this::handleBLPop);
         cmdMap.put(CMD_BRPOP, this::handleBRPop);
         cmdMap.put(CMD_BLMPOP, this::handleBLMPop);
+        cmdMap.put(CMD_LMOVE, this::handleLMove);
+        cmdMap.put(CMD_BLMOVE, this::handleBLMove);
     }
 
     public RedisMessage handleLPush(RedisClientContext client,
@@ -398,6 +497,11 @@ public class ListPushPop extends ListCommandsBase {
         return handleLMPop(client, cmd, false);
     }
 
+    public RedisMessage handleLMove(RedisClientContext client,
+        RawCommand cmd) throws RedisResponseException {
+        return handleLMove(client, cmd, false);
+    }
+
     public RedisMessage handleBLPop(RedisClientContext client,
         RawCommand cmd) throws RedisResponseException {
         return handleBLRPop(client, cmd, true);
@@ -411,6 +515,11 @@ public class ListPushPop extends ListCommandsBase {
     public RedisMessage handleBLMPop(RedisClientContext client,
         RawCommand cmd) throws RedisResponseException {
         return handleLMPop(client, cmd, true);
+    }
+
+    public RedisMessage handleBLMove(RedisClientContext client,
+        RawCommand cmd) throws RedisResponseException {
+        return handleLMove(client, cmd, true);
     }
 
 }

@@ -24,32 +24,33 @@ import oracle.nosql.redis.RawCommand;
 import oracle.nosql.redis.RedisClientContext;
 import oracle.nosql.redis.RedisResponseException;
 import oracle.nosql.redis.RedisResponseException.ErrorPrefix;
+import oracle.nosql.redis.RedisServerConfig;
 import oracle.nosql.redis.util.PreparedStatementCache;
 import oracle.nosql.redis.util.Utils;
 
 public class ListRead extends ListCommandsBase {
 
     private static final String SQL_LRANGE_FMT = DECL_KEY_ID +
-        "$var2 INTEGER; $var3 LONG; SELECT $l.value " + FROM_LOJ +
-        WHERE_KEY_ID_COND + AND_NOT_EXPIRED +
-        "ORDER BY $l.elemId%s LIMIT $var2 OFFSET $var3";
+        "$var2 INTEGER; $var3 LONG; SELECT" + LIST_IDX_HINT +
+        "$l.value AS elemVal " + FROM_JOIN_WHERE_KEY_ID + AND_NOT_EXPIRED +
+        "ORDER BY %s LIMIT $var2 OFFSET $var3";
 
-    private static final String SQL_LRANGE = String.format(SQL_LRANGE_FMT, "");
-    private static final String SQL_LRANGE_DESC = String.format(SQL_LRANGE_FMT,
-        DESC);
+    private static final String SQL_LRANGE =
+        String.format(SQL_LRANGE_FMT, PK_COLS);
+    private static final String SQL_LRANGE_DESC =
+        String.format(SQL_LRANGE_FMT, PK_COLS_DESC);
 
-    // Commented out line below for the same reason as in SQL_ELEMS_FMT
     private static final String SQL_LPOS_FMT = DECL_KEY_ID +
-        "%sSELECT $l.value%s " + FROM_LOJ + WHERE_KEY_ID_COND +
-        AND_NOT_EXPIRED + "ORDER BY $l.elemId%s%s";
+        "%sSELECT" + LIST_IDX_HINT + "$l.value AS elemVal%s " +
+        FROM_JOIN_WHERE_KEY_ID + AND_NOT_EXPIRED + "ORDER BY %s%s";
     private static final String SQL_LPOS = String.format(SQL_LPOS_FMT, "", "",
-        "", "");
+        PK_COLS, "");
     private static final String SQL_LPOS_MAXLEN = String.format(SQL_LPOS_FMT,
-        VAR2_LONG, "", "", LIMIT_VAR2);
+        VAR2_LONG, "", PK_COLS, LIMIT_VAR2);
     private static final String SQL_LPOS_DESC = String.format(SQL_LPOS_FMT,
-        "", VAL_LEN, DESC, "");
+        "", VAL_LEN, PK_COLS_DESC, "");
     private static final String SQL_LPOS_DESC_MAXLEN = String.format(
-        SQL_LPOS_FMT, VAR2_LONG, VAL_LEN, DESC, LIMIT_VAR2);
+        SQL_LPOS_FMT, VAR2_LONG, VAL_LEN, PK_COLS_DESC, LIMIT_VAR2);
 
     private static class LPosState {
         private final String elemVal;
@@ -101,9 +102,9 @@ public class ListRead extends ListCommandsBase {
         
     }
 
-    public ListRead(NoSQLHandle nosqlHandle,
+    public ListRead(NoSQLHandle nosqlHandle, RedisServerConfig config,
         PreparedStatementCache pstmtCache) {
-        super(nosqlHandle, pstmtCache);
+        super(nosqlHandle, config, pstmtCache);
     }
 
     private List<RedisMessage> doLRange(RedisKeyInfo keyInfo, long off,

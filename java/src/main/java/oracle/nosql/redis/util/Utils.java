@@ -8,7 +8,6 @@
 package oracle.nosql.redis.util;
 
 import java.security.MessageDigest;
-import java.util.List;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
@@ -18,6 +17,7 @@ import io.netty.util.CharsetUtil;
 import oracle.nosql.driver.values.ArrayValue;
 import oracle.nosql.driver.values.FieldValue;
 import oracle.nosql.driver.values.MapValue;
+import oracle.nosql.driver.values.StringValue;
 import oracle.nosql.redis.RedisResponseException;
 import oracle.nosql.redis.RedisResponseException.ErrorPrefix;
 
@@ -228,7 +228,7 @@ public class Utils {
     public static int crc16(ByteBuf buf) {
         return crc16(ByteBufUtil.getBytes(buf, 0, buf.readableBytes(), false));
     }
-
+    
     public static String getStringField(MapValue mapVal, String fieldName,
         boolean allowNull) throws RedisResponseException {
         FieldValue fldVal = mapVal.get(fieldName);

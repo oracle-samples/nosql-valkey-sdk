@@ -3,6 +3,7 @@ package oracle.nosql.redis.commands;
 import java.util.HashMap;
 import oracle.nosql.driver.NoSQLHandle;
 import oracle.nosql.redis.CommandHandlers.CommandHandler;
+import oracle.nosql.redis.RedisServerConfig;
 import oracle.nosql.redis.util.PreparedStatementCache;
 
 public class HashCommands extends HashCommandsBase {
@@ -10,11 +11,11 @@ public class HashCommands extends HashCommandsBase {
     private final HashUpdate hashUpdate;
     private final HashRead hashRead;
 
-    public HashCommands(NoSQLHandle nosqlHandle,
+    public HashCommands(NoSQLHandle nosqlHandle, RedisServerConfig config,
         PreparedStatementCache pstmtCache) {
-        super(nosqlHandle, pstmtCache);
-        hashUpdate = new HashUpdate(nosqlHandle, pstmtCache);
-        hashRead = new HashRead(nosqlHandle, pstmtCache);
+        super(nosqlHandle, config, pstmtCache);
+        hashUpdate = new HashUpdate(nosqlHandle, config, pstmtCache);
+        hashRead = new HashRead(nosqlHandle, config, pstmtCache);
     }
 
     public void registerCommands(HashMap<String, CommandHandler> cmdMap) {

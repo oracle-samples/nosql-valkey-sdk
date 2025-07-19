@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+import oracle.nosql.redis.RedisServerConfig;
 import org.antlr.v4.runtime.BaseErrorListener;
 import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
@@ -196,9 +197,9 @@ abstract class JSONCommandsBase extends CommandsBase {
         }
     }
 
-    public JSONCommandsBase(NoSQLHandle nosqlHandle,
+    public JSONCommandsBase(NoSQLHandle nosqlHandle, RedisServerConfig config,
         PreparedStatementCache pstmtCache) {
-        super(nosqlHandle, pstmtCache);
+        super(nosqlHandle, config, pstmtCache);
     }
 
     protected static FieldValue byteBufToJson(ByteBuf buf)
