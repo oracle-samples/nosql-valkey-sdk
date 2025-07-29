@@ -14,6 +14,8 @@ import io.netty.handler.codec.redis.RedisMessage;
 import oracle.nosql.driver.NoSQLHandle;
 import oracle.nosql.driver.ops.DeleteRequest;
 import oracle.nosql.driver.ops.PutRequest;
+import oracle.nosql.driver.ops.WriteMultipleRequest;
+import oracle.nosql.driver.ops.WriteMultipleResult;
 import oracle.nosql.driver.values.FieldValue;
 import oracle.nosql.driver.values.MapValue;
 import oracle.nosql.driver.values.StringValue;
@@ -49,7 +51,7 @@ public class HashUpdate extends HashCommandsBase {
     }
 
     private void convertToMultiRow(RedisKeyInfo keyInfo,
-        HashHeader header, CollectionUpdateInfo upInfo)
+        HashHeader header, WriteMultipleRequest wmReq, RedisValueInfo oldVal)
         throws RedisResponseException{
         
         MapValue smallVal = header.smallVal;
@@ -60,24 +62,25 @@ public class HashUpdate extends HashCommandsBase {
             throw RedisResponseException.corrupt("SmallVal hash is too big");
         }
 
-        upInfo.addPutKeyReq(header);
+        wmReq.add(makePutKeyReq(keyInfo, header, oldVal), true);
 
         for(Map.Entry<String, FieldValue> ent : smallVal) {
             // The values in the map already contain key and value, we only
             // need to add slot, id, keyId and cid.
-            upInfo.addElemReq(new PutRequest()
+            wmReq.add(new PutRequest()
                 .setTableName(HASH_TABLE_NAME)
                 .setValue(ent.getValue().asMap()
                     .put(FLD_SLOT, keyInfo.slot)
                     .put(FLD_ID, keyInfo.id)
                     .put(FLD_KEY_ID, ent.getKey())
-                    .put(FLD_CID, header.cid)));
+                    .put(FLD_CID, header.cid)), false);
         }
     }
 
     private HSetResult prepareHSet(RedisKeyInfo keyInfo, MapValue fvMap,
-        String[] fKeyIds, HSetInfo hsi, CollectionUpdateInfo upInfo,
-        boolean hasLargeEntry) throws RedisResponseException {
+        String[] fKeyIds, HSetInfo hsi, WriteMultipleRequest wmReq,
+        RedisValueInfo oldVal, boolean hasLargeEntry)
+        throws RedisResponseException {
         HashHeader header = hsi != null ? hsi.header : null;
         boolean isNew = false;
 
@@ -107,10 +110,10 @@ public class HashUpdate extends HashCommandsBase {
 
             if (hasLargeEntry ||
                 header.smallVal.size() > MAX_SMALL_HASH_SIZE) {
-                convertToMultiRow(keyInfo, header, upInfo);
+                convertToMultiRow(keyInfo, header, wmReq, oldVal);
             } else {
                 // The hash is still in smallVal format.
-                upInfo.addPutKeyReq(header);
+                wmReq.add(makePutKeyReq(keyInfo, header, oldVal), true);
             }
 
             return res;
@@ -126,8 +129,8 @@ public class HashUpdate extends HashCommandsBase {
         processedCnt = fKeyIds.length;
         addedCnt = processedCnt - hsi.existingCnt;
         header.len += addedCnt;
-        
-        upInfo.addPutKeyReq(header);
+
+        wmReq.add(makePutKeyReq(keyInfo, header, oldVal), true);
         for(int i = 0; i < fKeyIds.length; i++) {
             String keyId = fKeyIds[i];
             MapValue val = fvMap.get(keyId).asMap();
@@ -135,11 +138,11 @@ public class HashUpdate extends HashCommandsBase {
 
             // The values in the map already contain key and value, we
             // only need to add slot, id, keyId and cid.
-            upInfo.addElemReq(new PutRequest()
+            wmReq.add(new PutRequest()
                 .setTableName(HASH_TABLE_NAME)
                 .setValue(val.put(FLD_SLOT, keyInfo.slot)
                     .put(FLD_ID, keyInfo.id).put(FLD_KEY_ID, keyId)
-                    .put(FLD_CID, header.cid)));
+                    .put(FLD_CID, header.cid)), false);
         }
 
         return new HSetResult(addedCnt, processedCnt);
@@ -150,35 +153,38 @@ public class HashUpdate extends HashCommandsBase {
         String[] keyIds = fvMap.getMap().keySet().stream()
             .limit(MAX_TXN_ELEM_CNT).toArray(String[]::new);
 
-        return doMultiUpdate(keyInfo,
-            ki -> getExistingVal(ki, keyIds, (header, rows) ->
-                new HSetInfo(header, rows != null ? rows.size() : 0)),
-            (ki, hsi, upInfo) -> prepareHSet(ki, fvMap, keyIds, hsi, upInfo,
-                hasLargeEntry),
-            (hsr, wmRes) -> {
-                // We must have WM results either from keyIds or
-                // convertToMultiRow().
-                if (!wmRes.getSuccess() || wmRes.size() <= 0) {
-                    throw RedisResponseException.corrupt(
-                        "Invalid WriteMultiple result or missing op results");
-                }
-                // Remove elements we already processed. There may be fewer of
-                // them than elements in keyIds (if we exceeded smallVal size
-                // limit and called convertToMultiRow()).
-                for(int i = 0; i < hsr.processedCnt; i++) {
-                    fvMap.remove(keyIds[i]);
-                }
-                return hsr.addedCnt;
-            });
+        return doWithRetries(() -> {
+            CollectionValueResult<HSetInfo> cvr = getExistingVal(keyInfo,
+                keyIds, (header, rows) ->
+                    new HSetInfo(header, rows != null ? rows.size() : 0));
+            WriteMultipleRequest wmReq = new WriteMultipleRequest();
+            HSetResult hsr = prepareHSet(keyInfo, fvMap, keyIds, cvr.data,
+                wmReq, cvr.val, hasLargeEntry);
+
+            WriteMultipleResult wmRes = doWM(wmReq, true);
+
+            // We must have WM results either from keyIds or
+            // convertToMultiRow().
+            if (!wmRes.getSuccess() || wmRes.size() <= 0) {
+                throw RedisResponseException.corrupt(
+                    "Invalid WriteMultiple result or missing op results");
+            }
+
+            // Remove elements we already processed. There may be fewer of
+            // them than elements in keyIds (if we exceeded smallVal size
+            // limit and called convertToMultiRow()).
+            for(int i = 0; i < hsr.processedCnt; i++) {
+                fvMap.remove(keyIds[i]);
+            }
+
+            return hsr.addedCnt;
+        });
     }
 
     private int prepareHDel(RedisKeyInfo keyInfo, String[] fKeyIds,
-        HDelInfo hdi, CollectionUpdateInfo upInfo)
+        HDelInfo hdi, WriteMultipleRequest wmReq, RedisValueInfo oldVal)
         throws RedisResponseException {
-        if (hdi == null) {
-            // Hash does not exist.
-            return 0;
-        }
+        assert hdi != null;
 
         HashHeader header = hdi.header;
         assert header != null;
@@ -194,9 +200,9 @@ public class HashUpdate extends HashCommandsBase {
             }
 
             if (header.smallVal.size() != 0) {
-                upInfo.addPutKeyReq(header);    
+                wmReq.add(makePutKeyReq(keyInfo, header, oldVal), true);
             } else {
-                upInfo.addDeleteKeyReq();
+                wmReq.add(makeDeleteKeyReq(keyInfo, oldVal), true);
             }
 
             return delCnt;
@@ -211,9 +217,9 @@ public class HashUpdate extends HashCommandsBase {
         header.len -= existingCnt;
 
         if (header.len > 0) {
-            upInfo.addPutKeyReq(header);
+            wmReq.add(makePutKeyReq(keyInfo, header, oldVal), true);
         } else if (header.len == 0) {
-            upInfo.addDeleteKeyReq();
+            wmReq.add(makeDeleteKeyReq(keyInfo, oldVal), true);
         } else {
             throw RedisResponseException.corrupt(
                 "Invalid hash header len field");
@@ -221,11 +227,11 @@ public class HashUpdate extends HashCommandsBase {
         
         // We only add delete requests for existing fields.
         for(int i = 0; i < existingCnt; i++) {
-            upInfo.addElemReq(new DeleteRequest()
+            wmReq.add(new DeleteRequest()
                 .setTableName(HASH_TABLE_NAME)
                 .setKey(new MapValue().put(FLD_SLOT, keyInfo.slot)
                 .put(FLD_ID, keyInfo.id)
-                .put(FLD_KEY_ID, hdi.existingIds.get(i))));
+                .put(FLD_KEY_ID, hdi.existingIds.get(i))), false);
         }
 
         return existingCnt;
@@ -236,8 +242,9 @@ public class HashUpdate extends HashCommandsBase {
         String[] keyIds = fSet.stream().limit(MAX_TXN_ELEM_CNT)
             .toArray(String[]::new);
 
-        return doMultiUpdate(keyInfo,
-            ki -> getExistingVal(ki, keyIds, (header, rows) -> {
+        return doWithRetries(() -> {
+            CollectionValueResult<HDelInfo> cvr = getExistingVal(keyInfo,
+                keyIds, (header, rows) -> {
                 if (rows == null) {
                     return new HDelInfo(header, null);
                 }
@@ -247,16 +254,25 @@ public class HashUpdate extends HashCommandsBase {
                     ids.add(rowToKeyId(rows.get(i), false));
                 }
                 return new HDelInfo(header, ids);
-            }),
-            (ki, hdi, upInfo) -> prepareHDel(keyInfo, keyIds, hdi, upInfo),
-            (delCnt, wmRes) -> {
-                // Unlike for HSET, here all elements of keyIds should be
-                // processed on successful request.
-                for(int i = 0; i < keyIds.length; i++) {
-                    fSet.remove(keyIds[i]);
-                };
-                return delCnt;
             });
+
+            // Hash does not exist.
+            if (!cvr.isValid()) {
+                return 0;
+            }
+
+            WriteMultipleRequest wmReq = new WriteMultipleRequest();
+            int delCnt = prepareHDel(keyInfo, keyIds, cvr.data, wmReq,
+                cvr.val);
+            doWM(wmReq, true);
+
+            // Unlike for HSET, here all elements of keyIds should be
+            // processed on successful request.
+            for(int i = 0; i < keyIds.length; i++) {
+                fSet.remove(keyIds[i]);
+            };
+            return delCnt;
+        });
     }
 
     private CollectionValueResult<HValInfo> getExistingFldVal(RedisKeyInfo ki,
@@ -269,7 +285,7 @@ public class HashUpdate extends HashCommandsBase {
         }
         chkSingleResult(rows);
         MapValue row0 = rows.get(0);
-        RedisValueInfo val = new RedisValueInfo(rowToValue(row0),
+        RedisValueInfo val = RedisValueInfo.create(rowToValue(row0),
             rowToVer(row0), getExpTime(rowToKey(row0)));
         HashHeader header = new HashHeader(val.val);
         String fldVal = getStringField(row0, FLD_FLD_VAL, true);
@@ -283,8 +299,8 @@ public class HashUpdate extends HashCommandsBase {
     // Somewhat like prepareHSet but simpler, since we are only updating one
     // field.
     private void prepareUpdVal(RedisKeyInfo keyInfo, RedisKeyInfo hki,
-        HValInfo hvi, CollectionUpdateInfo upInfo, ByteBuf newVal)
-        throws RedisResponseException {
+        HValInfo hvi, WriteMultipleRequest wmReq, RedisValueInfo oldVal,
+        ByteBuf newVal) throws RedisResponseException {
         HashHeader header = hvi != null ? hvi.header : new HashHeader();
     
         String newValStr = makeStrVal(newVal);
@@ -296,10 +312,10 @@ public class HashUpdate extends HashCommandsBase {
             // Convert to multi-row format if new value is big.
             if (hki.data.length() + newValStr.length() >
                 MAX_SMALL_HASH_ENT_SIZE) {
-                convertToMultiRow(keyInfo, header, upInfo);
+                convertToMultiRow(keyInfo, header, wmReq, oldVal);
             } else {
                 // The hash is still in smallVal format.
-                upInfo.addPutKeyReq(header);
+                wmReq.add(makePutKeyReq(keyInfo, header, oldVal), true);
             }
             return;
         }
@@ -313,35 +329,40 @@ public class HashUpdate extends HashCommandsBase {
             // The field was not in the hash, so we are adding new field.
             header.len++;
         }
-        
-        upInfo.addPutKeyReq(header);
+
+        wmReq.add(makePutKeyReq(keyInfo, header, oldVal), true);
         // The values in the map already contain key and value, we
         // only need to add id, keyId and cid.
-        upInfo.addElemReq(new PutRequest()
+        wmReq.add(new PutRequest()
             .setTableName(HASH_TABLE_NAME)
             .setValue(mapVal.put(FLD_SLOT, keyInfo.slot)
                 .put(FLD_ID, keyInfo.id).put(FLD_KEY_ID, hki.id)
-                .put(FLD_CID, header.cid)));
+                .put(FLD_CID, header.cid)), false);
     }
 
-    private RedisMessage doUpdateVal(RedisKeyInfo keyInfo, RedisKeyInfo hki,
+    private RedisMessage doUpdateVal(RedisKeyInfo keyInfo,
+        RedisKeyInfo hKeyInfo,
         ThrowingFunction<ByteBuf,ByteBuf,RedisResponseException> getNewVal,
         ThrowingFunction<ByteBuf,RedisMessage,RedisResponseException>
             getResult) throws RedisResponseException {
-        return doMultiUpdate(keyInfo, ki -> getExistingFldVal(ki, hki),
-            (ki, hvi, upInfo) -> {
+        return doWithRetries(() -> {
+            CollectionValueResult<HValInfo> cvr =
+                getExistingFldVal(keyInfo, hKeyInfo);
+            HValInfo hvi = cvr.data;
             ByteBuf newVal = getNewVal.apply(
                 hvi != null && hvi.fldVal != null ?
                     getStrVal(hvi.fldVal) : null);
+
             // We use newVal = null to indicate that the value should not be
             // updated. This works for existing commands, but may need to be
             // reconsidered.
             if (newVal != null) {
-                prepareUpdVal(ki, hki, hvi, upInfo, newVal);
+                WriteMultipleRequest wmReq = new WriteMultipleRequest();
+                prepareUpdVal(keyInfo, hKeyInfo, hvi, wmReq, cvr.val, newVal);
+                doWM(wmReq, true);
             }
-            return newVal;
-        },
-        (newVal, wmRes) -> getResult.apply(newVal));
+            return getResult.apply(newVal);
+        });
     }
 
     public HashUpdate(NoSQLHandle nosqlHandle, RedisServerConfig config,
@@ -386,7 +407,7 @@ public class HashUpdate extends HashCommandsBase {
             // per-hash-field expiration time (added to Redis 7.4) as well
             // as scanId. It is preferable to compute scanId in the same
             // way as for multi-row format so that the scan still works
-            // even if the hash gets converted to mutli-row format during
+            // even if the hash gets converted to multi-row format during
             // the scan.
             fvMap.put(hki.id, new MapValue()
                 .put(FLD_KEY, makeRedisKey(hki)).put(FLD_VALUE, val));

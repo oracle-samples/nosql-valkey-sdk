@@ -14,6 +14,7 @@ import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import io.netty.handler.codec.base64.Base64;
 import io.netty.util.CharsetUtil;
+import oracle.nosql.driver.TimeToLive;
 import oracle.nosql.driver.values.ArrayValue;
 import oracle.nosql.driver.values.FieldValue;
 import oracle.nosql.driver.values.MapValue;
@@ -228,7 +229,7 @@ public class Utils {
     public static int crc16(ByteBuf buf) {
         return crc16(ByteBufUtil.getBytes(buf, 0, buf.readableBytes(), false));
     }
-    
+
     public static String getStringField(MapValue mapVal, String fieldName,
         boolean allowNull) throws RedisResponseException {
         FieldValue fldVal = mapVal.get(fieldName);
@@ -255,6 +256,16 @@ public class Utils {
         }
 
         return fldVal.getInt();
+    }
+
+    public static long getLongField(MapValue mapVal, String fieldName)
+        throws RedisResponseException {
+        FieldValue fldVal = mapVal.get(fieldName);
+        if (fldVal == null || !fldVal.isLong()) {
+            throw missingOrInvalidField(fieldName, "long");
+        }
+
+        return fldVal.getLong();
     }
 
     public static boolean getBoolField(MapValue mapVal, String fieldName)
@@ -301,6 +312,14 @@ public class Utils {
     public static MapValue getMapField(MapValue mapVal, String fieldName)
         throws RedisResponseException {
         return getMapField(mapVal, fieldName, false);
+    }
+
+    // Always returns positive TTL to be used for put. If expTime is already in
+    // the past, return minimum TTL of 1 hour.
+    public static TimeToLive getPositiveTTL(long expTime) {
+        TimeToLive res = TimeToLive.fromExpirationTime(expTime,
+            System.currentTimeMillis());
+        return res.getValue() > 0 ? res : TimeToLive.ofHours(1);
     }
 
 }

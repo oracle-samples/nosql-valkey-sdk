@@ -17,7 +17,6 @@ import io.netty.handler.codec.redis.ArrayRedisMessage;
 import io.netty.handler.codec.redis.FullBulkStringRedisMessage;
 import io.netty.handler.codec.redis.RedisMessage;
 import io.netty.util.CharsetUtil;
-import oracle.nosql.driver.values.FieldValue;
 import oracle.nosql.driver.values.MapValue;
 import oracle.nosql.redis.RedisResponseException;
 import oracle.nosql.redis.RedisResponseException.ErrorPrefix;
@@ -28,14 +27,51 @@ abstract class Scan extends CommandsBase implements AutoCloseable {
     
     private static final String REGEX_ESCAPE_CHARS = "<([{\\^-=$!|]})?*+.>";
 
-    static final long DEFAULT_COUNT = 10;
+    static final int DEFAULT_COUNT = 10;
+    static final int MAX_COUNT = 100000000;
 
-    Scan(CommandsBase cmds) {
+    // Key info for HSCAN, SSCAN, ZSCAN, not used for SCAN.
+    final protected RedisKeyInfo keyInfo;
+    final protected long startScanId;
+    final protected Pattern matchPattern;
+    // An optional additional predicate to test candidate row (in addition to
+    // matchPatter), currently used only for "TYPE" parameter to SCAN.
+    final protected ThrowingPredicate<MapValue,RedisResponseException>
+        valuePred;
+    final protected int count;
+    // To know when cursor = 0 is passed. In this case we set startScanId to
+    // Long.MIN_VALUE to cover the whole scanId range.
+    final protected boolean zeroCursor;
+
+    Scan(CommandsBase cmds, RedisKeyInfo keyInfo, long cursor, ByteBuf match,
+        long count, ThrowingPredicate<MapValue,RedisResponseException> pred)
+        throws RedisResponseException {
         super(cmds.nosqlHandle, cmds.config, cmds.pstmtCache);
-    }
+        this.keyInfo = keyInfo;
 
-    private static int getLimit(long count) {
-        return (int)Math.min(count + 1, Integer.MAX_VALUE);
+        if (cursor == 0) {
+            zeroCursor = true;
+            startScanId = Long.MIN_VALUE;
+        } else {
+            zeroCursor = false;
+            startScanId = cursor;
+        }
+
+        valuePred = pred;
+        this.count = (int)Math.min(count, MAX_COUNT);
+
+        if (match == null) {
+            matchPattern = null;
+        } else {
+            try {
+                matchPattern = globToRegex(byteBufToString(match));
+            } catch(PatternSyntaxException ex) {
+                // Todo: log the exception.  Not all patterns may be currently
+                // supported, so we notify the user.
+                throw new RedisResponseException(ErrorPrefix.ERR,
+                    "unsupported glob pattern");
+            }
+        }
     }
 
     // It is not clear what to do if the glob pattern and/or the input is
@@ -164,12 +200,7 @@ abstract class Scan extends CommandsBase implements AutoCloseable {
     }
 
     static long getScanId(MapValue key) throws RedisResponseException {
-        FieldValue scanId = key.get(KEY_SCAN_ID);
-        if (scanId == null || !scanId.isLong()) {
-            throw RedisResponseException.corrupt(
-                "Missing or invalid scan id");
-        }
-        return scanId.getLong();
+        return Utils.getLongField(key, KEY_SCAN_ID);
     }
 
     static long rowToScanIdUnchecked(MapValue row) {
@@ -192,9 +223,18 @@ abstract class Scan extends CommandsBase implements AutoCloseable {
         return res;
     }
 
-    abstract Iterable<MapValue> scanIterable(RedisKeyInfo keyInfo,
-        long cursor, int limit) throws RedisResponseException;
-    
+    // Creates an iterable that iterates through records containing fields
+    // "key" and "value". The key is in the same format as stored in the parent
+    // table (see CommandsBase.makeRedisKey()), scanId is required if
+    // toGetAll() = false. The value is a binary string.
+    abstract Iterable<MapValue> startScan()
+        throws RedisResponseException;
+
+    // Override this for cases where we want to get all keys regardless of
+    // count. This is usually when small collection is stored entirely in the
+    // parent table record (e.g. smallVal for hashes).
+    boolean toGetAll() { return false; }
+
     // Some scans may add more than one RedisMessage for each row, e.g. HSCAN
     // adds key and value for each hash entry. The subclasses may need to
     // override this method.
@@ -206,37 +246,22 @@ abstract class Scan extends CommandsBase implements AutoCloseable {
     // Returns next cursor value.  Accumulates results into results list.
     // pred is an optional additional predicate to test candidate row (in
     // addition to match), currently used only for "TYPE" parameter to SCAN.
-    long scan(RedisKeyInfo keyInfo, long cursor, ByteBuf match, long count,
-        ThrowingPredicate<MapValue,RedisResponseException> pred,
-        List<RedisMessage> results) throws RedisResponseException {
-        Pattern matchPattern = null;
-        if (match != null) {
-            try {
-                matchPattern = globToRegex(byteBufToString(match));
-            } catch(PatternSyntaxException ex) {
-                // Todo: log the exception.  Not all patterns may be currently
-                // supported, so we notify the user.
-                throw new RedisResponseException(ErrorPrefix.ERR,
-                    "unsupported glob pattern");
-            }
-        }
+    long scan(List<RedisMessage> results) throws RedisResponseException {
+        Iterable<MapValue> resIter = startScan();
 
-        Iterable<MapValue> resIter = null;
-        try {
-            resIter = scanIterable(keyInfo,
-                cursor == 0 ? Long.MIN_VALUE : cursor, getLimit(count));
+        long rowCnt = 0;
+        long currScanId = 0;
+        long scanId = 0;
 
-            long rowCnt = 0;
-            long currScanId = 0;
-            long scanId = 0;
+        for(MapValue row : resIter) {
+            rowCnt++;
+            MapValue key = rowToKey(row);
 
-            for(MapValue row : resIter) {
-                rowCnt++;
-                MapValue key = rowToKey(row);
+            if (!toGetAll()) {
                 scanId = getScanId(key);
 
                 // We stop only if the scanId changes (or there are no
-                // more rows). This will ensure that that we retrieved all
+                // more rows). This will ensure that we retrieved all
                 // keys with given scanId, so that the cursor can advance
                 // for the next SCAN invocation.
                 if (scanId != currScanId) {
@@ -245,43 +270,34 @@ abstract class Scan extends CommandsBase implements AutoCloseable {
                     }
                     currScanId = scanId;
                 }
-                
-                if (pred != null && !pred.test(row)) {
-                    continue;
-                }
-
-                ByteBuf keyBuf = keyToKeyBuf(key);
-                if (matchPattern != null && !matchPattern.matcher(
-                    byteBufToString(keyBuf)).matches()) {
-                    continue;
-                }
-                
-                addResults(results, keyBuf, row);
             }
 
-            // If there are no more rows, we are done.
-            if (scanId == currScanId) {
-                scanId = 0;
+            if (valuePred != null && !valuePred.test(row)) {
+                continue;
             }
 
-            return scanId;
-        } finally {
-            if (resIter instanceof AutoCloseable) {
-                try {
-                    ((AutoCloseable)resIter).close();
-                } catch(Exception ex) {
-                    assert false : "resIter.close() should not throw";
-                }
+            ByteBuf keyBuf = keyToKeyBuf(key);
+            if (matchPattern != null && !matchPattern.matcher(
+                byteBufToString(keyBuf)).matches()) {
+                continue;
             }
+
+            addResults(results, keyBuf, row);
         }
+
+        // If there are no more rows, we are done.
+        if (scanId == currScanId) {
+            scanId = 0;
+        }
+
+        return scanId;
     }
 
     // Returns result in the format of the result of SCAN command.
-    RedisMessage scan(RedisKeyInfo keyInfo, long cursor, ByteBuf match,
-        long count, ThrowingPredicate<MapValue,RedisResponseException> pred)
+    RedisMessage scan()
         throws RedisResponseException {
         ArrayList<RedisMessage> keyList = new ArrayList<>();
-        long nextCursor = scan(keyInfo, cursor, match, count, pred, keyList);
+        long nextCursor = scan(keyList);
 
         ArrayList<RedisMessage> resList = new ArrayList<>(2);
         resList.add(new FullBulkStringRedisMessage(

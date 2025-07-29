@@ -224,14 +224,10 @@ abstract class ListCommandsBase extends CollectionCommandsBase {
             .setReturnRow(returnExisting);
     }
 
-    protected static ListHeader addDeleteListElems(RedisKeyInfo keyInfo,
+    protected static void addDeleteListElems(RedisKeyInfo keyInfo,
         ListValueInfo val, WriteMultipleRequest wmReq, RedisValueInfo oldVal,
-        long currTime, boolean returnExisting) throws RedisResponseException {
-
-        if (val == null) {
-            return null;
-        }
-
+        boolean returnExisting) throws RedisResponseException {
+        assert(val != null);
         int delCnt = val.elemIds.size();
         assert delCnt != 0;
 
@@ -244,8 +240,7 @@ abstract class ListCommandsBase extends CollectionCommandsBase {
         if (header.len > delCnt) {
             // Can remove delCnt elements without emptying the list.
             header.len -= delCnt;
-            wmReq.add(makePutKeyRequest(keyInfo, header, oldVal, currTime),
-                true);
+            wmReq.add(makePutKeyReq(keyInfo, header, oldVal), true);
         } else { // header.len == delCnt
             // Remove all elements from the list and delete the list.
             wmReq.add(makeDeleteKeyReq(keyInfo, oldVal), true);
@@ -255,15 +250,6 @@ abstract class ListCommandsBase extends CollectionCommandsBase {
             wmReq.add(makeDeleteElemReq(keyInfo, elemId, returnExisting),
                 false);
         }
-
-        return header;
-    }
-
-    protected static ListHeader addDeleteListElems(RedisKeyInfo keyInfo,
-        ListValueInfo val, CollectionUpdateInfo upInfo,
-        boolean returnExisting) throws RedisResponseException {
-        return addDeleteListElems(keyInfo, val, upInfo.wmReq, upInfo.oldVal,
-            upInfo.currTime, returnExisting);
     }
 
     // We don't worry about expired list key here, since it will be handled
@@ -286,9 +272,10 @@ abstract class ListCommandsBase extends CollectionCommandsBase {
 
         MapValue row0 = rows.get(0);
 
-        RedisValueInfo val = new RedisValueInfo(rowToValue(row0),
+        RedisValueInfo val = RedisValueInfo.create(rowToValue(row0),
             rowToVer(row0), getExpTime(rowToKey(row0)));
-        ListValueInfo res = new ListValueInfo(val, rows, toGetElemVals);
+        ListValueInfo res = val.isValid() ?
+            new ListValueInfo(val, rows, toGetElemVals) : null;
         return new CollectionValueResult<>(val, res);
     }
 

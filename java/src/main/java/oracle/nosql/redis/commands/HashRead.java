@@ -2,14 +2,10 @@ package oracle.nosql.redis.commands;
 
 import java.util.Arrays;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Spliterator;
-import java.util.Spliterators;
-import java.util.stream.Stream;
-import java.util.stream.StreamSupport;
+
 import io.netty.buffer.ByteBuf;
 import io.netty.handler.codec.redis.ArrayRedisMessage;
 import io.netty.handler.codec.redis.FullBulkStringRedisMessage;
@@ -68,10 +64,19 @@ public class HashRead extends HashCommandsBase {
     
     private static class HashScan extends QueryScan {
 
-        private static final String SQL_SCAN_FMT = String.format(SQL_READ_FMT,
-            " $var2 LONG;", ", $h.key%s", "",
-            "AND ($h.keyId IS NULL OR $h.key.scanId >= $var2) " +
-            "ORDER BY $h.key.scanId");
+        // The reason we have to use JOIN and not just query of redis.hashes is
+        // because we have to condition on cid to avoid returning obsolete
+        // records that happen to have the same slot and keyId (note that we
+        // don't call doGet() below when cursor != 0, thus saving one request
+        // at each subsequent iteration). This has added bonus on checking
+        // expiration time of parent key inside the query.
+        private static final String SQL_SCAN_FMT = DECL_KEY_ID +
+            " $scanId LONG; SELECT " +
+            "/*+ FORCE_INDEX(redis.hashes hScanIdIdx) */ $h.key%s FROM " +
+            "NESTED TABLES(redis.hashes $h ANCESTORS(redis $r)) " +
+            WHERE_KEY_ID_COND + AND_NOT_EXPIRED +
+            "AND $h.cid = $r.value.cid AND $h.key.scanId >= $scanId " +
+            "ORDER BY $h.key.scanId";
         private static final String SQL_SCAN = String.format(SQL_SCAN_FMT,
             SEL_FLD_VAL);
         private static final String SQL_SCAN_NOVAL = String.format(
@@ -79,64 +84,54 @@ public class HashRead extends HashCommandsBase {
 
         private final boolean incVals;
 
-        HashScan(CommandsBase cmds, boolean incVals) {
-            super(cmds);
+        HashScan(CommandsBase cmds, RedisKeyInfo keyInfo, long cursor,
+            ByteBuf match, long count, boolean incVals)
+            throws RedisResponseException {
+            super(cmds, keyInfo, cursor, match, count, null);
             this.incVals = incVals;
         }
 
+        @Override
         String getSQLScan() {
             return incVals ? SQL_SCAN : SQL_SCAN_NOVAL;
         }
-    
-        Iterable<MapValue> scanIterable(RedisKeyInfo keyInfo, long cursor,
-            int limit) throws RedisResponseException {
-            Iterable<MapValue> qIter = super.scanIterable(keyInfo, cursor,
-                limit);
-            Iterator<MapValue> it = qIter.iterator();
 
-            // Hash does not exist or we finished scan.
-            if (!it.hasNext()) {
-                return qIter;
-            }
+        @Override
+        boolean toGetAll() { return qir == null; }
 
-            MapValue row = it.next();
-            MapValue val = getMapField(row, FLD_HASH_VAL, true);
-            if (val != null) {
-                // The hash must be in smallVal format and we must have
-                // no more rows.
-                if (it.hasNext()) {
-                    throw RedisResponseException.corrupt(ERR_NO_SINGLE_RES);
+        @Override
+        Iterable<MapValue> startScan() throws RedisResponseException {
+            if (zeroCursor) { // cursor = 0
+                RedisValueInfo hashVal = doGet(keyInfo);
+                // Hash does not exist or expired.
+                if (!hashVal.isValid()) {
+                    return Collections.emptyList();
                 }
-                MapValue smallVal = valToSmallVal(val);
-                // We must only return entries >= cursor and sort them based
-                // on the scanId.
-                ArrayList<MapValue> vals = new ArrayList<>(val.size());
-                for(FieldValue entVal : smallVal.values()) {
-                    if (!entVal.isMap()) {
-                        throw RedisResponseException.corrupt(
+
+                HashHeader header = new HashHeader(hashVal.val);
+                // The hash is in small value format. In this case we just
+                // return all entries. We still have to make sure each entry is
+                // a map.
+                if (header.smallVal != null) {
+                    ArrayList<MapValue> vals = new ArrayList<>(header.smallVal.size());
+                    for (FieldValue entVal : header.smallVal.values()) {
+                        if (!entVal.isMap()) {
+                            throw RedisResponseException.corrupt(
                                 ERR_INVALID_SMALLVAL_ENTRY);
+                        }
+                        vals.add(entVal.asMap());
                     }
-                    MapValue mapVal = entVal.asMap();
-                    long scanId = getScanId(rowToKey(mapVal));
-                    if (scanId >= cursor) {
-                        vals.add(mapVal);
-                    }
+                    return vals;
                 }
-
-                vals.sort((val1, val2) -> {
-                    // We don't need to check val1, val2 for correctness since
-                    // it is already done above.
-                    return Long.compare(rowToScanIdUnchecked(val1),
-                        rowToScanIdUnchecked(val1));
-                });
-                return vals;
             }
 
-            // Return iterable that includes the row we already fetch followed
-            // by the rest of the rows.
-            return () -> Stream.concat(Stream.of(row), StreamSupport.stream(
-                Spliterators.spliteratorUnknownSize(
-                    it, Spliterator.ORDERED), false)).iterator();
+            // Since scan of smallVal will always return all the elements, we
+            // can safely assume that if the cursor != 0, the hash is not in
+            // smallVal format (of course if cursor != 0 is a user error, the
+            // query below will result in no records). In any case, at this
+            // point we know the hash is not in smallVal format, so we use
+            // JOIN to query the entry records.
+            return super.startScan();
         }
         
         void addResults(List<RedisMessage> results, ByteBuf keyBuf,
@@ -361,8 +356,9 @@ public class HashRead extends HashCommandsBase {
             }
         }
 
-        try(HashScan scan = new HashScan(this, !noVals)) {
-            return scan.scan(keyInfo, cursor, match, count, null);
+        try(HashScan scan = new HashScan(this, keyInfo, cursor, match, count,
+            !noVals)) {
+            return scan.scan();
         }
     }
 

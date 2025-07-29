@@ -13,6 +13,8 @@ import io.netty.buffer.ByteBuf;
 import io.netty.handler.codec.redis.IntegerRedisMessage;
 import io.netty.handler.codec.redis.RedisMessage;
 import oracle.nosql.driver.NoSQLHandle;
+import oracle.nosql.driver.ops.WriteMultipleRequest;
+import oracle.nosql.driver.ops.WriteMultipleResult;
 import oracle.nosql.driver.ops.WriteMultipleResult.OperationResult;
 import oracle.nosql.driver.values.LongValue;
 import oracle.nosql.driver.values.StringValue;
@@ -50,37 +52,41 @@ public class ListTrimRemove extends ListCommandsBase {
 
     private Integer doLRem(RedisKeyInfo keyInfo, ByteBuf val, int cnt,
         boolean isDesc) throws RedisResponseException {
-        return doMultiUpdate(keyInfo,
-            (ki) -> queryListElems(ki, isDesc ? SQL_LREM_DESC : SQL_LREM,
-                new StringValue(makeStrVal(val)), new LongValue(cnt)),
-            (ki, lvi, upInfo) -> addDeleteListElems(ki, lvi, upInfo, false),
-            (header, res) -> {
-                if (header == null) {
-                    return 0;
-                }
+        return doWithRetries(() -> {
+            CollectionValueResult<ListValueInfo> cvr = queryListElems(keyInfo,
+                isDesc ? SQL_LREM_DESC : SQL_LREM,
+                new StringValue(makeStrVal(val)), new LongValue(cnt));
 
-                List<OperationResult> opsRes = res.getResults();
-                int opCnt = opsRes.size();
+            if (!cvr.isValid()) {
+                return 0;
+            }
 
-                // The first operation result is for list header, the rest is
-                // for elements popped.
-                if (opCnt < 2) {
+            WriteMultipleRequest wmReq = new WriteMultipleRequest();
+            addDeleteListElems(keyInfo, cvr.data, wmReq, cvr.val, false);
+
+            WriteMultipleResult wmRes = doWM(wmReq, true);
+            List<OperationResult> opsRes = wmRes.getResults();
+            int opCnt = opsRes.size();
+
+            // The first operation result is for list header, the rest is
+            // for elements popped.
+            if (opCnt < 2) {
+                throw RedisResponseException.nosql(
+                    "Invalid number of delete results: " + opsRes.size());
+            }
+
+            assert opsRes.get(0).getSuccess();
+
+            for(int i = 1; i < opCnt; i++) {
+                OperationResult opRes = opsRes.get(i);
+                if (!opRes.getSuccess()) {
                     throw RedisResponseException.nosql(
-                        "Invalid number of delete results: " + opsRes.size());
+                        "Invalid unsuccessful operation result");
                 }
+            }
 
-                assert opsRes.get(0).getSuccess();
-
-                for(int i = 1; i < opCnt; i++) {
-                    OperationResult opRes = opsRes.get(i);
-                    if (!opRes.getSuccess()) {
-                        throw RedisResponseException.nosql(
-                            "Invalid unsuccessful operation result");
-                    }
-                }
-
-                return Integer.valueOf(opCnt - 1);
-            });
+            return Integer.valueOf(opCnt - 1);
+        });
     }
     
     // Note that we have to select the elements to trim on the left size using
@@ -257,11 +263,18 @@ public class ListTrimRemove extends ListCommandsBase {
         // be trimmed).
         boolean success = false;
         do {
-            ListTrimInfo trimRes = doMultiUpdate(keyInfo,
-                (ki) -> queryElemsForTrim(keyInfo, bounds[0], bounds[1]),
-                (ki, lvi, upInfo) -> addDeleteListElems(keyInfo, lvi, upInfo,
-                    false),
-                (trimInfo, header, res) -> trimInfo);
+            ListTrimInfo trimRes = doWithRetries(() -> {
+                CollectionValueResult<ListTrimInfo> cvr = queryElemsForTrim(
+                    keyInfo, bounds[0], bounds[1]);
+                if (!cvr.isValid()) {
+                    return null;
+                }
+
+                WriteMultipleRequest wmReq = new WriteMultipleRequest();
+                addDeleteListElems(keyInfo, cvr.data, wmReq, cvr.val, false);
+                doWM(wmReq, true);
+                return cvr.data;
+            });
 
             if (trimRes == null) {
                 return success;

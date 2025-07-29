@@ -15,6 +15,8 @@ import io.netty.buffer.ByteBuf;
 import io.netty.handler.codec.redis.IntegerRedisMessage;
 import io.netty.handler.codec.redis.RedisMessage;
 import oracle.nosql.driver.NoSQLHandle;
+import oracle.nosql.driver.ops.WriteMultipleRequest;
+import oracle.nosql.driver.ops.WriteMultipleResult;
 import oracle.nosql.driver.values.ArrayValue;
 import oracle.nosql.driver.values.FieldValue;
 import oracle.nosql.driver.values.LongValue;
@@ -259,36 +261,34 @@ public class ListSetInsert extends ListCommandsBase {
     private ReindexBatchResult doReindexBatch(RedisKeyInfo keyInfo,
         BigDecimal fromId, BigDecimal toId, boolean isLeft)
         throws RedisResponseException {
-        return doMultiUpdate(keyInfo, (ki) -> {
-            List<MapValue> rows = doQuery(ki,
+        return doWithRetries(() -> {
+            List<MapValue> rows = doQuery(keyInfo,
                 isLeft ? SQL_ELEMS_BEFORE : SQL_ELEMS_AFTER,
                 new NumberValue(fromId), new NumberValue(toId));
             if (rows.isEmpty()) {
                 // We are done with reindexing or the list no longer exists.
-                return CollectionValueResult.none();
-            }
-            
-            MapValue row0 = rows.get(0);
-            RedisValueInfo val = new RedisValueInfo(rowToValue(row0),
-                rowToVer(row0), getExpTime(rowToKey(row0)));
-            ListValueInfo res = new ListValueInfo(val, rows, true);
-
-            return new CollectionValueResult<>(val, res);
-        },
-        (ki, lvi, upInfo) -> {
-            if (lvi == null) {
                 return null;
             }
+
+            MapValue row0 = rows.get(0);
+            RedisValueInfo val = RedisValueInfo.create(rowToValue(row0),
+                rowToVer(row0), getExpTime(rowToKey(row0)));
+            if (!val.isValid()) {
+                return null;
+            }
+
+            ListValueInfo lvi = new ListValueInfo(val, rows, true);
             ListHeader header = lvi.header;
             assert !lvi.elemIds.isEmpty();
             assert lvi.elemVals != null;
             assert lvi.elemIds.size() == lvi.elemVals.size();
 
-            upInfo.addPutKeyReq(header);
+            WriteMultipleRequest wmReq = new WriteMultipleRequest();
+            wmReq.add(makePutKeyReq(keyInfo, header, val), true);
 
             int cnt = lvi.elemIds.size();
             BigDecimal currId = fromId;
-            
+
             // We need additional iteration to determine where to add delete
             // requests for the old element ids. This is because new element
             // ids could coinside with old element ids and we cannot add both
@@ -301,7 +301,7 @@ public class ListSetInsert extends ListCommandsBase {
 
                 currId = isLeft ?
                     reindexShiftLeft(currId) : reindexShiftRight(currId);
-                
+
                 // Note that we must always shift forward if going back
                 // (isBefore = true) or backward if going forward
                 // (isBefore = false).
@@ -316,15 +316,15 @@ public class ListSetInsert extends ListCommandsBase {
                     // sure we add delete requests for elements already
                     // processed.
                     for(; delIdx < putIdx; delIdx++) {
-                        upInfo.addElemReq(makeDeleteElemReq(ki,
-                            lvi.elemIds.get(delIdx), false));
+                        wmReq.add(makeDeleteElemReq(keyInfo,
+                            lvi.elemIds.get(delIdx), false), false);
                     }
 
                     return ReindexBatchResult.ABORT;
                 }
 
-                upInfo.addElemReq(makePutElemReq(ki, currId, header.cid,
-                    elemVal));
+                wmReq.add(makePutElemReq(keyInfo, currId, header.cid,
+                    elemVal), false);
 
                 for(; delIdx < cnt; delIdx++) {
                     BigDecimal elemId2 = lvi.elemIds.get(delIdx);
@@ -338,20 +338,21 @@ public class ListSetInsert extends ListCommandsBase {
                     }
 
                     // We know ids are not equal here.
-                    upInfo.addElemReq(makeDeleteElemReq(ki, elemId2, false));
+                    wmReq.add(makeDeleteElemReq(keyInfo, elemId2, false),
+                        false);
                 }
             }
 
             // Complete adding delete requests (we are now past last put
             // element id, so id clash is no longer possible).
             for(; delIdx < cnt; delIdx++) {
-                upInfo.addElemReq(makeDeleteElemReq(ki,
-                    lvi.elemIds.get(delIdx), false));
+                wmReq.add(makeDeleteElemReq(keyInfo,
+                    lvi.elemIds.get(delIdx), false), false);
             }
 
+            doWM(wmReq, true);
             return new ReindexBatchResult(currId);
-        },
-        (rbr, res) -> rbr);
+        });
     }
 
     private void doReindex(RedisKeyInfo keyInfo, BigDecimal startId)
@@ -407,36 +408,38 @@ public class ListSetInsert extends ListCommandsBase {
 
     private InsertResult doLInsert(RedisKeyInfo keyInfo, ByteBuf pivot,
         ByteBuf val, boolean isBefore) throws RedisResponseException {
-        return doMultiUpdate(keyInfo, (ki) -> {
-            CollectionValueResult<ListValueInfo> res =
-                queryListElems(ki, SQL_LINSERT_PIVOT, true,
-                new StringValue(makeStrVal(pivot)));
-            if (res.data == null || res.data.elemIds.isEmpty()) {
-                // either the list itself or the pivot is not found
-                return res;
-            }
-            List<MapValue> rows = doQuery(ki,
-                isBefore ? SQL_LINSERT_BEFORE : SQL_LINSERT_AFTER,
-                new NumberValue(res.data.elemIds.get(0)));
-            if (!rows.isEmpty()) {
-                chkSingleResult(rows);
-                res.data.elemIds.add(rowToElemId(rows.get(0)));
-            }
-            // res should have at most 2 elements - the pivot and the
-            // element before/after if exists.
-            return res;
-        }, (ki, lvi, upInfo) -> {
-            if (lvi == null) { // list is not found
+        return doWithRetries(() -> {
+            CollectionValueResult<ListValueInfo> cvr =
+                queryListElems(keyInfo, SQL_LINSERT_PIVOT, true,
+                    new StringValue(makeStrVal(pivot)));
+
+            if (!cvr.isValid()) {
                 return InsertResult.LIST_NOT_FOUND;
             }
+
+            if (cvr.data.elemIds.isEmpty()) {
+                return InsertResult.PIVOT_NOT_FOUND;
+            }
+
+            List<MapValue> rows = doQuery(keyInfo,
+                isBefore ? SQL_LINSERT_BEFORE : SQL_LINSERT_AFTER,
+                new NumberValue(cvr.data.elemIds.get(0)));
+            // There should be at most 2 elements - the pivot and the
+            // element before/after if exists.
+            if (!rows.isEmpty()) {
+                chkSingleResult(rows);
+                cvr.data.elemIds.add(rowToElemId(rows.get(0)));
+            }
+
+            ListValueInfo lvi = cvr.data;
             ListHeader header = lvi.header;
-            
+
             header.len++;
 
             if (lvi.elemIds.isEmpty()) {
                 return InsertResult.PIVOT_NOT_FOUND; // pivot is not found
             }
-            
+
             BigDecimal pivotId = lvi.elemIds.get(0);
             BigDecimal newId;
 
@@ -468,10 +471,12 @@ public class ListSetInsert extends ListCommandsBase {
                 }
             }
 
-            upInfo.addPutKeyReq(header);
-            upInfo.addElemReq(makePutElemReq(ki, newId, header.cid, val));
+            WriteMultipleRequest wmReq = new WriteMultipleRequest();
+            wmReq.add(makePutKeyReq(keyInfo, header, cvr.val), true);
+            wmReq.add(makePutElemReq(keyInfo, newId, header.cid, val), false);
+            doWM(wmReq, true);
             return InsertResult.success(header);
-        }, (insRes, wmRes) -> insRes);
+        });
     }
 
     public void registerCommands(HashMap<String, CommandHandler> cmdMap) {
@@ -486,36 +491,41 @@ public class ListSetInsert extends ListCommandsBase {
         final boolean isAsc = idxArg >= 0;
         // need another variable idx to make it effectively final
         final long idx = isAsc ? idxArg : -idxArg - 1;
+        RedisKeyInfo keyInfo = makeRedisKeyInfo(cmd.args[0]);
 
-        return doMultiUpdate(makeRedisKeyInfo(cmd.args[0]), (ki) -> {
-            List<MapValue> rows = doQuery(ki, isAsc ? SQL_LSET : SQL_LSET_DESC,
-                new LongValue(idx));
+        return doWithRetries(() -> {
+            List<MapValue> rows = doQuery(keyInfo,
+                isAsc ? SQL_LSET : SQL_LSET_DESC, new LongValue(idx));
 
             if (rows.isEmpty()) {
                 throw new RedisResponseException(ErrorPrefix.ERR,
                     "index out of range");
             }
+
             chkSingleResult(rows);
 
             MapValue row0 = rows.get(0);
-            RedisValueInfo val = new RedisValueInfo(rowToValue(row0),
+            RedisValueInfo val = RedisValueInfo.create(rowToValue(row0),
                 rowToVer(row0), getExpTime(rowToKey(row0)));
-            ListValueInfo res = new ListValueInfo(val, rows);
-            return new CollectionValueResult<>(val, res);
-            }, (ki, lvi, upInfo) -> {
-                ListHeader header = lvi.header;
-                // This may happen if the list has expired.
-                if (header == null) {
-                    throw new RedisResponseException(ErrorPrefix.ERR,
-                        "index out of range");
-                }
-                
-                upInfo.addPutKeyReq(header);
-                assert lvi.elemIds.size() == 1;
-                upInfo.addElemReq(makePutElemReq(ki, lvi.elemIds.get(0),
-                    header.cid, cmd.args[2]));
-                return header;
-            }, (header, res) -> okReply);
+            // This may happen if the list has expired.
+            if (!val.isValid()) {
+                throw new RedisResponseException(ErrorPrefix.ERR,
+                    "index out of range");
+            }
+
+            ListValueInfo lvi = new ListValueInfo(val, rows);
+            ListHeader header = lvi.header;
+            assert(header != null);
+
+            WriteMultipleRequest wmReq = new WriteMultipleRequest();
+            wmReq.add(makePutKeyReq(keyInfo, header, val), true);
+            assert lvi.elemIds.size() == 1;
+            wmReq.add(makePutElemReq(keyInfo, lvi.elemIds.get(0),
+                header.cid, cmd.args[2]), false);
+
+            doWM(wmReq, true);
+            return okReply;
+        });
     }
 
     public RedisMessage handleLInsert(RedisClientContext client,

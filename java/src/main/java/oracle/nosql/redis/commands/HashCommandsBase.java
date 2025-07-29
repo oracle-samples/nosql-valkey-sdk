@@ -42,7 +42,9 @@ public class HashCommandsBase extends CollectionCommandsBase {
     protected static String HKEYID_IN_ARRAY_VAR2 = HKEYID_COND + "IN $var2[]";
     protected static String HKEYID_EQ_VAL_VAR2 = HKEYID_COND + "= $var2";
 
-    protected static final String FROM_LOJ = makeFromLOJ("redis.hashes", "$h");
+    protected static final String FROM_LOJ =
+        "FROM redis $r LEFT OUTER JOIN redis.hashes $h ON $r.slot = $h.slot " +
+        "AND $r.id = $h.id AND $r.value.cid = $h.cid ";
 
     protected static final String SQL_ENTRIES_FMT = DECL_KEY_ID +
         "%s SELECT row_version($r) AS ver, $r.key, $r.value%s " + FROM_LOJ +
@@ -249,8 +251,13 @@ public class HashCommandsBase extends CollectionCommandsBase {
         }
     
         MapValue row0 = rows.get(0);
-        RedisValueInfo val = new RedisValueInfo(rowToValue(row0),
+        RedisValueInfo val = RedisValueInfo.create(rowToValue(row0),
             rowToVer(row0), getExpTime(rowToKey(row0)));
+        if (!val.isValid()) {
+            // Hash expired.
+            return CollectionValueResult.none();
+        }
+
         HashHeader header = new HashHeader(val.val);
     
         String keyId0 = rowToKeyId(row0, true);

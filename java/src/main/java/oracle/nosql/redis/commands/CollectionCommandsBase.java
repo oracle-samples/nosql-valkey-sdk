@@ -120,60 +120,10 @@ abstract class CollectionCommandsBase extends CommandsBase {
         static <T> CollectionValueResult<T> none() {
             return (CollectionValueResult<T>)NONE;
         }
-    }
 
-    // TODO: planning to remove this class as well as doMultiUpdate, since it
-    // doesn't scale well with multiple keys. Switch to using doWithRetries()
-    // instead, in this case this class will become unnecessary.
-    // Contains information needed to perform an update operation together
-    // with the value of the new collection header (dependent on collection
-    // type).
-    protected static class CollectionUpdateInfo {
-        protected final RedisKeyInfo keyInfo;
-        protected final RedisValueInfo oldVal;
-        protected final long currTime;
-        final WriteMultipleRequest wmReq = new WriteMultipleRequest();
-        protected PutRequest putKeyReq;
-        protected DeleteRequest delKeyReq;
-
-        CollectionUpdateInfo(RedisKeyInfo keyInfo, RedisValueInfo oldVal,
-            long currTime) {
-            assert keyInfo != null && oldVal != null;
-            this.keyInfo = keyInfo;
-            this.oldVal = oldVal;
-            this.currTime = currTime;
+        boolean isValid() {
+            return val.isValid();
         }
-
-        boolean needUpdate() {
-            return wmReq.getNumOperations() != 0;
-        }
-
-        // Add put request for the collection header.
-        CollectionUpdateInfo addPutKeyReq(MapValue newVal) {
-            assert putKeyReq == null && delKeyReq == null;
-            putKeyReq = makePutKeyReq(keyInfo, newVal, oldVal, currTime);
-            wmReq.add(putKeyReq, true);
-            return this;
-        }
-
-        CollectionUpdateInfo addPutKeyReq(CollectionHeader header) {
-            return addPutKeyReq(header.makeValue());
-        }
-
-        // Add delete request for the collection header.
-        CollectionUpdateInfo addDeleteKeyReq() {
-            assert putKeyReq == null && delKeyReq == null;
-            delKeyReq = makeDeleteKeyReq(keyInfo, oldVal);
-            wmReq.add(delKeyReq, true);
-            return this;
-        }
-
-        // Add put or delete request for collection element.
-        CollectionUpdateInfo addElemReq(Request elemReq) {
-            wmReq.add(elemReq, false);
-            return this;
-        }
-
     }
 
     protected static class CopyElemsResult {
@@ -196,7 +146,7 @@ abstract class CollectionCommandsBase extends CommandsBase {
 
     // Make put request for the collection header.
     static PutRequest makePutKeyReq(RedisKeyInfo keyInfo, MapValue newVal,
-        RedisValueInfo oldVal, long currTime) {
+        RedisValueInfo oldVal) {
         MapValue row = new MapValue().put(FLD_SLOT, keyInfo.slot)
             .put(FLD_ID, keyInfo.id).put(FLD_KEY, makeRedisKey(keyInfo))
             .put(FLD_VALUE, newVal);
@@ -216,16 +166,16 @@ abstract class CollectionCommandsBase extends CommandsBase {
         // If the old key has expired, we treat this as creating a new
         // key, but since we are overwriting existing row, we have to
         // remove any expiration time that may have been previously set.
-        if (oldVal.isExpired(currTime)) {
+        if (oldVal.isExpired()) {
             putReq.setTTL(TimeToLive.DO_NOT_EXPIRE);
         }
 
         return putReq;
     }
 
-    static PutRequest makePutKeyRequest(RedisKeyInfo keyInfo,
-        CollectionHeader header, RedisValueInfo oldVal, long currTime) {
-        return makePutKeyReq(keyInfo, header.makeValue(), oldVal, currTime);
+    static PutRequest makePutKeyReq(RedisKeyInfo keyInfo,
+        CollectionHeader header, RedisValueInfo oldVal) {
+        return makePutKeyReq(keyInfo, header.makeValue(), oldVal);
     }
 
     // Make delete request for the collection header.
@@ -301,13 +251,6 @@ abstract class CollectionCommandsBase extends CommandsBase {
         }
     }
 
-    static String makeFromLOJ(String tblName, String varName) {
-        return String.format(
-            "FROM redis $r LEFT OUTER JOIN %s %s ON $r.slot = %s.slot " +
-            "AND $r.id = %s.id AND $r.value.cid = %s.cid ", tblName, varName,
-            varName, varName, varName);
-    }
-
     static long fvToLen(FieldValue fldLen) throws RedisResponseException {
         if (fldLen == null || !fldLen.isLong()) {
             throw RedisResponseException.corrupt(
@@ -364,56 +307,6 @@ abstract class CollectionCommandsBase extends CommandsBase {
         }
         
         return super.processQuery(pStmt, applyRow);
-    }
-
-    <V, U, R> R doMultiUpdate(RedisKeyInfo keyInfo,
-        ThrowingFunction<RedisKeyInfo, CollectionValueResult<V>,
-            RedisResponseException> getOldVal,
-        ThrowingTriFunction<RedisKeyInfo, V, CollectionUpdateInfo, U,
-            RedisResponseException> makeOp,
-        ThrowingTriFunction<V, U, WriteMultipleResult, R,
-            RedisResponseException> getResult) throws RedisResponseException {
-
-        long ms = 1;
-        for(int i = 0; i < config.maxAtomicRetries; i++) {
-            CollectionValueResult<V> vi = getOldVal.apply(keyInfo);
-
-            long currTime = System.currentTimeMillis();
-            CollectionUpdateInfo ui = new CollectionUpdateInfo(keyInfo,
-                vi.val, currTime);
-            U opInfo = makeOp.apply(keyInfo,
-                vi.val.isValid(currTime) ? vi.data : null, ui);
-
-            if (!ui.needUpdate()) {
-                return getResult.apply(vi.data, opInfo, null);
-            }
-
-            try {
-                WriteMultipleResult res = nosqlHandle.writeMultiple(ui.wmReq);
-                if (res.getSuccess()) {
-                    return getResult.apply(vi.data, opInfo, res);
-                }
-                Thread.sleep(ms, rnd.nextInt(1000000));
-                ms *= 2;
-            } catch(NoSQLException ex) {
-                throw RedisResponseException.nosql(ex);
-            } catch(InterruptedException iex) {}
-        }
-
-        throw RedisResponseException.nosql(
-            "Failed to perform atomic read-update sequence after "
-                + config.maxAtomicRetries + " tries");
-    }
-
-    <V, U, R> R doMultiUpdate(RedisKeyInfo keyInfo,
-        ThrowingFunction<RedisKeyInfo, CollectionValueResult<V>,
-            RedisResponseException> getOldVal,
-        ThrowingTriFunction<RedisKeyInfo, V, CollectionUpdateInfo, U,
-            RedisResponseException> makeOp,
-        ThrowingBiFunction<U, WriteMultipleResult, R,
-            RedisResponseException> getResult) throws RedisResponseException {
-        return doMultiUpdate(keyInfo, getOldVal, makeOp,
-            (data, opInfo, res) -> getResult.apply(opInfo, res));
     }
 
     // The child table name used by the collection.

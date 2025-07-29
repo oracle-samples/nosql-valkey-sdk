@@ -143,33 +143,28 @@ public class StringCommands extends CommandsBase {
         SetOpt setOpt, boolean toGetOldVal, RedisMessage successReply,
         RedisMessage failureReply)
         throws RedisResponseException {
+        RedisKeyInfo keyInfo = makeRedisKeyInfo(keyBuf);
+
         // If the result does not depend on the old value, we don't need
         // version-conditioned put or retries done by doGetSet().
         // Note that doSet() cannot handle SetOpt.XX.
         // Todo: for SetOpt.XX, use update query instead of put.
         if (!toGetOldVal && exp != KEEP_TTL && setOpt != SetOpt.XX) {
-            return doSet(keyBuf, makeStringValue(valBuf), exp,
+            return doSet(keyInfo, makeStringValue(valBuf), exp,
                 setOpt == SetOpt.NX) ? successReply : failureReply;
         }
-        return doGetSet(
-            keyBuf,
-            (oldVal) -> setOpt == null ||
-                (setOpt == SetOpt.NX && !oldVal.exists()) ||
-                (setOpt == SetOpt.XX && oldVal.exists()),
-            (oldVal) -> {
-                if (toGetOldVal && oldVal.val != null &&
-                    !getValueType(oldVal.val).equals(TYPE_STRING)) {
-                    throw RedisResponseException.wrongType();
-                }
-                return new RedisValueInfo(makeStringValue(valBuf), null,
-                    exp != KEEP_TTL ? exp : oldVal.exp);
-            },
-            // newVal is NONE if SET is not successful
-            (oldVal, newVal) -> {
-                assert(setOpt != null || newVal.exists());
-                return toGetOldVal ? valInfoToResp(oldVal) :
-                    (newVal.exists() ? successReply : failureReply);
-            });
+
+        return doWithRetries(() -> {
+            RedisValueInfo oldVal = doGet(keyInfo);
+            if (setOpt != null && (setOpt == SetOpt.NX && oldVal.isValid()) ||
+                (setOpt == SetOpt.XX && !oldVal.isValid())) {
+                return toGetOldVal ? valInfoToResp(oldVal) : failureReply;
+            }
+            RedisValueInfo newVal = RedisValueInfo.create(
+                makeStringValue(valBuf), null, exp);
+            doChkSet(keyInfo, newVal, oldVal);
+            return toGetOldVal ? valInfoToResp(oldVal) : successReply;
+        });
     }
 
     private RedisMessage doSetString(ByteBuf keyBuf, long exp, ByteBuf valBuf,
@@ -191,10 +186,14 @@ public class StringCommands extends CommandsBase {
         ThrowingFunction<ByteBuf,ByteBuf,RedisResponseException> getNewVal,
         ThrowingFunction<ByteBuf,RedisMessage,RedisResponseException>
             getResult) throws RedisResponseException {
-        return doGetSet(keyBuf, (oldVal) -> true,
-            (oldVal) -> new RedisValueInfo(makeStringValue(
-                getNewVal.apply(getStringValue(oldVal.val))), null, NO_EXP),
-            (oldVal, newVal) -> getResult.apply(getStringValue(newVal.val)));
+        RedisKeyInfo keyInfo = makeRedisKeyInfo(keyBuf);
+        return doWithRetries(() -> {
+            RedisValueInfo oldVal = doGet(keyInfo);
+            RedisValueInfo newVal = RedisValueInfo.create(makeStringValue(
+                getNewVal.apply(getStringValue(oldVal.val))), null, NO_EXP);
+            doChkSet(keyInfo, newVal, oldVal);
+            return getResult.apply(getStringValue(newVal.val));
+        });
     }
 
     private RedisMessage doIncrBy(ByteBuf keyBuf, final long arg)
@@ -382,8 +381,8 @@ public class StringCommands extends CommandsBase {
         if (end < 0) {
             end = Math.max(len + end, 0);
         }
-        if (end > len) {
-            end = len;
+        if (end >= len) {
+            end = len - 1;
         }
 
         // Note that for this command both start and end are inclusive.
@@ -563,7 +562,7 @@ public class StringCommands extends CommandsBase {
             val[0] = getStringField(row, FLD_VALUE);
         });
 
-        return val != null ?
+        return val[0] != null ?
             new FullBulkStringRedisMessage(getStrVal(val[0])) :
             FullBulkStringRedisMessage.NULL_INSTANCE;
     }

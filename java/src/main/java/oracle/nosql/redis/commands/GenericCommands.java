@@ -64,12 +64,13 @@ public class GenericCommands extends CommandsBase {
     private static class KeyScan extends QueryScan {
 
         private static final String SQL_SCAN =
-            "DECLARE $var1 LONG; SELECT $r.key, $r.value.type AS type FROM " +
-            "redis $r WHERE $r.key.scanId >= $var1 " + AND_NOT_EXPIRED +
+            "DECLARE $scanId LONG; SELECT $r.key, $r.value.type AS type " +
+            "FROM redis $r WHERE $r.key.scanId >= $scanId " + AND_NOT_EXPIRED +
             "ORDER BY $r.key.scanId";
 
-        KeyScan(CommandsBase cmds) {
-            super(cmds);
+        KeyScan(CommandsBase cmds, long cursor, ByteBuf match, long count,
+            String type) throws RedisResponseException {
+            super(cmds, null, cursor, match, count, typePred(type));
         }
 
         private static ThrowingPredicate<MapValue,RedisResponseException>
@@ -80,16 +81,6 @@ public class GenericCommands extends CommandsBase {
         }
     
         String getSQLScan() { return SQL_SCAN; }
-
-        long scan(long cursor, ByteBuf match, long count, String type,
-            List<RedisMessage> results) throws RedisResponseException {
-            return scan(null, cursor, match, count, typePred(type), results);
-        }
-
-        RedisMessage scan(long cursor, ByteBuf match, long count, String type)
-            throws RedisResponseException {
-            return scan(null, cursor, match, count, typePred(type));
-        }
     }
 
     private static final String SQL_EXISTS_ONE = DECL_KEY_ID +
@@ -118,10 +109,9 @@ public class GenericCommands extends CommandsBase {
         throws RedisResponseException {
         chkExactNumArgs(cmd, 1);
         RedisValueInfo valInfo = doGet(cmd.args[0]);
-        long currTime = System.currentTimeMillis();
-        return new IntegerRedisMessage(valInfo.isValid(currTime) ?
-            (valInfo.exp == NO_EXP ? -1 :
-                conv.applyAsLong(valInfo.exp, currTime)) : -2);
+        return new IntegerRedisMessage(valInfo.isValid() ?
+            (valInfo.exp == NO_EXP ? -1 : conv.applyAsLong(valInfo.exp,
+                System.currentTimeMillis())) : -2);
     }
 
     // For commands that set expiration time, such as
@@ -129,23 +119,29 @@ public class GenericCommands extends CommandsBase {
     private RedisMessage doSetExp(ByteBuf keyBuf, long exp, TTLOpt ttlOpt)
         throws RedisResponseException {
         RedisKeyInfo keyInfo = makeRedisKeyInfo(keyBuf);
-        return doGetSet(keyInfo,
-            (oldVal) -> oldVal.exists() &&
-                (ttlOpt == null ||
-                 (ttlOpt == TTLOpt.NX && oldVal.exp == NO_EXP) ||
-                 (ttlOpt == TTLOpt.XX && oldVal.exp != NO_EXP) ||
-                 (ttlOpt == TTLOpt.GT && compExp(exp, oldVal.exp) > 0) ||
-                 (ttlOpt == TTLOpt.LT && compExp(exp, oldVal.exp) < 0)),
-            (oldVal) -> new RedisValueInfo(oldVal.val, null, exp),
-            (oldVal, newVal) -> {
-                if (newVal.exists()) {
-                    doSetElemsExp(keyInfo, newVal,
-                        TimeToLive.fromExpirationTime(exp,
-                        System.currentTimeMillis()));
-                    return oneReply;
-                }
+
+        return doWithRetries(() -> {
+            RedisValueInfo oldVal = doGet(keyInfo);
+            if (!oldVal.isValid() ||
+                (ttlOpt != null &&
+                    (ttlOpt == TTLOpt.NX && oldVal.exp != NO_EXP) ||
+                    (ttlOpt == TTLOpt.XX && oldVal.exp == NO_EXP) ||
+                    (ttlOpt == TTLOpt.GT && compExp(exp, oldVal.exp) <= 0) ||
+                    (ttlOpt == TTLOpt.LT && compExp(exp, oldVal.exp) >= 0))) {
                 return zeroReply;
-            });
+            }
+            RedisValueInfo newVal = RedisValueInfo.create(oldVal.val, null,
+                exp);
+            doChkSet(keyInfo, newVal, oldVal);
+            CommandsBase cmds = cmdHandlers.getCommandsByValueType(
+                getValueType(newVal.val));
+            if (cmds.isCollectionType()) {
+                cmds.doSetElemsExp(keyInfo, newVal,
+                    TimeToLive.fromExpirationTime(exp,
+                        System.currentTimeMillis()));
+            }
+            return oneReply;
+        });
     }
 
     // For all commands as above except PERSIST.
@@ -222,7 +218,6 @@ public class GenericCommands extends CommandsBase {
                 "expected %d, got %d", ls.size(), keyInfos.length));
         }
 
-        long currTime = System.currentTimeMillis();
         int delCnt = 0;
 
         // Todo: perhaps consider eliminating duplicates from the input "keys"
@@ -242,9 +237,9 @@ public class GenericCommands extends CommandsBase {
                 throw RedisResponseException.nosql(ERR_MISSING_EXISTING_VAL);
             }
 
-            RedisValueInfo valInfo = new RedisValueInfo(rowToValue(row),
+            RedisValueInfo valInfo = RedisValueInfo.create(rowToValue(row),
                 opRes.getVersion(), getExpTime(rowToKey(row)));
-            if (!valInfo.isValid(currTime)) {
+            if (!valInfo.isValid()) {
                 continue;
             }
 
@@ -339,50 +334,31 @@ public class GenericCommands extends CommandsBase {
             throw RedisResponseException.crossSlot();
         }
         // renaming to the same name is a no-op
-        if (srcKeyInfo.id == dstKeyInfo.id) {
+        if (srcKeyInfo.id.equals(dstKeyInfo.id)) {
             return true;
         }
 
         RedisValueInfo srcVal = doGet(srcKeyInfo);
-        long currTime = System.currentTimeMillis();
-        if (!srcVal.isValid(currTime)) {
+        if (!srcVal.isValid()) {
             throw new RedisResponseException(ErrorPrefix.ERR, "no such key");
         }
 
-        RedisValueInfo dstVal = null;
+        RedisValueInfo dstVal = RedisValueInfo.NONE;
         if (isNX) {
             dstVal = doGet(dstKeyInfo);
-            if (dstVal != null && dstVal.isValid(currTime)) {
+            if (dstVal.isValid()) {
                 return false;
             }
         }
-
-        // RENAME transfers the source expiration time to the destination.
-        dstKeyInfo.exp = srcVal.exp;
 
         CommandsBase cmds = cmdHandlers.getCommandsByValueType(
             getValueType(srcVal.val));
         MapValue newVal = cmds.doCopy(srcKeyInfo, srcVal, dstKeyInfo);
 
         WriteMultipleRequest wmReq = new WriteMultipleRequest();
-        MapValue row = new MapValue().put(FLD_SLOT, dstKeyInfo.slot)
-            .put(FLD_ID, dstKeyInfo.id).put(FLD_KEY, makeRedisKey(dstKeyInfo))
-            .put(FLD_VALUE, newVal);
-
-        PutRequest putReq = new PutRequest()
-            .setTableName(NoSQLRedisServer.MAIN_TABLE_NAME)
-            .setValue(row)
-            .setTTL(dstKeyInfo.exp == NO_EXP ? TimeToLive.DO_NOT_EXPIRE :
-                TimeToLive.fromExpirationTime(dstKeyInfo.exp, currTime));
-        if (isNX) {
-            if (dstVal == null) {
-                putReq.setOption(PutRequest.Option.IfAbsent);
-            } else {
-                // condition on version of expired key
-                putReq.setOption(PutRequest.Option.IfVersion);
-                putReq.setMatchVersion(dstVal.ver);
-            }
-        }
+        // RENAME transfers the source expiration time to the destination.
+        PutRequest putReq = makePutReqForSet(dstKeyInfo, srcVal.exp,
+            newVal, isNX ? dstVal : null);
         wmReq.add(putReq, true);
 
         DeleteRequest delReq = new DeleteRequest()
@@ -601,8 +577,8 @@ public class GenericCommands extends CommandsBase {
             }
         }
 
-        try(KeyScan scan = new KeyScan(this)) {
-            return scan.scan(cursor, match, count, type);
+        try(KeyScan scan = new KeyScan(this, cursor, match, count, type)) {
+            return scan.scan();
         }
     }
 
@@ -613,8 +589,9 @@ public class GenericCommands extends CommandsBase {
         ArrayList<RedisMessage> results = new ArrayList<>();
         long cursor = 0;
         do {
-            try(KeyScan scan = new KeyScan(this)) {
-                cursor = scan.scan(cursor, cmd.args[0], 1024, null, results);
+            try(KeyScan scan = new KeyScan(this, cursor, cmd.args[0], 8092,
+                null)) {
+                cursor = scan.scan(results);
             }
         } while (cursor != 0);
 

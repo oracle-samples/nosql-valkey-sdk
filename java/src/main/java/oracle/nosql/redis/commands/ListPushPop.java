@@ -21,6 +21,7 @@ import io.netty.handler.codec.redis.IntegerRedisMessage;
 import io.netty.handler.codec.redis.RedisMessage;
 import oracle.nosql.driver.NoSQLHandle;
 import oracle.nosql.driver.ops.WriteMultipleRequest;
+import oracle.nosql.driver.ops.WriteMultipleResult;
 import oracle.nosql.driver.ops.WriteMultipleResult.OperationResult;
 import oracle.nosql.driver.values.LongValue;
 import oracle.nosql.driver.values.MapValue;
@@ -77,8 +78,7 @@ public class ListPushPop extends ListCommandsBase {
 
     private static ListHeader addPushListElems(RedisKeyInfo keyInfo,
         ListValueInfo lvi, ByteBuf []  elems, int off, int cnt, boolean isLeft,
-        boolean ifExists, WriteMultipleRequest wmReq, RedisValueInfo oldVal,
-        long currTime) {
+        boolean ifExists, WriteMultipleRequest wmReq, RedisValueInfo oldVal) {
         ListHeader header = lvi != null ? lvi.header : null;
         BigDecimal startId;
         if (header != null) {
@@ -94,7 +94,7 @@ public class ListPushPop extends ListCommandsBase {
             header = new ListHeader(cnt);
         }
 
-        wmReq.add(makePutKeyRequest(keyInfo, header, oldVal, currTime), true);
+        wmReq.add(makePutKeyReq(keyInfo, header, oldVal), true);
 
         int end = off + cnt;
         for(int i = off; i < end; i++) {
@@ -111,12 +111,15 @@ public class ListPushPop extends ListCommandsBase {
         int off, int cnt, boolean isLeft, boolean ifExists)
         throws RedisResponseException {
         assert cnt > 0;
-        return doMultiUpdate(keyInfo, (ki) -> queryListElems(ki,
-                isLeft ? SQL_LPUSH : SQL_RPUSH),
-            (ki, lvi, upInfo) -> addPushListElems(ki, lvi, elems, off, cnt,
-                isLeft, ifExists, upInfo.wmReq, upInfo.oldVal,
-                upInfo.currTime),
-            (header, res) -> header);
+        return doWithRetries(() -> {
+            CollectionValueResult<ListValueInfo> cvr =
+                queryListElems(keyInfo, isLeft ? SQL_LPUSH : SQL_RPUSH);
+            WriteMultipleRequest wmReq = new WriteMultipleRequest();
+            ListHeader header = addPushListElems(keyInfo, cvr.data, elems, off,
+                cnt, isLeft, ifExists, wmReq, cvr.val);
+            doWM(wmReq, true);
+            return header;
+        });
     }
 
     private RedisMessage handleLRPush(RedisClientContext client,
@@ -149,44 +152,47 @@ public class ListPushPop extends ListCommandsBase {
     private List<RedisMessage> doLRPop(RedisKeyInfo keyInfo, int cnt,
         boolean isLeft) throws RedisResponseException {
         assert cnt > 0;
-        return doMultiUpdate(keyInfo,
-            (ki) -> queryListElems(ki, isLeft ? SQL_LPOP : SQL_RPOP,
-                new LongValue(cnt)),
-            (ki, lvi, upInfo) -> addDeleteListElems(ki, lvi, upInfo, true),
-            (header, res) -> {
-                if (res == null) {
-                    return null;
-                }
 
-                List<OperationResult> opsRes = res.getResults();
-                if (opsRes.size() < 2) {
+        return doWithRetries(() -> {
+            CollectionValueResult<ListValueInfo> cvr = queryListElems(keyInfo,
+                isLeft ? SQL_LPOP : SQL_RPOP, new LongValue(cnt));
+            if (!cvr.isValid()) {
+                return null;
+            }
+
+            WriteMultipleRequest wmReq = new WriteMultipleRequest();
+            addDeleteListElems(keyInfo, cvr.data, wmReq, cvr.val, true);
+            WriteMultipleResult wmRes = doWM(wmReq, true);
+
+            List<OperationResult> opsRes = wmRes.getResults();
+            if (opsRes.size() < 2) {
+                throw RedisResponseException.nosql(
+                    "Invalid number of delete results: " + opsRes.size());
+            }
+            int resCnt = opsRes.size() - 1;
+            List<RedisMessage> vals = new ArrayList<>(resCnt);
+
+            // The first operation result is for list header, the rest is
+            // for elements popped.
+            assert opsRes.get(0).getSuccess();
+
+            for(int i = 0; i < resCnt; i++) {
+                OperationResult opRes = opsRes.get(i + 1);
+                if (!opRes.getSuccess()) {
                     throw RedisResponseException.nosql(
-                        "Invalid number of delete results: " + opsRes.size());
+                        "Invalid unsuccessful operation result");
                 }
-                int resCnt = opsRes.size() - 1;
-                List<RedisMessage> vals = new ArrayList<>(resCnt);
-
-                // The first operation result is for list header, the rest is
-                // for elements popped.
-                assert opsRes.get(0).getSuccess();
-
-                for(int i = 0; i < resCnt; i++) {
-                    OperationResult opRes = opsRes.get(i + 1);
-                    if (!opRes.getSuccess()) {
-                       throw RedisResponseException.nosql(
-                            "Invalid unsuccessful operation result");
-                    }
-                    MapValue val = opRes.getExistingValue();
-                    if (val == null) {
-                        throw RedisResponseException.nosql(
-                            ERR_MISSING_EXISTING_VAL);
-                    }
-                    vals.add(new FullBulkStringRedisMessage(
-                        getStrVal(Utils.getStringField(val, FLD_VALUE))));
+                MapValue val = opRes.getExistingValue();
+                if (val == null) {
+                    throw RedisResponseException.nosql(
+                        ERR_MISSING_EXISTING_VAL);
                 }
+                vals.add(new FullBulkStringRedisMessage(
+                    getStrVal(Utils.getStringField(val, FLD_VALUE))));
+            }
 
-                return vals;
-            });
+            return vals;
+        });
     }
 
     // Pass cnt == -1 if count is not specified, otherwise cnt must be
@@ -282,11 +288,10 @@ public class ListPushPop extends ListCommandsBase {
             throw RedisResponseException.crossSlot();
         }
 
-        long currTime = System.currentTimeMillis();
         CollectionValueResult<ListValueInfo> srcValInfo = queryListElems(
             srcKeyInfo, isSrcLeft ? SQL_LMOVE_LEFT : SQL_LMOVE_RIGHT, false,
             true);
-        if (!srcValInfo.val.isValid(currTime)) {
+        if (!srcValInfo.val.isValid()) {
             // Source list doesn't exist or expired.
             return FullBulkStringRedisMessage.NULL_INSTANCE;
         }
@@ -315,10 +320,10 @@ public class ListPushPop extends ListCommandsBase {
                 dstValInfo.data.header.cid, retVal), false);
         } else {
             addDeleteListElems(srcKeyInfo, srcValInfo.data, wmReq,
-                srcValInfo.val, currTime, false);
+                srcValInfo.val, false);
             addPushListElems(dstKeyInfo, dstValInfo.data,
                 new ByteBuf[]{retVal}, 0, 1, isDstLeft, false, wmReq,
-                dstValInfo.val, currTime);
+                dstValInfo.val);
         }
 
         doWM(wmReq, true);
