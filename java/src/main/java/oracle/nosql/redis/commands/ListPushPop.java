@@ -78,17 +78,16 @@ public class ListPushPop extends ListCommandsBase {
 
     private static ListHeader addPushListElems(RedisKeyInfo keyInfo,
         ListValueInfo lvi, ByteBuf []  elems, int off, int cnt, boolean isLeft,
-        boolean ifExists, WriteMultipleRequest wmReq, RedisValueInfo oldVal) {
+        WriteMultipleRequest wmReq, RedisValueInfo oldVal)
+        throws RedisResponseException {
         ListHeader header = lvi != null ? lvi.header : null;
         BigDecimal startId;
         if (header != null) {
-            assert lvi.elemIds.size() == 1;
+            assert !lvi.elemIds.isEmpty();
+            chkSingleResult(lvi.elemIds);
             startId = getNextNewId(lvi.elemIds.get(0), isLeft);
             header.len += cnt;
         } else { // The list doesn't exist or expired.
-            if (ifExists) {
-                return null;
-            }
             startId = BigDecimal.ZERO;
             // Create new list with cnt elements.
             header = new ListHeader(cnt);
@@ -114,9 +113,12 @@ public class ListPushPop extends ListCommandsBase {
         return doWithRetries(() -> {
             CollectionValueResult<ListValueInfo> cvr =
                 queryListElems(keyInfo, isLeft ? SQL_LPUSH : SQL_RPUSH);
+            if (ifExists && !cvr.isValid()) {
+                return null;
+            }
             WriteMultipleRequest wmReq = new WriteMultipleRequest();
             ListHeader header = addPushListElems(keyInfo, cvr.data, elems, off,
-                cnt, isLeft, ifExists, wmReq, cvr.val);
+                cnt, isLeft, wmReq, cvr.val);
             doWM(wmReq, true);
             return header;
         });
@@ -322,8 +324,7 @@ public class ListPushPop extends ListCommandsBase {
             addDeleteListElems(srcKeyInfo, srcValInfo.data, wmReq,
                 srcValInfo.val, false);
             addPushListElems(dstKeyInfo, dstValInfo.data,
-                new ByteBuf[]{retVal}, 0, 1, isDstLeft, false, wmReq,
-                dstValInfo.val);
+                new ByteBuf[]{retVal}, 0, 1, isDstLeft, wmReq, dstValInfo.val);
         }
 
         doWM(wmReq, true);
@@ -340,15 +341,15 @@ public class ListPushPop extends ListCommandsBase {
                 "timeout is negative");
         }
 
-        long timeoutMs = (long)Math.ceil(timeout * 1000);
         long delay = MIN_DELAY_MS +
             (int)(Math.random() * MAX_ADD_RND_DELAY_MS);
 
         long expTime = timeout != 0 ?
-            System.currentTimeMillis() + timeoutMs : Long.MAX_VALUE;
+            System.currentTimeMillis() + (long)Math.ceil(timeout * 1000) :
+            Long.MAX_VALUE;
 
         while(true) {
-            RedisMessage res = op.apply();
+            RedisMessage res = doWithRetries(op::apply);
             if (res != FullBulkStringRedisMessage.NULL_INSTANCE) {
                 return res;
             }
@@ -434,22 +435,29 @@ public class ListPushPop extends ListCommandsBase {
                 isLeft);
     }
 
-    private RedisMessage handleLMove(RedisClientContext client, RawCommand cmd,
-        boolean isBlocking) throws RedisResponseException {
-        chkExactNumArgs(cmd, isBlocking ? 5 : 4);
-        RedisKeyInfo srcKeyInfo = makeRedisKeyInfo(cmd.args[0]);
-        RedisKeyInfo dstKeyInfo = makeRedisKeyInfo(cmd.args[1]);
-        boolean isSrcLeft = getIsLeft(cmd.args[2]);
-        boolean isDstLeft = getIsLeft(cmd.args[3]);
 
-        if (isBlocking) {
-            double timeout = Utils.byteBufToDouble(cmd.args[4]);
+    private RedisMessage handleLMove(RedisClientContext client,
+        ByteBuf srcKeyBuf, ByteBuf dstKeyBuf, boolean isSrcLeft,
+        boolean isDstLeft, ByteBuf timeoutBuf) throws RedisResponseException {
+        RedisKeyInfo srcKeyInfo = makeRedisKeyInfo(srcKeyBuf);
+        RedisKeyInfo dstKeyInfo = makeRedisKeyInfo(dstKeyBuf);
+
+        if (timeoutBuf != null) {
+            double timeout = Utils.byteBufToDouble(timeoutBuf);
             return doBlockingOp(() -> doLMove(srcKeyInfo, dstKeyInfo,
                 isSrcLeft, isDstLeft), timeout);
         }
 
         return doWithRetries(
             () -> doLMove(srcKeyInfo, dstKeyInfo, isSrcLeft, isDstLeft));
+    }
+
+    private RedisMessage handleLMove(RedisClientContext client, RawCommand cmd,
+        boolean isBlocking) throws RedisResponseException {
+        chkExactNumArgs(cmd, isBlocking ? 5 : 4);
+        return handleLMove(client, cmd.args[0], cmd.args[1],
+            getIsLeft(cmd.args[2]), getIsLeft(cmd.args[3]),
+            isBlocking ? cmd.args[4] : null);
     }
 
     public void registerCommands(HashMap<String, CommandHandler> cmdMap) {
@@ -464,7 +472,9 @@ public class ListPushPop extends ListCommandsBase {
         cmdMap.put(CMD_BRPOP, this::handleBRPop);
         cmdMap.put(CMD_BLMPOP, this::handleBLMPop);
         cmdMap.put(CMD_LMOVE, this::handleLMove);
+        cmdMap.put(CMD_RPOPLPUSH, this::handleRPopLPush);
         cmdMap.put(CMD_BLMOVE, this::handleBLMove);
+        cmdMap.put(CMD_BRPOPLPUSH, this::handleBRPopLPush);
     }
 
     public RedisMessage handleLPush(RedisClientContext client,
@@ -507,6 +517,13 @@ public class ListPushPop extends ListCommandsBase {
         return handleLMove(client, cmd, false);
     }
 
+    public RedisMessage handleRPopLPush(RedisClientContext client,
+        RawCommand cmd) throws RedisResponseException {
+        chkExactNumArgs(cmd, 2);
+        return handleLMove(client, cmd.args[0], cmd.args[1], false, true,
+            null);
+    }
+
     public RedisMessage handleBLPop(RedisClientContext client,
         RawCommand cmd) throws RedisResponseException {
         return handleBLRPop(client, cmd, true);
@@ -525,6 +542,13 @@ public class ListPushPop extends ListCommandsBase {
     public RedisMessage handleBLMove(RedisClientContext client,
         RawCommand cmd) throws RedisResponseException {
         return handleLMove(client, cmd, true);
+    }
+
+    public RedisMessage handleBRPopLPush(RedisClientContext client,
+        RawCommand cmd) throws RedisResponseException {
+        chkExactNumArgs(cmd, 3);
+        return handleLMove(client, cmd.args[0], cmd.args[1], false, true,
+            cmd.args[2]);
     }
 
 }

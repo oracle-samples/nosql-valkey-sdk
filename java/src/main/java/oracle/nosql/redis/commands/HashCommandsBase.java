@@ -48,7 +48,7 @@ public class HashCommandsBase extends CollectionCommandsBase {
 
     protected static final String SQL_ENTRIES_FMT = DECL_KEY_ID +
         "%s SELECT row_version($r) AS ver, $r.key, $r.value%s " + FROM_LOJ +
-        WHERE_KEY_ID_COND;
+        "%s " + WHERE_KEY_ID_COND;
     protected static final String SQL_ENTRY_IDS = String.format(
         SQL_ENTRIES_FMT, VAR2_STRING_ARRAY, SEL_HKEYID, HKEYID_IN_ARRAY_VAR2);
     protected static final String SQL_ENTRY_ID = String.format(
@@ -67,6 +67,7 @@ public class HashCommandsBase extends CollectionCommandsBase {
         "Invalid hash header in query result";
     
     public static final String CMD_HSET = "HSET";
+    public static final String CMD_HMSET = "HMSET";
     public static final String CMD_HDEL = "HDEL";
     public static final String CMD_HLEN = "HLEN";
     public static final String CMD_HGET = "HGET";
@@ -189,10 +190,10 @@ public class HashCommandsBase extends CollectionCommandsBase {
         }
     }
 
-    protected static MapValue valToSmallVal(MapValue val)
+    protected static MapValue valToSmallVal(MapValue val, boolean allowNull)
         throws RedisResponseException {
         HashHeader header = new HashHeader(val);
-        if (header.smallVal == null) {
+        if (header.smallVal == null && !allowNull) {
             throw RedisResponseException.corrupt("Missing smallVal");
         }
         return header.smallVal;
@@ -244,6 +245,7 @@ public class HashCommandsBase extends CollectionCommandsBase {
             fKeyIds.length == 1 ? new StringValue(fKeyIds[0]) :
                 new ArrayValue().addAll(Arrays.stream(fKeyIds)
                     .map(val -> new StringValue(val))));
+        chkMaxNumResults(rows, fKeyIds.length);
 
         if (rows.isEmpty()) {
             // Hash does not exist.

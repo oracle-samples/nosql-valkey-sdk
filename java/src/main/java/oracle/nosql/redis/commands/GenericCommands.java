@@ -84,9 +84,9 @@ public class GenericCommands extends CommandsBase {
     }
 
     private static final String SQL_EXISTS_ONE = DECL_KEY_ID +
-        "SELECT 1 FROM redis $r" + WHERE_KEY_ID_COND + AND_NOT_EXPIRED;
+        "SELECT 1 FROM redis $r " + WHERE_KEY_ID_COND + AND_NOT_EXPIRED;
     private static final String SQL_EXISTS = DECL_KEY_IDS +
-        "SELECT COUNT(*) AS res FROM redis $r " + WHERE_KEY_IDS_COND +
+        "SELECT count(*) AS res FROM redis $r " + WHERE_KEY_IDS_COND +
         AND_NOT_EXPIRED;
 
     private final CommandHandlers cmdHandlers;
@@ -171,11 +171,9 @@ public class GenericCommands extends CommandsBase {
             }
         }
 
-        return doSetExp(cmd.args[0], makeExpTime(cmd.args[1], ttlMode),
-            ttlOpt);
+        return doSetExp(cmd.args[0],
+            makeExpTime(cmd.args[1], ttlMode), ttlOpt);
     }
-
-
 
     // For collections, this will delete collection elements after a key is
     // deleted (see cmds.afterDelete()). Note that we do not need to worry
@@ -198,7 +196,7 @@ public class GenericCommands extends CommandsBase {
             DeleteRequest delReq = new DeleteRequest()
                 .setTableName(NoSQLRedisServer.MAIN_TABLE_NAME)
                 .setKey(pk).setReturnRow(true);
-            wmReq.add(delReq, true);
+            wmReq.add(delReq, false);
         }
         
         WriteMultipleResult wmRes;
@@ -276,25 +274,14 @@ public class GenericCommands extends CommandsBase {
         return processQuery(pStmt, row -> true);
     }
 
-    private int doExists(RedisKeyInfo[] keyInfos)
+    private long doExists(RedisKeyInfo[] keyInfos)
         throws RedisResponseException {
         ArrayValue keyIds = makeKeyIdsValue(keyInfos);
-        PreparedStatement pStmt = pstmtCache.getByRef(SQL_EXISTS_ONE);
+        PreparedStatement pStmt = pstmtCache.getByRef(SQL_EXISTS);
         pStmt.setVariable(SQL_SLOT, new IntegerValue(keyInfos[0].slot));
         pStmt.setVariable(SQL_KEY_IDS, keyIds);
 
-        final int [] res = { -1 };
-        if (!processQuery(pStmt, row -> {
-            if (res[0] != -1) {
-                throw RedisResponseException.nosql(ERR_NO_SINGLE_RES);
-            }
-            res[0] = getIntField(row, FLD_RES);
-            return true;
-        })) {
-            throw RedisResponseException.nosql("Missing query result");
-        };
-
-        return res[0];
+        return getLongField(singleRowQuery(pStmt), FLD_RES);
     }
 
     // It is not clear how important it is for COPY to be atomic since we are
@@ -430,7 +417,7 @@ public class GenericCommands extends CommandsBase {
     public RedisMessage handleExists(RedisClientContext client,
         RawCommand cmd) throws RedisResponseException {
         chkMinNumArgs(cmd, 1);
-        int cnt = cmd.args.length == 1 ?
+        long cnt = cmd.args.length == 1 ?
             (doExists(makeRedisKeyInfo(cmd.args[0])) ? 1 : 0) :
             doExists(makeRedisMultiKeyInfo(cmd.args, 0, cmd.args.length));
         return new IntegerRedisMessage(cnt);

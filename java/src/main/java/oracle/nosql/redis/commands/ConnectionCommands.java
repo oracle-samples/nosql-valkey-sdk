@@ -25,7 +25,7 @@ public class ConnectionCommands extends CommandsBase {
     public static final String CMD_PING = "PING";
     public static final String CMD_ECHO = "ECHO";
     public static final String CMD_QUIT = "QUIT";
-    public static final String CMD_INFO = "INFO";
+    public static final String CMD_HELLO = "HELLO";
 	 
     public ConnectionCommands(NoSQLHandle nosqlHandle,
         RedisServerConfig config, PreparedStatementCache pstmtCache) {
@@ -36,7 +36,7 @@ public class ConnectionCommands extends CommandsBase {
         cmdMap.put(CMD_PING, this::handlePing);
         cmdMap.put(CMD_ECHO, this::handleEcho);
         cmdMap.put(CMD_QUIT, this::handleQuit);
-        cmdMap.put(CMD_INFO, this::handleInfo);
+        cmdMap.put(CMD_HELLO, this::handleHello);
     }
 
     public RedisMessage handlePing(RedisClientContext client,
@@ -59,10 +59,8 @@ public class ConnectionCommands extends CommandsBase {
         return okReply;
     }
 
-    // INFO is actually a server management command.  For now we just stub it
-    // here for redis-cli to work (for testing).  Redis-cli sends this command
-    // after connecting.
-    public RedisMessage handleInfo(RedisClientContext client,
+    // Stub for unit tests.
+    public RedisMessage handleHello(RedisClientContext client,
         RawCommand cmd) {
         return okReply;
     }

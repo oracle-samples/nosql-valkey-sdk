@@ -76,6 +76,11 @@ public class RedisResponseException extends Exception {
             "CROSSSLOT Keys in request don't hash to the same slot");
     }
 
+    public static RedisResponseException unsupportedOption(String opt) {
+        return new RedisResponseException(ErrorPrefix.ERR,
+            "Option not supported: " + opt);
+    }
+
     // In some cases it is not possible to throw checked
     // RedisResponseException, e.g. when implementing an iterator, in which
     // case we use this workaround. RedisServerHandler will check for this.

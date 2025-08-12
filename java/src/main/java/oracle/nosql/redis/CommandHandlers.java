@@ -12,13 +12,7 @@ import java.util.concurrent.ExecutorService;
 
 import io.netty.handler.codec.redis.RedisMessage;
 import oracle.nosql.driver.NoSQLHandle;
-import oracle.nosql.redis.commands.CommandsBase;
-import oracle.nosql.redis.commands.ConnectionCommands;
-import oracle.nosql.redis.commands.GenericCommands;
-import oracle.nosql.redis.commands.HashCommands;
-import oracle.nosql.redis.commands.JSONCommands;
-import oracle.nosql.redis.commands.ListCommands;
-import oracle.nosql.redis.commands.StringCommands;
+import oracle.nosql.redis.commands.*;
 import oracle.nosql.redis.util.PreparedStatementCache;
 import oracle.nosql.redis.util.Utils.ThrowingBiFunction;
 
@@ -37,6 +31,7 @@ public class CommandHandlers {
 
     private ConnectionCommands connCommands;
     private GenericCommands genericCommands;
+    private ServerManagementCommands serverManagementCommands;
     private StringCommands stringCommands;
     private ListCommands listCommands;
     private HashCommands hashCommands;
@@ -51,6 +46,8 @@ public class CommandHandlers {
     void init() {
         connCommands = new ConnectionCommands(nosqlHandle, config, pstmtCache);
         genericCommands = new GenericCommands(nosqlHandle, pstmtCache, this);
+        serverManagementCommands = new ServerManagementCommands(nosqlHandle,
+            config, pstmtCache);
         stringCommands = new StringCommands(nosqlHandle, config, pstmtCache);
         listCommands = new ListCommands(nosqlHandle, config, pstmtCache);
         hashCommands = new HashCommands(nosqlHandle, config, pstmtCache);
@@ -58,12 +55,12 @@ public class CommandHandlers {
 
         connCommands.registerCommands(cmdMap);
         genericCommands.registerCommands(cmdMap);
+        serverManagementCommands.registerCommands(cmdMap);
         stringCommands.registerCommands(cmdMap);
         listCommands.registerCommands(cmdMap);
         hashCommands.registerCommands(cmdMap);
         jsonCommands.registerCommands(cmdMap);
     }
-
 
     CommandHandler getHandler(String name) {
         return cmdMap.get(name);

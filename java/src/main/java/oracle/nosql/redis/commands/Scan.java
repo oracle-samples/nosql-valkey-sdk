@@ -5,12 +5,12 @@
  *  https://oss.oracle.com/licenses/upl/
  */
  
- package oracle.nosql.redis.commands;
+package oracle.nosql.redis.commands;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.regex.Pattern;
-import java.util.regex.PatternSyntaxException;
+import com.google.re2j.Pattern;
+import com.google.re2j.PatternSyntaxException;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.handler.codec.redis.ArrayRedisMessage;
@@ -93,7 +93,7 @@ abstract class Scan extends CommandsBase implements AutoCloseable {
         buf.append(c);
     }
 
-    // This is not the fastest algorithm, but easier to undestand than using
+    // This is not the fastest algorithm, but easier to understand than using
     // quoted/unquoted regions.  The glob format used by Redis is not
     // documented in great detail, so the behavior is partially based on
     // experimentation with Redis server.

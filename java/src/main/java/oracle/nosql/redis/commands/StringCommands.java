@@ -79,6 +79,7 @@ public class StringCommands extends CommandsBase {
     public static final String CMD_MSETNX = "MSETNX";
     public static final String CMD_GETDEL = "GETDEL";
     public static final String CMD_GETSET = "GETSET";
+    public static final String CMD_GETEX = "GETEX";
 
     // Max row size in the cloud is 512KB, however the row will store more
     // than just value (in particular, key).  We can adjust this later.
@@ -146,7 +147,7 @@ public class StringCommands extends CommandsBase {
         RedisKeyInfo keyInfo = makeRedisKeyInfo(keyBuf);
 
         // If the result does not depend on the old value, we don't need
-        // version-conditioned put or retries done by doGetSet().
+        // version-conditioned put or retries.
         // Note that doSet() cannot handle SetOpt.XX.
         // Todo: for SetOpt.XX, use update query instead of put.
         if (!toGetOldVal && exp != KEEP_TTL && setOpt != SetOpt.XX) {
@@ -178,7 +179,7 @@ public class StringCommands extends CommandsBase {
     private RedisMessage doSetWithExp(RawCommand cmd, TTLMode ttlMode)
         throws RedisResponseException {
         chkExactNumArgs(cmd, 3);
-        long exp = makeExpTime(cmd.args[1], ttlMode);
+        long exp = makeExpTime(cmd.args[1], ttlMode, true, cmd.name);
         return doSetString(cmd.args[0], exp, cmd.args[2], null, false);
     }
 
@@ -189,10 +190,16 @@ public class StringCommands extends CommandsBase {
         RedisKeyInfo keyInfo = makeRedisKeyInfo(keyBuf);
         return doWithRetries(() -> {
             RedisValueInfo oldVal = doGet(keyInfo);
-            RedisValueInfo newVal = RedisValueInfo.create(makeStringValue(
-                getNewVal.apply(getStringValue(oldVal.val))), null, NO_EXP);
-            doChkSet(keyInfo, newVal, oldVal);
-            return getResult.apply(getStringValue(newVal.val));
+            ByteBuf newBuf = getNewVal.apply(getStringValue(oldVal.val));
+            // We use newBuf = null to indicate that update should not be
+            // performed (used for one special case in handleSetRange).
+            if (newBuf != null) {
+                RedisValueInfo newVal = RedisValueInfo.create(
+                    makeStringValue(newBuf), null, NO_EXP);
+                doChkSet(keyInfo, newVal, oldVal);
+            }
+            // If getNewVal can return null, getResult must also handle null.
+            return getResult.apply(newBuf);
         });
     }
 
@@ -322,6 +329,7 @@ public class StringCommands extends CommandsBase {
         cmdMap.put(CMD_MSETNX, this::handleMSetNX);
         cmdMap.put(CMD_GETDEL, this::handleGetDel);
         cmdMap.put(CMD_GETSET, this::handleGetSet);
+        cmdMap.put(CMD_GETEX, this::handleGetEx);
     }
 
     public RedisMessage handleGet(RedisClientContext client, RawCommand cmd)
@@ -427,16 +435,16 @@ public class StringCommands extends CommandsBase {
                     throw RedisResponseException.syntaxError();
                 }
                 expArg = cmd.args[i];
-                if (arg.equalsIgnoreCase("EX")) {
+                if (arg.equalsIgnoreCase(TTLMode.EX.name())) {
                     chkNotSet(ttlMode);
                     ttlMode = TTLMode.EX;
-                } else if (arg.equalsIgnoreCase("PX")) {
+                } else if (arg.equalsIgnoreCase(TTLMode.PX.name())) {
                     chkNotSet(ttlMode);
                     ttlMode = TTLMode.PX;
-                } else if (arg.equalsIgnoreCase("EXAT")) {
+                } else if (arg.equalsIgnoreCase(TTLMode.EXAT.name())) {
                     chkNotSet(ttlMode);
                     ttlMode = TTLMode.EXAT;
-                } else if (arg.equalsIgnoreCase("PXAT")) {
+                } else if (arg.equalsIgnoreCase(TTLMode.PXAT.name())) {
                     chkNotSet(ttlMode);
                     ttlMode = TTLMode.PXAT;
                 } else {
@@ -445,8 +453,9 @@ public class StringCommands extends CommandsBase {
             }
         }
         
-        return doSetString(cmd.args[0], makeExpTime(expArg, ttlMode),
-            cmd.args[1], setOpt, isGet);
+        return doSetString(cmd.args[0],
+            makeExpTime(expArg, ttlMode, true, cmd.name), cmd.args[1],
+            setOpt, isGet);
     }
 
     public RedisMessage handleSetNX(RedisClientContext client, RawCommand cmd)
@@ -480,28 +489,44 @@ public class StringCommands extends CommandsBase {
         chkExactNumArgs(cmd, 3);
         
         final long off = Utils.byteBufToLong(cmd.args[1]);
-        if (off < 0) {
+        if (off < 0 || off > MAX_STR_LEN) {
             throw new RedisResponseException(ErrorPrefix.ERR,
                 "offset is out of range");
         }
         
         final ByteBuf rangeVal = cmd.args[2];
+        int rangeValLen = rangeVal.readableBytes();
         
         return doGetSetString(cmd.args[0],
             (val) -> {
-                int newLen = (int)Math.max(off + rangeVal.readableBytes(),
-                    val.readableBytes());
+                if (val == null) {
+                    // If the key does not exist and the provided value is
+                    // empty string, Redis will not create the key. I did not
+                    // see this behavior documented, but verified it, and it is
+                    // also assumed this way in the unit tests.
+                    if (rangeValLen == 0) {
+                        return null;
+                    }
+                    val = Unpooled.buffer(0);
+                }
+                int oldLen = val.readableBytes();
+                long newLen = (int)Math.max(off + rangeValLen, oldLen);
                 if (newLen > MAX_STR_LEN) {
                     throw new RedisResponseException(ErrorPrefix.ERR,
                         "string exceeds maximum allowed size");
                 }
                 if (val.capacity() < newLen) {
-                    val.capacity(newLen);
+                    val.capacity((int)newLen);
                 }
-                return val.setBytes((int)off, rangeVal, 0,
-                    rangeVal.readableBytes()).writerIndex(newLen);
+                if (off > oldLen) {
+                    // pad with zero bytes until the offset
+                    val.setZero(oldLen, (int)off - oldLen);
+                }
+                return val.setBytes((int)off, rangeVal, 0, rangeValLen)
+                    .writerIndex((int)newLen);
             },
-            (val) -> new IntegerRedisMessage(val.readableBytes()));
+            (val) -> new IntegerRedisMessage(
+                val != null ? val.readableBytes() : 0));
     }
 
     public RedisMessage handleIncr(RedisClientContext client,
@@ -575,6 +600,60 @@ public class StringCommands extends CommandsBase {
     public RedisMessage handleMSetNX(RedisClientContext client, RawCommand cmd)
         throws RedisResponseException {
         return doWithRetries(() -> handleMSet(client, cmd, true));
+    }
+
+    public RedisMessage handleGetEx(RedisClientContext client, RawCommand cmd)
+        throws RedisResponseException {
+        chkNumArgs(cmd, 1, 3);
+        if (cmd.args.length == 1) {
+            return doGetString(cmd.args[0]);
+        }
+
+        TTLMode ttlMode;
+        ByteBuf expArg;
+
+        String modeArg = Utils.byteBufToString(cmd.args[1]);
+        if (modeArg.equalsIgnoreCase(TTLMode.EX.name())) {
+            ttlMode = TTLMode.EX;
+            expArg = cmd.args[2];
+        } else if (modeArg.equalsIgnoreCase(TTLMode.PX.name())) {
+            ttlMode = TTLMode.PX;
+            expArg = cmd.args[2];
+        } else if (modeArg.equalsIgnoreCase(TTLMode.EXAT.name())) {
+            ttlMode = TTLMode.EXAT;
+            expArg = cmd.args[2];
+        } else if (modeArg.equalsIgnoreCase(TTLMode.PXAT.name())) {
+            ttlMode = TTLMode.PXAT;
+            expArg = cmd.args[2];
+        } else if (modeArg.equalsIgnoreCase("PERSIST")) {
+            if (cmd.args.length > 2) {
+                throw RedisResponseException.syntaxError();
+            }
+            ttlMode = null;
+            expArg = null;
+        } else {
+            throw RedisResponseException.syntaxError();
+        }
+
+        final long expTime = makeExpTime(expArg, ttlMode, true, cmd.name);
+        RedisKeyInfo keyInfo = makeRedisKeyInfo(cmd.args[0]);
+        return doWithRetries(() -> {
+            RedisValueInfo oldVal = doGet(keyInfo);
+            if (!oldVal.isValid()) {
+                return FullBulkStringRedisMessage.NULL_INSTANCE;
+            }
+            if (!getValueType(oldVal.val).equals(TYPE_STRING)) {
+                throw RedisResponseException.wrongType();
+            }
+            // small optimization for PERSIST option
+            if (ttlMode == null && oldVal.exp == NO_EXP) {
+                return valInfoToResp(oldVal);
+            }
+            RedisValueInfo newVal = RedisValueInfo.create(oldVal.val, null,
+                expTime);
+            doChkSet(keyInfo, newVal, oldVal);
+            return valInfoToResp(newVal);
+        });
     }
 
 }

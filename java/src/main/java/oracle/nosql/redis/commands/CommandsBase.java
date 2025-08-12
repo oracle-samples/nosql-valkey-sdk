@@ -10,7 +10,7 @@ package oracle.nosql.redis.commands;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
-import java.util.function.Predicate;
+
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
@@ -44,13 +44,10 @@ import oracle.nosql.redis.RedisResponseException.ErrorPrefix;
 import oracle.nosql.redis.RedisServerConfig;
 import oracle.nosql.redis.util.PreparedStatementCache;
 import oracle.nosql.redis.util.Utils;
-import oracle.nosql.redis.util.Utils.ThrowingBiFunction;
 import oracle.nosql.redis.util.Utils.ThrowingConsumer;
 import oracle.nosql.redis.util.Utils.ThrowingFunction;
 
-import static oracle.nosql.redis.util.Utils.getMapField;
-import static oracle.nosql.redis.util.Utils.getStringField;
-import static oracle.nosql.redis.util.Utils.getPositiveTTL;
+import static oracle.nosql.redis.util.Utils.*;
 
 public abstract class CommandsBase {
 
@@ -113,6 +110,8 @@ public abstract class CommandsBase {
 
     static final String ERR_NO_SINGLE_RES =
         "Expected single result, got multiple";
+    static final String ERR_NO_SINGLE_RES_EMPTY =
+        "Expected single result, got none";
     static final String ERR_WM_FAIL =
         "Unsuccessful result from writeMultiple";
     static final String ERR_UNCONDITIONAL_PUT_FAIL =
@@ -128,6 +127,7 @@ public abstract class CommandsBase {
     public static final String TYPE_STREAM = "stream";
     public static final String TYPE_JSON = "ReJSON-RL";
 
+    static final int EXPIRED = 0;
     static final int NO_EXP = -1;
     static final int KEEP_TTL = -2;
 
@@ -188,26 +188,32 @@ public abstract class CommandsBase {
         }
 
         static boolean isTimeExpired(long expTime) {
-            return expTime != NO_EXP && System.currentTimeMillis() > expTime;
+            return expTime >= 0 && expTime < System.currentTimeMillis();
         }
 
+        // We use value EXPIRED (0) to represent expired keys and avoid
+        // checking the clock multiple times, since the exact expiration time
+        // doesn't matter if it is already in the past. Note that we may still
+        // need val since some commands accept exp. times past expiration as
+        // input (this simplifies handling of those cases since we can avoid
+        // performing delete on those keys).
         static RedisValueInfo create(MapValue val,
             oracle.nosql.driver.Version ver, long exp) {
-            return new RedisValueInfo(isTimeExpired(exp) ? null : val,
-                ver, exp);
+            return new RedisValueInfo(val, ver,
+                isTimeExpired(exp) ? EXPIRED : exp);
         }
 
         static RedisValueInfo createExpired(oracle.nosql.driver.Version ver) {
-            return new RedisValueInfo(null, ver, NO_EXP);
+            return new RedisValueInfo(null, ver, EXPIRED);
         }
 
         boolean isValid() {
-            return val != null;
+            return val != null && exp != EXPIRED;
         }
 
         // the key exists but has expired
         boolean isExpired() {
-            return val == null && ver != null;
+            return exp == EXPIRED && ver != null;
         }
     }
 
@@ -290,6 +296,7 @@ public abstract class CommandsBase {
 
     static PutRequest makePutReqForSet(RedisKeyInfo keyInfo, long exp,
         MapValue val, RedisValueInfo oldVal) {
+        assert val != null;
         boolean skipTTL = false;
 
         // If exp = KEEP_TTL, we need to determine the actual exp value to set:
@@ -444,7 +451,17 @@ public abstract class CommandsBase {
     
     static void chkSingleResult(List<?> res) throws RedisResponseException {
         if (res.size() != 1) {
-            throw RedisResponseException.nosql(ERR_NO_SINGLE_RES);
+            throw RedisResponseException.nosql(res.size() != 0 ?
+                ERR_NO_SINGLE_RES : ERR_NO_SINGLE_RES_EMPTY);
+        }
+    }
+
+    static void chkMaxNumResults(List<?> res, long maxCnt)
+        throws RedisResponseException {
+        if (res.size() > maxCnt) {
+            throw RedisResponseException.nosql(
+                String.format("Expected at most %d results, got %d", maxCnt,
+                    res.size()));
         }
     }
 
@@ -523,7 +540,7 @@ public abstract class CommandsBase {
         MapValue res = new MapValue().put(KEY_DATA,
             (keyInfo.isBin ? BIN_KEY_PFX : STR_KEY_PFX) + keyInfo.data)
             .put(KEY_SCAN_ID, Scan.makeScanId(keyInfo));
-        if (exp > 0) {
+        if (exp >= 0) {
             res.put(KEY_EXP, exp);
         }
         return res;
@@ -630,29 +647,47 @@ public abstract class CommandsBase {
         return isKeyExpired(rowToKey(row));
     }
 
-    static long makeExpTime(ByteBuf buf, TTLMode mode)
-        throws RedisResponseException {
+    static long makeExpTime(ByteBuf expArg, TTLMode mode, boolean chkExpArg,
+        String cmdName) throws RedisResponseException {
         if (mode == null) {
             return NO_EXP;
         } else if (mode == TTLMode.KEEP_TTL) {
             return KEEP_TTL;
         }
 
-        long exp = Utils.byteBufToLong(buf);
+        long exp = Utils.byteBufToLong(expArg);
+        if (chkExpArg && exp <= 0) {
+            // Match the format in Redis Server.
+            throw new RedisResponseException(ErrorPrefix.ERR,
+                String.format("invalid expire time in '%s' command",
+                    cmdName.toLowerCase()));
+        }
 
         switch(mode) {
             case EX:
-                return System.currentTimeMillis() + exp * 1000;
+                exp = System.currentTimeMillis() + exp * 1000;
+                break;
             case EXAT:
-                return exp * 1000;
+                exp = exp * 1000;
+                break;
             case PX:
-                return System.currentTimeMillis() + exp;
+                exp = System.currentTimeMillis() + exp;
+                break;
             case PXAT:
-                return exp;
+                break;
             default:
                 assert false;
-                return 0;
+                break;
         }
+
+        // avoid exp to clash with defined special negative values (NO_EXP and
+        // KEEP_TTL)
+        return exp > 0 ? exp : EXPIRED;
+    }
+
+    static long makeExpTime(ByteBuf expArg, TTLMode mode)
+        throws RedisResponseException {
+        return makeExpTime(expArg, mode, false, null);
     }
 
     RedisResponseException failedAtomicRetries() {
@@ -788,6 +823,26 @@ public abstract class CommandsBase {
             acceptRow.accept(row);
             return false;
         });
+    }
+
+    protected void processQuery(PreparedStatement pStmt)
+        throws RedisResponseException {
+        processQuery(pStmt, (row) -> {});
+    }
+
+    protected MapValue singleRowQuery(PreparedStatement pStmt)
+        throws RedisResponseException {
+        final MapValue [] res = new MapValue[1];
+        if (!processQuery(pStmt, row -> {
+            if (res[0] != null) {
+                throw RedisResponseException.nosql(ERR_NO_SINGLE_RES);
+            }
+            res[0] = row;
+            return true;
+        })) {
+            throw RedisResponseException.nosql("Missing query result");
+        };
+        return res[0];
     }
 
     // Delete elements of the collection. Overriden for collection commands.

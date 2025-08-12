@@ -93,10 +93,12 @@ abstract class ListCommandsBase extends CollectionCommandsBase {
     public static final String CMD_LPOS = "LPOS";
     public static final String CMD_LINSERT = "LINSERT";
     public static final String CMD_LMOVE = "LMOVE";
+    public static final String CMD_RPOPLPUSH = "RPOPLPUSH";
     public static final String CMD_BLPOP = "BLPOP";
     public static final String CMD_BRPOP = "BRPOP";
     public static final String CMD_BLMPOP = "BLMPOP";
     public static final String CMD_BLMOVE = "BLMOVE";
+    public static final String CMD_BRPOPLPUSH = "BRPOPLPUSH";
 
     protected static class ListHeader extends CollectionHeader {
         long len;
@@ -293,7 +295,7 @@ abstract class ListCommandsBase extends CollectionCommandsBase {
     }
 
     protected CollectionValueResult<ListValueInfo> doGetList(
-        RedisKeyInfo keyInfo)throws RedisResponseException {
+        RedisKeyInfo keyInfo) throws RedisResponseException {
         RedisValueInfo val = doGet(keyInfo);
         
         if (!val.isValid()) {

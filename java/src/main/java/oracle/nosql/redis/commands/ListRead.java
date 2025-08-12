@@ -83,7 +83,7 @@ public class ListRead extends ListCommandsBase {
                 } else {
                     rank--;
                 }
-                if (matches.size() == count) {
+                if (count != 0 && matches.size() == count) {
                     return true;
                 }
             }
@@ -147,14 +147,12 @@ public class ListRead extends ListCommandsBase {
             long len = lpState.getLen();
             assert len > 0;
             // reverse the indexes to count from the start of the list
-            for(int i = 0; i < numMatches; i++) {
-                matches.set(i, len - 1 - matches.get(i));
-            }
+            Collections.reverse(matches);
         }
 
         if (hasCount) {
-            assert numMatches <= count;
-            ArrayList<RedisMessage> ls = new ArrayList<>();
+            assert count == 0 || numMatches <= count;
+            ArrayList<RedisMessage> ls = new ArrayList<>(matches.size());
             matches.forEach((elem) -> ls.add(new FullBulkStringRedisMessage(
                 Utils.longToByteBuf(elem))));
             return new ArrayRedisMessage(ls);

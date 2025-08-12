@@ -8,6 +8,7 @@
 package oracle.nosql.redis.util;
 
 import java.security.MessageDigest;
+import java.util.concurrent.TimeUnit;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
@@ -100,6 +101,11 @@ public class Utils {
         0xEF1F, 0xFF3E, 0xCF5D, 0xDF7C, 0xAF9B, 0xBFBA, 0x8FD9, 0x9FF8,
         0x6E17, 0x7E36, 0x4E55, 0x5E74, 0x2E93, 0x3EB2, 0x0ED1, 0x1EF0
     };
+
+    // From WriteOptions.java in JE. We have to limit TTL to these values to
+    // avoid errors.
+    private static final int TTL_MAX_HOURS = Integer.MAX_VALUE / 2;
+    private static final int TTL_MAX_DAYS = TTL_MAX_HOURS / 24;
 
     private static RedisResponseException missingOrInvalidField(String name,
         String type) {
@@ -319,6 +325,16 @@ public class Utils {
     public static TimeToLive getPositiveTTL(long expTime) {
         TimeToLive res = TimeToLive.fromExpirationTime(expTime,
             System.currentTimeMillis());
+
+        // Limit to max values to avoid error from JE.
+        if (res.getUnit() == TimeUnit.HOURS) {
+            if (res.getValue() > TTL_MAX_HOURS) {
+                res = TimeToLive.ofHours(TTL_MAX_HOURS);
+            }
+        } else if (res.getValue() > TTL_MAX_DAYS) {
+            res = TimeToLive.ofDays(TTL_MAX_DAYS);
+        }
+
         return res.getValue() > 0 ? res : TimeToLive.ofHours(1);
     }
 

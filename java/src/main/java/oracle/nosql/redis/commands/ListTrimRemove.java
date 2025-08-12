@@ -158,13 +158,16 @@ public class ListTrimRemove extends ListCommandsBase {
         // Do the right side first if possible.
         if (stop < -1) {
             // Last arg is the number of elements to be deleted.
-            rightRes = queryListElems(keyInfo, SQL_RPOP,
-                new LongValue(Math.min(-stop - 1, remaining)));
+            long lim = Math.min(-stop - 1, remaining);
+            rightRes = queryListElems(keyInfo, SQL_RPOP, new LongValue(lim));
+
             rightVal = rightRes.data;
             if (rightVal == null) {
                 return CollectionValueResult.none();
             }
 
+            assert !rightVal.elemIds.isEmpty();
+            chkMaxNumResults(rightVal.elemIds, lim);
             if (listRes == null) {
                 listRes = rightRes;
             }
@@ -189,8 +192,11 @@ public class ListTrimRemove extends ListCommandsBase {
             start = Math.min(start,
                 Math.max(rightRes.data.header.len + stop + 1, 0));
 
-            // Update value of stop for next invocation.
-            stop = Math.max(stop, -rightVal.header.len) +
+            // Update value of stop for next invocation. The max below is used
+            // if stop too negative (before beginning of the list).
+            // (-header.len - 1 is one before the first element, indicating we
+            // trim the whole list)
+            stop = Math.max(stop, -rightVal.header.len - 1) +
                 rightVal.elemIds.size();
             assert stop < 0;
         }
@@ -199,13 +205,15 @@ public class ListTrimRemove extends ListCommandsBase {
         // form or because it was converted to canonical form by getting the
         // list length in the block above.
         if (start > 0 && remaining != 0) {
-            leftRes = queryListElems(keyInfo, SQL_LPOP,
-                new LongValue(Math.min(start, remaining)));
+            long lim = Math.min(start, remaining);
+            leftRes = queryListElems(keyInfo, SQL_LPOP, new LongValue(lim));
             leftVal = leftRes.data;
             if (leftVal == null) {
                 return CollectionValueResult.none();
             }
 
+            assert !leftVal.elemIds.isEmpty();
+            chkMaxNumResults(leftVal.elemIds, lim);
             if (listRes == null) {
                 listRes = leftRes;
             }
@@ -221,22 +229,28 @@ public class ListTrimRemove extends ListCommandsBase {
                 
                 assert rightRes == null;
                 if (stop < -1 && remaining != 0) {
+                    lim = Math.min(-stop - 1, remaining);
                     rightRes = queryListElems(keyInfo, SQL_RPOP,
-                        new LongValue(Math.min(-stop - 1, remaining)));
+                        new LongValue(lim));
                     rightVal = rightRes.data;
                     if (rightVal == null) {
                         return CollectionValueResult.none();
                     }
 
+                    assert !rightVal.elemIds.isEmpty();
+                    chkMaxNumResults(rightVal.elemIds, lim);
+
                     // Update value of stop for next invocation.
-                    stop = Math.max(stop, -rightVal.header.len) +
+                    stop = Math.max(stop, -rightVal.header.len - 1) +
                         rightVal.elemIds.size();
+                    assert stop < 0;
                 }
             }
 
             // Update value of start for next invocation.
-            start = Math.min(start, leftVal.header.len - 1) -
+            start = Math.min(start, leftVal.header.len) -
                 leftVal.elemIds.size();
+            assert start >= 0;
         }
 
         // Case of start == 0 and stop == -1 is already handled above.

@@ -329,15 +329,7 @@ abstract class CollectionCommandsBase extends CommandsBase {
         pStmt.setVariable(SQL_KEY_ID, new StringValue(keyInfo.id));
         pStmt.setVariable(SQL_CID, new StringValue(cid));
 
-        // Nested "try" to avoid resource leak warning on qReq because of
-        // set... methods below.
-        try(QueryRequest qReq = new QueryRequest()) {
-            qReq.setPreparedStatement(pStmt);
-            do {
-                QueryResult res = nosqlHandle.query(qReq);
-                res.getResults();
-            } while(!qReq.isDone());
-        };
+        processQuery(pStmt);
     }
 
     @Override

@@ -36,31 +36,29 @@ public class HashRead extends HashCommandsBase {
     private static final String FLD_HASH_VAL = "hashVal";
 
     // We only need value from redis main table if the hash is in smallVal
-    // format, we use CASE expr. to avoid returning it otherwise. Same for
-    // scan.
+    // format, we use CASE expr. to avoid returning it otherwise.
     private static final String SQL_READ_FMT = DECL_KEY_ID +
         "%s SELECT (CASE WHEN $h.keyId IS NULL THEN $r.value ELSE NULL END) " +
         "AS hashVal%s " + FROM_LOJ + "%s " + WHERE_KEY_ID_COND +
-        AND_NOT_EXPIRED + "%s";
+        AND_NOT_EXPIRED;
 
     private static final String SEL_FLD_KEY = ", $h.key.data AS fldKey";
     private static final String SEL_FLD_VAL = ", $h.value";
     private static final String SEL_FLD_KEY_VAL = SEL_FLD_KEY + SEL_FLD_VAL;
     
     private static final String SQL_HGET_KEYVALS = String.format(SQL_READ_FMT,
-        VAR2_STRING_ARRAY, ", $h.keyId" + SEL_FLD_VAL, HKEYID_IN_ARRAY_VAR2,
-        "");
+        VAR2_STRING_ARRAY, ", $h.keyId" + SEL_FLD_VAL, HKEYID_IN_ARRAY_VAR2);
     private static final String SQL_HGET_VAL = String.format(SQL_READ_FMT,
-        VAR2_STRING, SEL_FLD_VAL, HKEYID_EQ_VAL_VAR2, "");
+        VAR2_STRING, SEL_FLD_VAL, HKEYID_EQ_VAL_VAR2);
     //private static final String SQL_HGET_EXISTS = String.format(SQL_READ_FMT,
-        //VAR2_STRING, "", HKEYID_EQ_VAL_VAR2, "");
+    //    VAR2_STRING, "", HKEYID_EQ_VAL_VAR2);
     
     private static final String SQL_GET_KEYS = String.format(SQL_READ_FMT, "",
-        SEL_FLD_KEY, "", "");
+        SEL_FLD_KEY, "");
     private static final String SQL_GET_VALS = String.format(SQL_READ_FMT, "",
-        SEL_FLD_VAL, "", "");
+        SEL_FLD_VAL, "");
     private static final String SQL_GET_ALL = String.format(SQL_READ_FMT, "",
-        SEL_FLD_KEY_VAL, "", "");
+        SEL_FLD_KEY_VAL, "");
     
     private static class HashScan extends QueryScan {
 
@@ -144,9 +142,9 @@ public class HashRead extends HashCommandsBase {
         }
     }
 
-    private static MapValue rowToSmallVal(MapValue row)
+    private static MapValue rowToSmallVal(MapValue row, boolean allowNull)
         throws RedisResponseException {
-        return valToSmallVal(getMapField(row, FLD_HASH_VAL));
+        return valToSmallVal(getMapField(row, FLD_HASH_VAL), allowNull);
     }
 
     private RedisMessage doHGetAll(ByteBuf keyBuf, boolean incKeys,
@@ -163,10 +161,11 @@ public class HashRead extends HashCommandsBase {
         ArrayList<RedisMessage> res = new ArrayList<>();
         MapValue row0 = rows.get(0);
         MapValue val = getMapField(row0, FLD_HASH_VAL, true);
+        // If hashVal != null, the hash must be in smallVal format (otherwise,
+        // all returned rows would have hashVal = null).
         if (val != null) {
-            // The hash is in smallVal format.
             chkSingleResult(rows);
-            MapValue smallVal = valToSmallVal(val);
+            MapValue smallVal = valToSmallVal(val, false);
             for(FieldValue fv : smallVal.values()) {
                 if (!fv.isMap()) {
                     throw RedisResponseException.corrupt(
@@ -204,14 +203,12 @@ public class HashRead extends HashCommandsBase {
         String keyId = makeRedisKeyInfo(fldBuf).id;
         List<MapValue> rows = doQuery(makeRedisKeyInfo(keyBuf),
             SQL_HGET_VAL, new StringValue(keyId));
-        if (rows.size() > 1) {
-            throw RedisResponseException.corrupt(ERR_NO_SINGLE_RES);
-        }
-
         if (rows.size() == 0) {
-            // Hash does not exist or field is not found.
+            // Hash does not exist.
             return null;
         }
+
+        chkSingleResult(rows);
 
         MapValue row0 = rows.get(0);
         String val = rowToFldVal(row0, true);
@@ -219,13 +216,13 @@ public class HashRead extends HashCommandsBase {
             return getStrVal(val);
         }
 
-        // Hash must be in smallVal format. Note that for HGET and HMGET we
-        // put the matching field condition in the WHERE clause (and not in
-        // LOJ) since we don't need to distinguish between the cases where
-        // hash does not exist or matching field(s) are not found (for HSET
-        // we do need to distinguish these), so empty result is returned also
-        // when there are no matching fields.
-        val = getValFromSmallVal(rowToSmallVal(row0), keyId);
+        // At this point we know that either the hash is in smallVal format
+        // or it is in multi-row format and the field is not found.
+        MapValue smallVal = rowToSmallVal(rows.get(0), true);
+        if (smallVal == null) { // Multi-row format and field is not found.
+            return null;
+        }
+        val = getValFromSmallVal(smallVal, keyId);
         return val != null ? getStrVal(val) : null;
     }
 
@@ -277,8 +274,7 @@ public class HashRead extends HashCommandsBase {
             SQL_HGET_KEYVALS, keyIds);
 
         if (rows.isEmpty()) {
-            // Hash does not exist or hash is in multi-row format and no
-            // input fields found.
+            // Hash does not exist.
             return new ArrayRedisMessage(Collections.nCopies(keyIds.size(),
                 FullBulkStringRedisMessage.NULL_INSTANCE));
         }
@@ -291,8 +287,14 @@ public class HashRead extends HashCommandsBase {
         String keyId0 = rowToKeyId(row0, true);
 
         if (keyId0 == null) {
+            // Either hash is in smallVal format or it is in multi-row format
+            // and no input fields are found.
             chkSingleResult(rows);
-            smallVal = rowToSmallVal(row0);
+            smallVal = rowToSmallVal(row0, true);
+            if (smallVal == null) { // Multi-row format and fields not found.
+                return new ArrayRedisMessage(Collections.nCopies(keyIds.size(),
+                    FullBulkStringRedisMessage.NULL_INSTANCE));
+            }
         } else {
             // The hash is in multi-row format. We collect the field values
             // into a map to retrieve them later when computing the result

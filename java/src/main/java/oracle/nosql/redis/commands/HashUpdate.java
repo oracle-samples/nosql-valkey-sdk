@@ -191,7 +191,7 @@ public class HashUpdate extends HashCommandsBase {
 
         if (header.smallVal != null) {
             int delCnt = 0;
-            assert header.smallVal.size() < MAX_SMALL_HASH_SIZE;
+            assert header.smallVal.size() <= MAX_SMALL_HASH_SIZE;
 
             for(int i = 0; i < fKeyIds.length; i++) {
                 if (header.smallVal.remove(fKeyIds[i]) != null) {
@@ -256,15 +256,19 @@ public class HashUpdate extends HashCommandsBase {
                 return new HDelInfo(header, ids);
             });
 
-            // Hash does not exist.
+            // We return -1 to indicate that the hash does not exist.
             if (!cvr.isValid()) {
-                return 0;
+                return -1;
             }
 
             WriteMultipleRequest wmReq = new WriteMultipleRequest();
             int delCnt = prepareHDel(keyInfo, keyIds, cvr.data, wmReq,
                 cvr.val);
-            doWM(wmReq, true);
+            // delCnt = 0 if we did not find any of the provided fields. We
+            // still need to remove each field from fSet below.
+            if (delCnt != 0) {
+                doWM(wmReq, true);
+            }
 
             // Unlike for HSET, here all elements of keyIds should be
             // processed on successful request.
@@ -372,6 +376,7 @@ public class HashUpdate extends HashCommandsBase {
 
     public void registerCommands(HashMap<String, CommandHandler> cmdMap) {
         cmdMap.put(CMD_HSET, this::handleHSet);
+        cmdMap.put(CMD_HMSET, this::handleHSet);
         cmdMap.put(CMD_HDEL, this::handleHDel);
         cmdMap.put(CMD_HINCRBY, this::handleHIncrBy);
         cmdMap.put(CMD_HINCRBYFLOAT, this::handleHIncrByFloat);
@@ -440,7 +445,11 @@ public class HashUpdate extends HashCommandsBase {
 
         int delCnt = 0;
         while(fSet.size() > 0) {
-            delCnt += doHDel(keyInfo, fSet);
+            int cnt = doHDel(keyInfo, fSet);
+            if (cnt == -1) { // hash does not exist
+                break;
+            }
+            delCnt += cnt;
         }
 
         return new IntegerRedisMessage(delCnt);
