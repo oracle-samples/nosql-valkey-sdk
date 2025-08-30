@@ -78,14 +78,14 @@ public class JSONValueOps extends JSONCommandsBase {
         RawCommand cmd, char op) throws RedisResponseException {
         chkExactNumArgs(cmd, 3);
         
-        String path = Utils.byteBufToString(cmd.args[1]);
+        PathInfo pi = PathInfo.get(cmd.args[1]);
         FieldValue val = byteBufToJson(cmd.args[2]);
 
         if (!val.isNumeric()) {
             throw new RedisResponseException("bad input number");
         }
         
-        TranslateResultWithFilters tr = translatePathWithFilter(path,
+        TranslateResultWithFilters tr = translatePathWithFilter(pi,
             NUM_FILTER);
         String sql = String.format(SQL_NUM_INCR_MULT_FMT, tr.getSQLDecl(),
             tr.sqlPathWithFilter(), op, tr.sqlPath);
@@ -108,7 +108,7 @@ public class JSONValueOps extends JSONCommandsBase {
         // Per spec, we return bulk string representing JSON array (rather
         // than ArrayRedisMessage).
         return new FullBulkStringRedisMessage(
-            Utils.stringToByteBuf(arrVal.toJson(null)));
+            Utils.stringToByteBuf(chkLegacyRes(pi, arrVal).toJson(null)));
     }
 
     public void registerCommands(HashMap<String, CommandHandler> cmdMap) {
@@ -136,14 +136,14 @@ public class JSONValueOps extends JSONCommandsBase {
         RawCommand cmd) throws RedisResponseException {
         chkExactNumArgs(cmd, 3);
         
-        String path = Utils.byteBufToString(cmd.args[1]);
+        PathInfo pi = PathInfo.get(cmd.args[1]);
         FieldValue val = byteBufToJson(cmd.args[2]);
         
         if (!val.isString()) {
             throw new RedisResponseException("bad input string");
         }
 
-        TranslateResultWithFilters tr = translatePathWithFilter(path,
+        TranslateResultWithFilters tr = translatePathWithFilter(pi,
             STR_FILTER);
         String sql = String.format(SQL_STR_APPEND_FMT, tr.getSQLDecl(),
             tr.sqlPathWithFilter(), tr.sqlPath);
@@ -151,45 +151,45 @@ public class JSONValueOps extends JSONCommandsBase {
             sql, tr);
         pStmt.setVariable(SQL_VAL, val);
         
-        return getIntArrayReply(doSQLUpdate(pStmt));
+        return chkLegacyRes(pi, getIntArrayReply(doSQLUpdate(pStmt)));
     }
 
     public RedisMessage handleJSONStrLen(RedisClientContext client,
         RawCommand cmd) throws RedisResponseException {
         chkNumArgs(cmd, 1, 2);
-        String path = cmd.args.length > 1 ?
-            Utils.byteBufToString(cmd.args[1]) : ROOT_PATH;
+        PathInfo pi = cmd.args.length > 1 ?
+            PathInfo.get(cmd.args[1]) : PathInfo.LEGACY_ROOT;
         
-        TranslateResult tr = translatePath(path);
+        TranslateResult tr = translatePath(pi);
         PreparedStatement pStmt = getPrepStmt(makeRedisKeyInfo(cmd.args[0]),
             String.format(SQL_SEL_STR_LENS_FMT, tr.getSQLDecl(), tr.sqlPath),
             tr);
 
-        return getIntArrayReply(doSQLGet(pStmt));
+        return chkLegacyRes(pi, getIntArrayReply(doSQLGet(pStmt)));
     }
 
     public RedisMessage handleJSONToggle(RedisClientContext client,
         RawCommand cmd) throws RedisResponseException {
         chkNumArgs(cmd, 1, 2);
-        String path = cmd.args.length > 1 ?
-            Utils.byteBufToString(cmd.args[1]) : ROOT_PATH;
+        PathInfo pi = cmd.args.length > 1 ?
+            PathInfo.get(cmd.args[1]) : PathInfo.LEGACY_ROOT;
 
-        TranslateResultWithFilters tr = translatePathWithFilter(path,
+        TranslateResultWithFilters tr = translatePathWithFilter(pi,
             BOOL_FILTER);
         String sql = String.format(SQL_BOOL_TOGGLE_FMT, tr.getSQLDecl(),
             tr.sqlPathWithFilter(), tr.sqlPath);
         PreparedStatement pStmt = getPrepStmt(makeRedisKeyInfo(cmd.args[0]),
             sql, tr);        
-        return getIntArrayReply(doSQLUpdate(pStmt));
+        return chkLegacyRes(pi, getIntArrayReply(doSQLUpdate(pStmt)));
     }
 
     public RedisMessage handleJSONType(RedisClientContext client,
         RawCommand cmd) throws RedisResponseException {
         chkNumArgs(cmd, 1, 2);
-        String path = cmd.args.length > 1 ?
-            Utils.byteBufToString(cmd.args[1]) : ROOT_PATH;
+        PathInfo pi = cmd.args.length > 1 ?
+            PathInfo.get(cmd.args[1]) : PathInfo.LEGACY_ROOT;
         
-        TranslateResult tr = translatePath(path);
+        TranslateResult tr = translatePath(pi);
         PreparedStatement pStmt = getPrepStmt(makeRedisKeyInfo(cmd.args[0]),
             String.format(SQL_SEL_TYPES_FMT, tr.getSQLDecl(), tr.sqlPath), tr);
 
@@ -215,16 +215,16 @@ public class JSONValueOps extends JSONCommandsBase {
                 stringToByteBuf(val.getString())));
         }
 
-        return new ArrayRedisMessage(res);
+        return chkLegacyRes(pi, new ArrayRedisMessage(res));
     }
 
     public RedisMessage handleJSONObjKeys(RedisClientContext client,
         RawCommand cmd) throws RedisResponseException {
         chkNumArgs(cmd, 1, 2);
-        String path = cmd.args.length > 1 ?
-            Utils.byteBufToString(cmd.args[1]) : ROOT_PATH;
+        PathInfo pi = cmd.args.length > 1 ?
+            PathInfo.get(cmd.args[1]) : PathInfo.LEGACY_ROOT;
         
-        TranslateResult tr = translatePath(path);
+        TranslateResult tr = translatePath(pi);
         PreparedStatement pStmt = getPrepStmt(makeRedisKeyInfo(cmd.args[0]),
             String.format(SQL_SEL_OBJ_KEYS_FMT, tr.getSQLDecl(), tr.sqlPath),
             tr);
@@ -262,21 +262,21 @@ public class JSONValueOps extends JSONCommandsBase {
             res.add(new ArrayRedisMessage(valRes));
         }
 
-        return new ArrayRedisMessage(res);
+        return chkLegacyRes(pi, new ArrayRedisMessage(res));
     }
 
     public RedisMessage handleJSONObjLen(RedisClientContext client,
         RawCommand cmd) throws RedisResponseException {
         chkNumArgs(cmd, 1, 2);
-        String path = cmd.args.length > 1 ?
-            Utils.byteBufToString(cmd.args[1]) : ROOT_PATH;
+        PathInfo pi = cmd.args.length > 1 ?
+            PathInfo.get(cmd.args[1]) : PathInfo.LEGACY_ROOT;
         
-        TranslateResult tr = translatePath(path);
+        TranslateResult tr = translatePath(pi);
         PreparedStatement pStmt = getPrepStmt(makeRedisKeyInfo(cmd.args[0]),
             String.format(SQL_SEL_OBJ_LENS_FMT, tr.getSQLDecl(), tr.sqlPath),
             tr);
 
-        return getIntArrayReply(doSQLGet(pStmt));
+        return chkLegacyRes(pi, getIntArrayReply(doSQLGet(pStmt)));
     }
 
 }

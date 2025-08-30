@@ -1,6 +1,8 @@
 package oracle.nosql.redis.commands;
 
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 
 import io.netty.handler.codec.redis.ArrayRedisMessage;
 import io.netty.handler.codec.redis.FullBulkStringRedisMessage;
@@ -15,15 +17,31 @@ import oracle.nosql.redis.RedisServerConfig;
 import oracle.nosql.redis.util.PreparedStatementCache;
 import oracle.nosql.redis.util.Utils;
 
-import static oracle.nosql.redis.util.Utils.getLongField;
+import static oracle.nosql.redis.util.Utils.*;
 
 public class ServerManagementCommands extends CommandsBase {
 
-    private static String SQL_GET_NUM_KEYS =
+    private static final String SQL_GET_NUM_KEYS =
         "SELECT count(*) AS res FROM redis";
-    private static String SQL_DEL_ALL_KEYS = "DELETE FROM redis";
-    private static String SQL_DEL_ALL_LIST_ELEMS = "DELETE FROM redis.lists";
-    private static String SQL_DEL_ALL_HASH_ELEMS = "DELETE FROM redis.hashes";
+    private static final String SQL_DEL_ALL_KEYS = "DELETE FROM redis";
+    private static final String SQL_DEL_ALL_LIST_ELEMS =
+        "DELETE FROM redis.lists";
+    private static final String SQL_DEL_ALL_HASH_ELEMS =
+        "DELETE FROM redis.hashes";
+
+    private static final String INFO_SERVER = "Server";
+    private static final String INFO_PERSISTENCE = "Persistence";
+    private static final String[] INFO_PERSISTENCE_DATA = {
+        "rdb_bgsave_in_progress:0"
+    };
+    private static final String[] INFO_SERVER_DATA = {
+        "redis_version:7.2.0"
+    };
+
+    private static final String[] INFO_ALL_SECTS = {
+        INFO_SERVER,
+        INFO_PERSISTENCE
+    };
 
     public static final String CMD_FLUSHDB = "FLUSHDB";
     public static final String CMD_FLUSHALL = "FLUSHALL";
@@ -50,7 +68,7 @@ public class ServerManagementCommands extends CommandsBase {
         if (cmd.args != null && cmd.args.length == 1) {
             String arg = Utils.byteBufToString(cmd.args[0]);
             if (arg.equalsIgnoreCase("ASYNC")) {
-                throw RedisResponseException.unsupportedOption("ASYNC");
+                throw RedisResponseException.unsupported("FLUSHDB ASYNC");
             } else if (!arg.equalsIgnoreCase("SYNC")) {
                 throw RedisResponseException.syntaxError();
             }
@@ -88,8 +106,48 @@ public class ServerManagementCommands extends CommandsBase {
 
     // For testing. Redis-cli sends this command after connecting.
     public RedisMessage handleInfo(RedisClientContext client,
-        RawCommand cmd) {
-        return okReply;
+        RawCommand cmd) throws RedisResponseException {
+        String[] sects = INFO_ALL_SECTS;
+        if (cmd.args != null && cmd.args.length != 0) {
+            sects = Arrays.stream(cmd.args).map(arg ->
+                lambdaUnchecked(() -> Utils.byteBufToString(arg)))
+                .distinct().toArray(String[]::new);
+        }
+
+        // Currently the following is used to run existing Redis tests.
+        StringBuilder sb = null;
+        for(String sect: sects) {
+            String[] data = null;
+            switch (sect) {
+                case INFO_SERVER:
+                    data = INFO_SERVER_DATA;
+                    break;
+                case INFO_PERSISTENCE:
+                    data = INFO_PERSISTENCE_DATA;
+                    break;
+                default:
+                    break;
+            }
+
+            if (data == null) {
+                continue;
+            }
+
+            if (sb == null) {
+                sb = new StringBuilder();
+            } else {
+                // Sections are separated by blank lines.
+                sb.append("\r\n");
+            }
+
+            for(String prop: data) {
+                sb.append(prop).append("\r\n");
+            }
+        }
+
+        return sb != null ?
+            new FullBulkStringRedisMessage(stringToByteBuf(sb.toString())) :
+            FullBulkStringRedisMessage.EMPTY_INSTANCE;
     }
 
 }

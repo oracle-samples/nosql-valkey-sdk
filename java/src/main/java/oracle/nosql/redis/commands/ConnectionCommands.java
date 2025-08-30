@@ -19,6 +19,7 @@ import oracle.nosql.redis.RedisClientContext;
 import oracle.nosql.redis.RedisResponseException;
 import oracle.nosql.redis.RedisServerConfig;
 import oracle.nosql.redis.util.PreparedStatementCache;
+import oracle.nosql.redis.util.Utils;
 
 public class ConnectionCommands extends CommandsBase {
 
@@ -26,7 +27,8 @@ public class ConnectionCommands extends CommandsBase {
     public static final String CMD_ECHO = "ECHO";
     public static final String CMD_QUIT = "QUIT";
     public static final String CMD_HELLO = "HELLO";
-	 
+    public static final String CMD_CLIENT = "CLIENT";
+
     public ConnectionCommands(NoSQLHandle nosqlHandle,
         RedisServerConfig config, PreparedStatementCache pstmtCache) {
         super(nosqlHandle, config, pstmtCache);
@@ -37,6 +39,7 @@ public class ConnectionCommands extends CommandsBase {
         cmdMap.put(CMD_ECHO, this::handleEcho);
         cmdMap.put(CMD_QUIT, this::handleQuit);
         cmdMap.put(CMD_HELLO, this::handleHello);
+        cmdMap.put(CMD_CLIENT, this::handleClient);
     }
 
     public RedisMessage handlePing(RedisClientContext client,
@@ -63,6 +66,18 @@ public class ConnectionCommands extends CommandsBase {
     public RedisMessage handleHello(RedisClientContext client,
         RawCommand cmd) {
         return okReply;
+    }
+
+    public RedisMessage handleClient(RedisClientContext client, RawCommand cmd)
+        throws RedisResponseException {
+        chkMinNumArgs(cmd, 1);
+        String sub = Utils.byteBufToString(cmd.args[0]);
+        if (sub.equalsIgnoreCase("SETINFO") ||
+            sub.equalsIgnoreCase("SETNAME")) {
+            return okReply;
+        }
+
+        throw RedisResponseException.unsupported(cmd.name + " " + sub);
     }
 
 }

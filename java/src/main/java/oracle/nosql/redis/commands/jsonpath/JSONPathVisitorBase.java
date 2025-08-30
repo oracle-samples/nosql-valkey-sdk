@@ -28,6 +28,10 @@ public class JSONPathVisitorBase<T> extends JSONPathBaseVisitor<T> {
 	protected int inFilterCnt;
 	protected boolean inLastSegment;
 
+	protected static String quote(String s) {
+		return '"' + s.replace("\"", "\\\"") + '"';
+	}
+
 	protected static String unquote(String s) {
 		assert s != null && s.length() >= 2;
 		String quote = null;

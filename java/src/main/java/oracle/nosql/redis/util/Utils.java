@@ -159,6 +159,15 @@ public class Utils {
         return stringToByteBuf(Double.toString(val));
     }
 
+    public static <T> T lambdaUnchecked(
+        ThrowingNoArgFunction<T, RedisResponseException> f) {
+        try {
+            return f.apply();
+        } catch (RedisResponseException ex) {
+            throw RedisResponseException.unchecked(ex);
+        }
+    }
+
     // It looks like Redis rounds to the nearest second.
     public static long millisToSeconds(long millis) {
         return Math.round((double)millis / 1000);
@@ -178,17 +187,27 @@ public class Utils {
         }
     }
 
+    // This is needed for Redis error messages. Redis error messages are
+    // simple strings and are not allowed to contain '\n' or '\r'.
+    public static String escapeSimpleString(String str) {
+        if (str == null) {
+            return "(null)";
+        }
+
+        return str.replace("\n", "\\n").replace("\r", "\\r");
+    }
+
     // Used when by JSON Path parser and visitor.
     public static RuntimeException parseException(String input, int pos,
         String msg, Throwable cause) {
         // Sometimes position is reported past the end of the path string.
         int adjPos = Math.min(pos, input.length());
         return RedisResponseException.unchecked(
-            new RedisResponseException(String.format(
+            new RedisResponseException(escapeSimpleString(String.format(
                 // Same format as in Redis Stack.
                 "Error occurred on position %d, \"%s  ---->>>> %s\", %s",
                 pos, input.substring(0, adjPos),
-                input.substring(adjPos), msg), cause));
+                input.substring(adjPos), msg)), cause));
     }
 
     public static RuntimeException parseException(String input, int pos,

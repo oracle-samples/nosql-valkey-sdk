@@ -7,6 +7,8 @@
 
 package oracle.nosql.redis;
 
+import static oracle.nosql.redis.util.Utils.escapeSimpleString;
+
 public class RedisResponseException extends Exception {
 	 
     public static enum ErrorPrefix {
@@ -60,15 +62,15 @@ public class RedisResponseException extends Exception {
     }
 
     public static RedisResponseException nosql(Exception ex) {
-        return new RedisResponseException(ErrorPrefix.NOSQL, ex.toString(),
-            ex);
+        return new RedisResponseException(ErrorPrefix.NOSQL,
+            escapeSimpleString(ex.toString()), ex);
     }
 
     public static RedisResponseException unknownCommand(RawCommand cmd) {
         // Todo: print "with arguments beginning with" followed by args as
         // done by real Redis server.
         return new RedisResponseException(ErrorPrefix.ERR,
-            "Unknown command: " + cmd.name);
+            "Unknown command: " + escapeSimpleString(cmd.name));
     }
 
     public static RedisResponseException crossSlot() {
@@ -76,9 +78,9 @@ public class RedisResponseException extends Exception {
             "CROSSSLOT Keys in request don't hash to the same slot");
     }
 
-    public static RedisResponseException unsupportedOption(String opt) {
+    public static RedisResponseException unsupported(String cmd) {
         return new RedisResponseException(ErrorPrefix.ERR,
-            "Option not supported: " + opt);
+            escapeSimpleString(cmd) + " is not supported");
     }
 
     // In some cases it is not possible to throw checked

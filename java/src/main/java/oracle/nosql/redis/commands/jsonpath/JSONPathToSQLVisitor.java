@@ -329,7 +329,16 @@ public class JSONPathToSQLVisitor extends JSONPathVisitorBase<String> {
 					filter);
 			}
 		}
-		return res;
+
+		// Waiting to resolution of issue of using external variables with the
+		// field step. For us, it is better to bind a variable rather than use
+		// identifier directly because then the same prepared statement can be
+		// shared among multiple similar queries (see PreparedStatementCache).
+
+		// We quote the field name in case it is not a proper SQL identifier
+		// name (starts with a letter and contains only letters, numbers and
+		// underscore).
+		return quote(res);
 	}
 	
 	@Override
@@ -568,9 +577,9 @@ public class JSONPathToSQLVisitor extends JSONPathVisitorBase<String> {
 	@Override
 	public String visitMapSelector(JSONPathParser.MapSelectorContext ctx) {
 		assert !isSingleSelector.isEmpty();
-		// For single selector it is faster to use field step rather than
-		// map filter, however in this case we cannot bind the key to a
-		// variable and have to use a literal.
+		// For single selector use field step rather than map filter.
+		// Currently, there is a problem with using external variables with
+		// field step in some cases, waiting for resolution.
 		String key = isSingleSelector.peek() ?
 			ctx.getText() : addVariable(new StringValue(unquote(
 				ctx.getText())));

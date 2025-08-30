@@ -105,6 +105,57 @@ abstract class JSONCommandsBase extends CommandsBase {
     public static final String CMD_JSON_MERGE = "JSON.MERGE";
     public static final String CMD_JSON_MSET = "JSON.MSET";
 
+    protected static class PathInfo {
+        final String path;
+        final String origPath;
+        final boolean isRoot;
+        final boolean isLegacy;
+
+        static final PathInfo ROOT = new PathInfo(ROOT_PATH, ROOT_PATH, true,
+            false);
+        static final PathInfo LEGACY_ROOT = new PathInfo(ROOT_PATH, ".", true,
+            true);
+
+        private PathInfo(String path, String origPath, boolean isRoot,
+            boolean isLegacy) {
+            this.path = path;
+            this.origPath = origPath;
+            this.isRoot = isRoot;
+            this.isLegacy = isLegacy;
+        }
+
+        static PathInfo get(String path) throws RedisResponseException {
+            if (path.isEmpty()) {
+                throw new RedisResponseException(
+                    "Path cannot be empty string");
+            }
+
+            char c = path.charAt(0);
+            boolean isRoot = path.length() == 1 && (c == '$' || c == '.');
+
+            // JSONPath should either be "$" or start with "$." or "$[".
+            // Otherwise, it is a legacy path. Note that if path starts with
+            // "$" but not followed by ".", it is a legacy path and "$" is not
+            // root but part of a property name.
+            boolean isLegacy = (c != '$') || (path.length() != 1 &&
+                (path.charAt(1) != '.' && path.charAt(1) != '['));
+
+            String oldPath = path;
+            // Legacy syntax allows path such as ["a"] or .a, which should mean
+            // $["a"] and $.a correspondingly.
+            if (isLegacy) {
+                path = (path.startsWith("[") || path.startsWith(".")) ?
+                    ROOT_PATH + path : ROOT_PATH_PFX + path;
+            }
+
+            return new PathInfo(path, oldPath, isRoot, isLegacy);
+        }
+
+        static PathInfo get(ByteBuf path) throws RedisResponseException {
+            return get(Utils.byteBufToString(path));
+        }
+    }
+
     protected static class TranslateResult {
         final String sqlPath;
         final String parentSQLPath;
@@ -202,13 +253,25 @@ abstract class JSONCommandsBase extends CommandsBase {
         super(nosqlHandle, config, pstmtCache);
     }
 
+    private static RedisResponseException emptyLegacyRes(PathInfo pi) {
+        // This should not happen unless the key doesn't exist.
+        if (pi.isRoot) {
+            return RedisResponseException.corrupt(
+                "Value at root path not found");
+        }
+        return new RedisResponseException(
+            RedisResponseException.ErrorPrefix.ERR, String.format(
+            "Path '%s' doesn't exist", pi.path));
+    }
+
     protected static FieldValue byteBufToJson(ByteBuf buf)
         throws RedisResponseException {
         try {
             return FieldValue.createFromJson(
                 byteBufToString(buf), null);
         } catch(JsonParseException ex) {
-            throw new RedisResponseException(ex.getMessage(), ex);
+            throw new RedisResponseException(
+                escapeSimpleString(ex.getMessage()), ex);
         }
     }
 
@@ -219,27 +282,36 @@ abstract class JSONCommandsBase extends CommandsBase {
             .put(VALUE_PAD, JsonNullValue.getInstance());
     }
 
-    // Convert a relative path to absolute.
-    private static String canonizePath(String path) {
-        if (path.isEmpty()) {
-            return ROOT_PATH;
+    protected static FieldValue chkLegacyRes(PathInfo pi, ArrayValue res)
+        throws RedisResponseException {
+        if (!pi.isLegacy) {
+            return res;
         }
 
-        // If the path is "$" or starts with "$." or "$[", we treat it as an
-        // absolute path. Otherwise it is a relative path (even if it starts
-        // "$", based on behavior of Redis Stack).
-        if (path.charAt(0) == '$' && (path.length() == 1 ||
-            path.charAt(1) == '.' || path.charAt(1) == '[')) {
-            return path;
+        if (res.size() == 0) {
+            throw emptyLegacyRes(pi);
         }
-        
-        // Redis stack allows path such as ["a"], which should mean $["a"].
-        return path.startsWith("[") ? ROOT_PATH + path : ROOT_PATH_PFX + path;
+
+        return res.get(0);
+    }
+
+    protected static RedisMessage chkLegacyRes(PathInfo pi,
+        ArrayRedisMessage res) throws RedisResponseException {
+        if (!pi.isLegacy) {
+            return res;
+        }
+
+        List<RedisMessage> ls = res.children();
+
+        if (ls.isEmpty()) {
+            throw emptyLegacyRes(pi);
+        }
+
+        return ls.get(0);
     }
 
     protected static ParseTree parsePath(String path) {
-        JSONPathLexer lexer = new JSONPathLexer(CharStreams.fromString(
-            canonizePath(path)));
+        JSONPathLexer lexer = new JSONPathLexer(CharStreams.fromString(path));
         CommonTokenStream tokenStream = new CommonTokenStream(lexer);
         JSONPathParser parser = new JSONPathParser(tokenStream);
 
@@ -256,35 +328,35 @@ abstract class JSONCommandsBase extends CommandsBase {
         return parser.jsonpath();
     }
 
-    protected static TranslateResult translatePath(String path) {
+    protected static TranslateResult translatePath(PathInfo pi) {
         // Optimization for common case.
-        if (path.equals(ROOT_PATH)) {
+        if (pi.isRoot) {
             return TranslateResult.ROOT_INSTANCE;
         }
 
         JSONPathToSQLVisitor visitor = new JSONPathToSQLVisitor(SQL_ROOT);
-        visitor.run(parsePath(path), path);
+        visitor.run(parsePath(pi.path), pi.path);
         return new TranslateResult(visitor.getSQLPath(),
             visitor.getParentSQLPath(), visitor.getVariables(),
             visitor.getLeafFields());
     }
 
     protected static TranslateResultWithFilters translatePathWithFilters(
-        String path, String[] endValueFilters, String[] parentFilters) {
+        PathInfo pi, String[] endValueFilters, String[] parentFilters) {
         // Optimization for common case.
-        if (path.equals(ROOT_PATH)) {
+        if (pi.isRoot) {
             // We can't put parent filter on root path.
             assert parentFilters == null;
             return TranslateResultWithFilters.rootPath(endValueFilters);
         }
 
-        ParseTree pt = parsePath(path);
+        ParseTree pt = parsePath(pi.path);
         JSONPathToSQLVisitor visitor = new JSONPathToSQLVisitor(SQL_ROOT);
 
         // TODO: we need to reconsider this to use only one pass of the
         // visitor to get both unfiltered and filtered SQL paths. This will
         // also avoid the issue of duplicating bound variables.
-        visitor.run(pt, path);
+        visitor.run(pt, pi.path);
 
         String sqlPath = visitor.getSQLPath();
         String parentSQLPath = visitor.getParentSQLPath();
@@ -296,7 +368,7 @@ abstract class JSONCommandsBase extends CommandsBase {
             sqlPathsWithFilter = new String[endValueFilters.length];
             for(int i = 0; i < endValueFilters.length; i++) {
                 visitor.setEndValueFilter(endValueFilters[i]);
-                visitor.run(pt, path);
+                visitor.run(pt, pi.path);
                 sqlPathsWithFilter[i] = visitor.getSQLPath();    
             }
         }
@@ -306,7 +378,7 @@ abstract class JSONCommandsBase extends CommandsBase {
             parentSQLPathsWithFilter = new String[parentFilters.length];
             for(int i = 0; i < parentFilters.length; i++) {
                 visitor.setParentFilter(parentFilters[i]);
-                visitor.run(pt, path);
+                visitor.run(pt, pi.path);
                 parentSQLPathsWithFilter[i] = visitor.getParentSQLPath();
             }
         }
@@ -317,26 +389,26 @@ abstract class JSONCommandsBase extends CommandsBase {
     }
 
     protected static TranslateResultWithFilters translatePathWithFilter(
-        String path, String endValueFilter, String parentFilter) {
-        return translatePathWithFilters(path,
+        PathInfo pi, String endValueFilter, String parentFilter) {
+        return translatePathWithFilters(pi,
             endValueFilter != null ? new String[]{ endValueFilter } : null,
             parentFilter != null ? new String[]{ parentFilter } : null);
     }
 
     protected static TranslateResultWithFilters translatePathWithFilter(
-        String path, String endValueFilter) {
-        return translatePathWithFilter(path, endValueFilter, null);
+        PathInfo pi, String endValueFilter) {
+        return translatePathWithFilter(pi, endValueFilter, null);
     }
 
-    protected static TranslateMultiResult translatePaths(List<String> paths) {
+    protected static TranslateMultiResult translatePaths(List<PathInfo> paths) {
         JSONPathToSQLVisitor visitor = new JSONPathToSQLVisitor(SQL_ROOT);
         String[] sqlParts = new String[paths.size()];
         for(int i = 0; i < sqlParts.length; i++) {
-            String path = paths.get(i);
-            if (path.equals(ROOT_PATH)) {
+            PathInfo pi = paths.get(i);
+            if (pi.isRoot) {
                 sqlParts[i] = SQL_ROOT;
             } else {
-                visitor.run(parsePath(path), path);
+                visitor.run(parsePath(pi.path), pi.path);
                 sqlParts[i] = visitor.getSQLPath();
             }
         }
@@ -426,26 +498,6 @@ abstract class JSONCommandsBase extends CommandsBase {
             vals.set(i, untransformValue(vals.get(i)));
         }
         return vals;
-    }
-
-    protected static MapValue makeMultiResult(List<String> paths,
-        ArrayValue vals) throws RedisResponseException {
-        int cnt = paths.size();
-        if (vals.size() != cnt) {
-            throw RedisResponseException.corrupt(
-                "JSON.GET: result count mismatch");
-        }
-
-        MapValue res = new MapValue(cnt);
-        for(int i = 0; i < cnt; i++) {
-            FieldValue val = vals.get(i);
-            if (!val.isArray()) {
-                throw RedisResponseException.corrupt(ERR_NOT_ARRAY);
-            }
-            res.put(paths.get(i), untransformValues(val.asArray()));
-        }
-
-        return res;
     }
 
     protected static void chkIsJSON(MapValue row)
@@ -566,7 +618,7 @@ abstract class JSONCommandsBase extends CommandsBase {
         }
     }
 
-    protected RedisMessage getIntArrayReply(MapValue row)
+    protected ArrayRedisMessage getIntArrayReply(MapValue row)
         throws RedisResponseException {
         if (row == null) {
             throw new RedisResponseException(ERR_KEY_NOT_EXISTS);

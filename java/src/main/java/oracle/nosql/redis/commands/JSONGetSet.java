@@ -1,6 +1,5 @@
 package oracle.nosql.redis.commands;
 
-import static oracle.nosql.redis.util.Utils.byteBufToString;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -76,7 +75,7 @@ public class JSONGetSet extends JSONCommandsBase {
     // This may be considered. For XX, the behavior is the same as in UPDATE
     // SET clause, that is only existing fields are set and non-existing
     // skipped.
-    private boolean doJSONSet(RedisKeyInfo keyInfo, String path,
+    private boolean doJSONSet(RedisKeyInfo keyInfo, PathInfo pi,
         FieldValue val, SetOpt setOpt) throws RedisResponseException {
         TranslateResult tr;
         if (setOpt == SetOpt.NX) {
@@ -88,7 +87,7 @@ public class JSONGetSet extends JSONCommandsBase {
             // to do read-modify-write with doGetSet(). Instead we do update
             // statement in hope that the key exists only perform another
             // request (doSet) if it doesn't.
-            if (path.equals(ROOT_PATH)) {
+            if (pi.isRoot) {
                 return doSet(keyInfo, makeJSONValue(val), NO_EXP, true);
             }
 
@@ -104,13 +103,13 @@ public class JSONGetSet extends JSONCommandsBase {
             // filter, this would avoid using 2 parent filters. This would
             // require some more refactoring of the code since the parent
             // filter itself the result of the first visitor invocation.
-            tr = translatePathWithFilter(path, null, MAP_FILTER);
+            tr = translatePathWithFilter(pi, null, MAP_FILTER);
             if (tr.leafFields == null) {
                 throw new RedisResponseException(
                     "cannot create new fields with this path");
             }
         } else {
-            tr = translatePath(path);
+            tr = translatePath(pi);
         }
 
         String sql = DECL_KEY_ID_VAL + tr.getSQLDecl() +
@@ -133,7 +132,7 @@ public class JSONGetSet extends JSONCommandsBase {
                 return false;
             }
 
-            if (!path.equals(ROOT_PATH)) {
+            if (!pi.isRoot) {
                 throw new RedisResponseException(ERR_NEW_VAL_NOT_ROOT);
             }
 
@@ -151,7 +150,29 @@ public class JSONGetSet extends JSONCommandsBase {
         return getBoolRes(row);
     }
 
-    private FieldValue doJSONGet(RedisKeyInfo keyInfo, List<String> paths)
+    private MapValue makeMultiResult(List<PathInfo> paths,
+        ArrayValue vals) throws RedisResponseException {
+        int cnt = paths.size();
+        if (vals.size() != cnt) {
+            throw RedisResponseException.corrupt(
+                "JSON.GET: result count mismatch");
+        }
+
+        MapValue res = new MapValue(cnt);
+        for(int i = 0; i < cnt; i++) {
+            PathInfo pi = paths.get(i);
+            FieldValue val = vals.get(i);
+            if (!val.isArray()) {
+                throw RedisResponseException.corrupt(ERR_NOT_ARRAY);
+            }
+            res.put(pi.origPath, chkLegacyRes(pi,
+                untransformValues(val.asArray())));
+        }
+
+        return res;
+    }
+
+    private FieldValue doJSONGet(RedisKeyInfo keyInfo, List<PathInfo> paths)
         throws RedisResponseException {
         assert !paths.isEmpty();
         TranslateResult tr = paths.size() == 1 ?
@@ -168,7 +189,8 @@ public class JSONGetSet extends JSONCommandsBase {
         chkIsJSON(row);
         ArrayValue res = getArrRes(doSQLGet(pStmt));
         return paths.size() == 1 ?
-            untransformValues(res) : makeMultiResult(paths, res);
+            chkLegacyRes(paths.get(0), untransformValues(res)) :
+            makeMultiResult(paths, res);
     }
 
     private boolean doJSONMSet(ByteBuf[] args) throws RedisResponseException {
@@ -211,12 +233,12 @@ public class JSONGetSet extends JSONCommandsBase {
                 }
             }
 
-            String path = Utils.byteBufToString(args[i * 3 + 1]);
+            PathInfo pi = PathInfo.get(args[i * 3 + 1]);
             FieldValue valToSet = byteBufToJson(args[i * 3 + 2]);
 
             FieldValue newVal;
             // We handle root path outside the visitor.
-            if (path.equals(ROOT_PATH)) {
+            if (pi.isRoot) {
                 newVal = transformValue(valToSet);
             } else {
                 if (oldVal == null) {
@@ -226,11 +248,11 @@ public class JSONGetSet extends JSONCommandsBase {
                 // operates on untransformed values, we have to untransform and
                 // then transform back.
                 newVal = untransformValue(oldVal);
-                ParseTree parseTree = parsePath(path);
+                ParseTree parseTree = parsePath(pi.path);
                 // If we fail to set any values according to the provided path
                 // (e.g. because parent field doesn't exist), there is no need
                 // to update this row.
-                if (!visitor.jsonSet(newVal, valToSet, parseTree, path)) {
+                if (!visitor.jsonSet(newVal, valToSet, parseTree, pi.path)) {
                     continue;
                 };
                 newVal = transformValue(newVal);
@@ -282,7 +304,7 @@ public class JSONGetSet extends JSONCommandsBase {
         }
     }
 
-    private boolean doJSONMerge(RedisKeyInfo keyInfo, String path,
+    private boolean doJSONMerge(RedisKeyInfo keyInfo, PathInfo pi,
         FieldValue val) throws RedisResponseException {
 
         // If val is not an object, then the merge operation should just
@@ -291,7 +313,7 @@ public class JSONGetSet extends JSONCommandsBase {
         // this would remove the target field(s) rather than assign null to it
         // as expected in this case.
         if (!val.isMap()) {
-            return doJSONSet(keyInfo, path, val, null);
+            return doJSONSet(keyInfo, pi, val, null);
         }
         
         // SQL merge patch does not allow us to merge with non-existing field.
@@ -304,9 +326,8 @@ public class JSONGetSet extends JSONCommandsBase {
         // not an object, since in this case merge on a.b.new_field should
         // fail, but would replace a.b if performed via parent path as above.
 
-        String[] parentFilters = path.equals(ROOT_PATH) ?
-            null : MAP_FILTER_ARR;
-        TranslateResultWithFilters tr = translatePathWithFilters(path, null,
+        String[] parentFilters = pi.isRoot ? null : MAP_FILTER_ARR;
+        TranslateResultWithFilters tr = translatePathWithFilters(pi, null,
             parentFilters);
         String sql = String.format(SQL_MERGE_FMT, tr.getSQLDecl(),
             tr.leafFields != null ? tr.parentSQLPathWithFilter() : tr.sqlPath,
@@ -318,7 +339,7 @@ public class JSONGetSet extends JSONCommandsBase {
 
         MapValue row = doSQLUpdate(pStmt);
         if (row == null) {
-            if (!path.equals(ROOT_PATH)) {
+            if (!pi.isRoot) {
                 throw new RedisResponseException(ERR_NEW_VAL_NOT_ROOT);
             }
 
@@ -346,7 +367,7 @@ public class JSONGetSet extends JSONCommandsBase {
         RawCommand cmd) throws RedisResponseException {
         chkNumArgs(cmd, 3, 4);
         
-        String path = Utils.byteBufToString(cmd.args[1]);
+        PathInfo pi = PathInfo.get(cmd.args[1]);
         FieldValue val = transformValue(byteBufToJson(cmd.args[2]));
         SetOpt setOptArg = null;
 
@@ -365,7 +386,7 @@ public class JSONGetSet extends JSONCommandsBase {
 
         final SetOpt setOpt = setOptArg;
         return doWithRetries(() ->
-            doJSONSet(makeRedisKeyInfo(cmd.args[0]), path, val, setOpt)) ?
+            doJSONSet(makeRedisKeyInfo(cmd.args[0]), pi, val, setOpt)) ?
             okReply : FullBulkStringRedisMessage.NULL_INSTANCE;
     }
 
@@ -373,7 +394,7 @@ public class JSONGetSet extends JSONCommandsBase {
         RawCommand cmd) throws RedisResponseException {
         chkMinNumArgs(cmd, 1);
         
-        ArrayList<String> paths = new ArrayList<>();
+        ArrayList<PathInfo> paths = new ArrayList<>();
         String indent = null;
         String newLine = null;
         String space = null;
@@ -390,12 +411,12 @@ public class JSONGetSet extends JSONCommandsBase {
                 chkMinNumArgs(cmd, i + 2);
                 space = Utils.byteBufToString(cmd.args[++i]);
             } else {
-                paths.add(arg);
+                paths.add(PathInfo.get(arg));
             }
         }
 
         if (paths.isEmpty()) {
-            paths.add(ROOT_PATH);
+            paths.add(PathInfo.LEGACY_ROOT);
         }
 
         FieldValue res = doJSONGet(makeRedisKeyInfo(cmd.args[0]), paths);
@@ -417,9 +438,9 @@ public class JSONGetSet extends JSONCommandsBase {
         RedisKeyInfo[] keyInfos = makeRedisMultiKeyInfo(cmd.args, 0,
             cmd.args.length - 1);
         ArrayValue keyIds = makeKeyIdsValue(keyInfos);
-        String path = byteBufToString(cmd.args[cmd.args.length - 1]);
+        PathInfo pi = PathInfo.get(cmd.args[cmd.args.length - 1]);
 
-        TranslateResult tr = translatePath(path);
+        TranslateResult tr = translatePath(pi);
         String sql = String.format(SQL_MGET_FMT, tr.getSQLDecl(),
             tr.sqlPath);
 
@@ -433,17 +454,18 @@ public class JSONGetSet extends JSONCommandsBase {
         // query results may be in different order and/or missing non-existent
         // keys or keys of wrong type, so we need to collect query results
         // first to create the final result.
-        HashMap<String,ArrayValue> resMap = new HashMap<>();
+        HashMap<String,FieldValue> resMap = new HashMap<>();
         processQuery(pStmt, row -> {
-            resMap.put(getId(row), untransformValues(getArrRes(row)));
+            resMap.put(getId(row), chkLegacyRes(pi,
+                untransformValues(getArrRes(row))));
         });
 
         ArrayList<RedisMessage> res = new ArrayList<>();
         for(FieldValue keyId: keyIds) {
-            ArrayValue arrRes = resMap.get(keyId.getString());
-            res.add(arrRes != null ?
+            FieldValue keyRes = resMap.get(keyId.getString());
+            res.add(keyRes != null ?
                 new FullBulkStringRedisMessage(Utils.stringToByteBuf(
-                    arrRes.toJson(null))) :
+                    keyRes.toJson(null))) :
                 FullBulkStringRedisMessage.NULL_INSTANCE);
         }
 
@@ -473,11 +495,11 @@ public class JSONGetSet extends JSONCommandsBase {
     public RedisMessage handleJSONMerge(RedisClientContext client,
         RawCommand cmd) throws RedisResponseException {
         chkExactNumArgs(cmd, 3);
-        String path = Utils.byteBufToString(cmd.args[1]);
+        PathInfo pi = PathInfo.get(cmd.args[1]);
         FieldValue val = transformValue(byteBufToJson(cmd.args[2]));
 
         return doWithRetries(() ->
-            doJSONMerge(makeRedisKeyInfo(cmd.args[0]), path, val)) ?
+            doJSONMerge(makeRedisKeyInfo(cmd.args[0]), pi, val)) ?
                 okReply : FullBulkStringRedisMessage.NULL_INSTANCE;
     }
 

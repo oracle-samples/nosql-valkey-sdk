@@ -62,10 +62,10 @@ public class JSONDel extends JSONCommandsBase {
         chkNumArgs(cmd, 1, 2);
 
         RedisKeyInfo keyInfo = makeRedisKeyInfo(cmd.args[0]);
-        String path = cmd.args.length > 1 ?
-            Utils.byteBufToString(cmd.args[1]) : ROOT_PATH;
+        PathInfo pi = cmd.args.length > 1 ?
+            PathInfo.get(cmd.args[1]) : PathInfo.ROOT;
         
-        if (path.equals(ROOT_PATH)) {
+        if (pi.isRoot) {
             PreparedStatement pStmt = pstmtCache.getByRef(SQL_DEL_KEY);
             pStmt.setVariable(SQL_SLOT, new IntegerValue(keyInfo.slot));
             pStmt.setVariable(SQL_KEY_ID, new StringValue(keyInfo.id));
@@ -78,7 +78,7 @@ public class JSONDel extends JSONCommandsBase {
             return getBoolRes(row) ? oneReply : zeroReply;
         }
 
-        TranslateResultWithFilters tr = translatePathWithFilter(path, null,
+        TranslateResultWithFilters tr = translatePathWithFilter(pi, null,
             ARR_FILTER);
         String sql = String.format(SQL_UPDATE_DEL_FMT, tr.getSQLDecl(),
             tr.sqlPath, tr.sqlPath, tr.parentSQLPathWithFilter());
@@ -96,10 +96,10 @@ public class JSONDel extends JSONCommandsBase {
     public RedisMessage handleJSONClear(RedisClientContext client,
         RawCommand cmd) throws RedisResponseException {
         chkNumArgs(cmd, 1, 2);
-        String path = cmd.args.length > 1 ?
-            Utils.byteBufToString(cmd.args[1]) : ROOT_PATH;
+        PathInfo pi = cmd.args.length > 1 ?
+            PathInfo.get(cmd.args[1]) : PathInfo.ROOT;
 
-        TranslateResultWithFilters tr = translatePathWithFilters(path,
+        TranslateResultWithFilters tr = translatePathWithFilters(pi,
             new String[] { NON_EMPTY_MAP_FILTER, NON_EMPTY_ARR_FILTER,
                 NON_ZERO_NUM_FILTER }, null);
         String sql = String.format(SQL_CLEAR_FMT, tr.getSQLDecl(),
