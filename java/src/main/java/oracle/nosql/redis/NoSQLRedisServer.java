@@ -11,11 +11,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 import io.netty.bootstrap.ServerBootstrap;
-import io.netty.channel.Channel;
-import io.netty.channel.ChannelInitializer;
-import io.netty.channel.ChannelOption;
-import io.netty.channel.ChannelPipeline;
-import io.netty.channel.EventLoopGroup;
+import io.netty.channel.*;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
@@ -30,13 +26,9 @@ import oracle.nosql.driver.NoSQLHandleConfig;
 import oracle.nosql.driver.NoSQLHandleFactory;
 import oracle.nosql.driver.ops.TableLimits;
 import oracle.nosql.driver.ops.TableRequest;
-import oracle.nosql.redis.util.CommandLine;
 
 public class NoSQLRedisServer {
-    private static final String DEFAULT_HOST =
-    	System.getProperty("host", "127.0.0.1");
-    private static final int DEFAULT_PORT =
-    	Integer.parseInt(System.getProperty("port", "6379"));
+    private static final int DEFAULT_SHUTDOWN_TIMEOUT_MILLIS = 5000;
 
     public static final String MAIN_TABLE_NAME = "redis";
     public static final String CREATE_MAIN_TABLE =
@@ -44,8 +36,6 @@ public class NoSQLRedisServer {
         "key JSON, value JSON, PRIMARY KEY(SHARD(slot), id))";
     public static final String CREATE_SCANID_IDX =
         "CREATE INDEX IF NOT EXISTS scanIdIdx ON redis(key.scanId AS LONG)";
-    private static final TableLimits DEFAULT_TABLE_LIMITS =
-        new TableLimits(20000, 20000, 10);
     public static final String CREATE_LIST_TABLE =
         "CREATE TABLE IF NOT EXISTS redis.lists(elemId NUMBER, " +
         "cid STRING AS UUID, value STRING, PRIMARY KEY(elemId))";
@@ -65,43 +55,18 @@ public class NoSQLRedisServer {
     
     private final ServerBootstrap serverBootstrap = new ServerBootstrap();
     private Channel serverChannel;
-    private final String host;
-    private final int port;
-    private final RedisServerConfig config = new RedisServerConfig();
+    private final RedisServerConfig config;
     private final NoSQLHandle nosqlHandle;
     private final CommandHandlers cmdHandlers;
     private final ExecutorService cmdWorkerPool =
         Executors.newCachedThreadPool();
+    private Thread svrRun;
+    private Exception svrRunEx;
 
-    private void initDB() {
-        nosqlHandle.doTableRequest(new TableRequest()
-            .setStatement(CREATE_MAIN_TABLE)
-            .setTableLimits(DEFAULT_TABLE_LIMITS),
-            30000, 500);
-        nosqlHandle.doTableRequest(new TableRequest()
-            .setStatement(CREATE_SCANID_IDX), 30000, 500);
-        nosqlHandle.doTableRequest(new TableRequest()
-            .setStatement(CREATE_LIST_TABLE), 30000, 500);
-        nosqlHandle.doTableRequest(new TableRequest()
-            .setStatement(CREATE_LIST_PK2_IDX), 30000, 500);
-        nosqlHandle.doTableRequest(new TableRequest()
-            .setStatement(CREATE_LISTID_IDX), 30000, 500);
-        nosqlHandle.doTableRequest(new TableRequest()
-            .setStatement(CREATE_HASH_TABLE), 30000, 500);
-        nosqlHandle.doTableRequest(new TableRequest()
-            .setStatement(CREATE_HASHID_IDX), 30000, 500);
-        nosqlHandle.doTableRequest(new TableRequest()
-            .setStatement(CREATE_HSCANID_IDX), 30000, 500);
-
-        if (config.cleanupElemsTablesOnStartup) {
-            cmdHandlers.scheduleElemTablesCleanup(cmdWorkerPool);
-        }
-    }
-
-    public NoSQLRedisServer(String host, int port, NoSQLHandle nosqlHandle) {
-        this.host = host;
-        this.port = port;
-        this.nosqlHandle = nosqlHandle;
+    public NoSQLRedisServer(RedisServerConfig config) {
+        this.config = config;
+        this.nosqlHandle = NoSQLHandleFactory.createNoSQLHandle(
+            config.nosqlConfig);
         
         cmdHandlers = new CommandHandlers(nosqlHandle, config);
         cmdHandlers.init();
@@ -131,16 +96,38 @@ public class NoSQLRedisServer {
             });
     }
 
-    public NoSQLRedisServer(NoSQLHandle nosqlHandle) {
-        this(DEFAULT_HOST, DEFAULT_PORT, nosqlHandle);
+    private void initDB() {
+        nosqlHandle.doTableRequest(new TableRequest()
+                .setStatement(CREATE_MAIN_TABLE)
+                .setTableLimits(config.tableLimits),
+            30000, 500);
+        nosqlHandle.doTableRequest(new TableRequest()
+            .setStatement(CREATE_SCANID_IDX), 30000, 500);
+        nosqlHandle.doTableRequest(new TableRequest()
+            .setStatement(CREATE_LIST_TABLE), 30000, 500);
+        nosqlHandle.doTableRequest(new TableRequest()
+            .setStatement(CREATE_LIST_PK2_IDX), 30000, 500);
+        nosqlHandle.doTableRequest(new TableRequest()
+            .setStatement(CREATE_LISTID_IDX), 30000, 500);
+        nosqlHandle.doTableRequest(new TableRequest()
+            .setStatement(CREATE_HASH_TABLE), 30000, 500);
+        nosqlHandle.doTableRequest(new TableRequest()
+            .setStatement(CREATE_HASHID_IDX), 30000, 500);
+        nosqlHandle.doTableRequest(new TableRequest()
+            .setStatement(CREATE_HSCANID_IDX), 30000, 500);
+
+        if (config.cleanupElemsTablesOnStartup) {
+            cmdHandlers.scheduleElemTablesCleanup(cmdWorkerPool);
+        }
     }
 
-    public void run() throws Exception {
+    private void run() {
         try {
             // Start the server.
-            serverChannel = serverBootstrap.bind(host, port).sync().channel();
+            serverChannel = serverBootstrap.bind(config.host, config.port)
+                .syncUninterruptibly().channel();
             // Wait until the server socket is closed.
-            serverChannel.closeFuture().sync();
+            serverChannel.closeFuture().syncUninterruptibly();
         } finally {
             // Shut down all event loops to terminate all threads.
             serverBootstrap.config().group().shutdownGracefully();
@@ -148,23 +135,107 @@ public class NoSQLRedisServer {
         }
     }
 
-    public void close() throws Exception {
-        serverChannel.close().sync();
-    }
-    
-    public static void main(String[] args) throws Exception {
-        CommandLine cmdLine = new CommandLine(args);
-        NoSQLHandleConfig nosqlConfig = new NoSQLHandleConfig(
-            cmdLine.getEndpoint());
-        if (cmdLine.getCompartment() != null) {
-            nosqlConfig.setDefaultCompartment(cmdLine.getCompartment());
+    private boolean close(long timeoutMillis) {
+        ChannelFuture f = serverChannel.close();
+        if (timeoutMillis == 0) {
+            f.syncUninterruptibly();
+            return true;
         }
-        nosqlConfig.setAuthorizationProvider(cmdLine.getAuthProvider());
-        NoSQLHandle nosqlHandle = NoSQLHandleFactory.createNoSQLHandle(
-            nosqlConfig);
 
-        NoSQLRedisServer s = new NoSQLRedisServer(nosqlHandle);
-        s.run();
+        if (!f.awaitUninterruptibly(timeoutMillis)) {
+            return false;
+        }
+
+        if (!f.isSuccess()) {
+            Throwable t = f.cause();
+            throw new RuntimeException(t);
+        }
+
+        return true;
+    }
+
+    public synchronized boolean isRunning() {
+        return svrRun != null && svrRunEx == null;
+    }
+
+    public synchronized Exception getException() {
+        return svrRunEx;
+    }
+
+    public synchronized void start() {
+        if (isRunning()) {
+            throw new IllegalStateException(
+                "Redis proxy server is already running");
+        }
+
+        svrRunEx = null;
+        svrRun = new Thread(() -> {
+            try {
+                run();
+            } catch (Exception ex) {
+                svrRunEx = ex;
+                // log the error
+            }
+        });
+
+        svrRun.start();
+    }
+
+    public synchronized boolean stop(long timeoutMillis)
+        throws InterruptedException {
+        if (!isRunning()) {
+            throw new IllegalStateException(
+                "Redis proxy server is not running");
+        }
+
+        if (timeoutMillis == 0) {
+            close(0);
+            svrRun.join();
+            svrRunEx = null;
+            return true;
+        }
+
+        long startTime = System.currentTimeMillis();
+        if (!close(timeoutMillis)) {
+            return false;
+        }
+
+        svrRun.join(timeoutMillis - (System.currentTimeMillis() - startTime));
+        if (svrRun.isAlive()) {
+            return false;
+        }
+
+        svrRun = null;
+        return true;
+    }
+
+    public synchronized void stop() throws InterruptedException {
+        stop(0);
+    }
+
+    public static void main(String[] args) {
+        try {
+            RedisServerConfig config = null;
+            try {
+                CommandLine cmdLine = new CommandLine(args);
+                config = cmdLine.getRedisServerConfig();
+            } catch (IllegalArgumentException ex) {
+                System.err.println(ex.getMessage());
+                System.err.println(CommandLine.usage());
+                System.exit(1);
+            }
+
+            NoSQLRedisServer svr = new NoSQLRedisServer(config);
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                svr.close(DEFAULT_SHUTDOWN_TIMEOUT_MILLIS);
+            }));
+
+            svr.run();
+        } catch (Throwable ex) {
+            System.err.println("Redis Proxy Server exited with error:");
+            ex.printStackTrace(System.err);
+            System.exit(1);
+        }
     }
 
 }

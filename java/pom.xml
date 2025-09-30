@@ -9,12 +9,12 @@
     <dependency>
         <groupId>com.oracle.nosql.sdk</groupId>
         <artifactId>nosqldriver</artifactId>
-        <version>5.4.15</version>
+        <version>5.4.17</version>
     </dependency>
     <dependency>
         <groupId>io.netty</groupId>
         <artifactId>netty-all</artifactId>
-        <version>4.1.108.Final</version>
+        <version>4.1.118.Final</version>
     </dependency>
     <dependency>
         <groupId>org.antlr</groupId>
