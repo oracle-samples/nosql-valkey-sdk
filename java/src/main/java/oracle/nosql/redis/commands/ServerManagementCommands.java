@@ -3,7 +3,9 @@ package oracle.nosql.redis.commands;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
+import java.util.function.Predicate;
 
+import io.netty.channel.group.ChannelGroup;
 import io.netty.handler.codec.redis.ArrayRedisMessage;
 import io.netty.handler.codec.redis.FullBulkStringRedisMessage;
 import io.netty.handler.codec.redis.IntegerRedisMessage;
@@ -29,8 +31,9 @@ public class ServerManagementCommands extends CommandsBase {
     private static final String SQL_DEL_ALL_HASH_ELEMS =
         "DELETE FROM redis.hashes";
 
-    private static final String INFO_SERVER = "Server";
-    private static final String INFO_PERSISTENCE = "Persistence";
+    private static final String INFO_SERVER = "server";
+    private static final String INFO_PERSISTENCE = "persistence";
+    private static final String INFO_CLIENTS = "clients";
     private static final String[] INFO_PERSISTENCE_DATA = {
         "rdb_bgsave_in_progress:0"
     };
@@ -40,7 +43,8 @@ public class ServerManagementCommands extends CommandsBase {
 
     private static final String[] INFO_ALL_SECTS = {
         INFO_SERVER,
-        INFO_PERSISTENCE
+        INFO_PERSISTENCE,
+        INFO_CLIENTS
     };
 
     public static final String CMD_FLUSHDB = "FLUSHDB";
@@ -49,9 +53,22 @@ public class ServerManagementCommands extends CommandsBase {
     public static final String CMD_CONFIG = "CONFIG";
     public static final String CMD_INFO = "INFO";
 
+    private final ChannelGroup clientChannels;
+
+    private int countClients(Predicate<RedisClientContext> pred) {
+        return clientChannels.stream().mapToInt(channel -> {
+            RedisClientContext cli =
+                channel.attr(RedisClientContext.ATTR_KEY).get();
+            assert cli != null;
+            return pred.test(cli) ? 1 : 0;
+        }).sum();
+    }
+
     public ServerManagementCommands(NoSQLHandle nosqlHandle,
-        RedisServerConfig config, PreparedStatementCache pstmtCache) {
+        RedisServerConfig config, PreparedStatementCache pstmtCache,
+        ChannelGroup clientChannels) {
         super(nosqlHandle, config, pstmtCache);
+        this.clientChannels = clientChannels;
     }
 
     public void registerCommands(HashMap<String, CommandHandler> cmdMap) {
@@ -117,6 +134,7 @@ public class ServerManagementCommands extends CommandsBase {
         // Currently the following is used to run existing Redis tests.
         StringBuilder sb = null;
         for(String sect: sects) {
+            sect = sect.toLowerCase();
             String[] data = null;
             switch (sect) {
                 case INFO_SERVER:
@@ -124,6 +142,13 @@ public class ServerManagementCommands extends CommandsBase {
                     break;
                 case INFO_PERSISTENCE:
                     data = INFO_PERSISTENCE_DATA;
+                    break;
+                case INFO_CLIENTS:
+                    data = new String[] {
+                        "connected_clients:" + clientChannels.size(),
+                        "blocked_clients:" +
+                        countClients(cli -> cli.isBlocked())
+                    };
                     break;
                 default:
                     break;
@@ -140,6 +165,10 @@ public class ServerManagementCommands extends CommandsBase {
                 sb.append("\r\n");
             }
 
+            assert !sect.isEmpty();
+            // Section header: "# <Section-name>" (starts with upper case)
+            sb.append("# ").append(Character.toUpperCase(sect.charAt(0)))
+                .append(sect.substring(1)).append("\r\n");
             for(String prop: data) {
                 sb.append(prop).append("\r\n");
             }

@@ -68,18 +68,26 @@ public class ListRead extends ListCommandsBase {
             matches = count != 0 ?
                 new ArrayList<>((int)count) : new ArrayList<>();
             this.isDesc = isDesc;
-            this.rank = rank;
+            this.rank = isDesc ? -rank : rank;
         }
 
         // Returns true if we have count matches, otherwise false.
         boolean applyRow(MapValue row) throws RedisResponseException {
-            if (isDesc && len == -1) {
-                len = valToLen(row);
+            if (isDesc) {
+                if (len == -1) {
+                    len = valToLen(row);
+                }
+                if (pos >= len) {
+                    throw RedisResponseException.corrupt(
+                        "Invalid list length: " + len);
+                }
             }
 
             if (elemVal.equals(rowToElemVal(row))) {
                 if (rank == 1) {
-                    matches.add(pos);
+                    // For descending order, we are moving backwards, so we
+                    // have to reverse the match position.
+                    matches.add(isDesc ? len - 1 - pos : pos);
                 } else {
                     rank--;
                 }
@@ -118,9 +126,6 @@ public class ListRead extends ListCommandsBase {
     private RedisMessage doLPos(RedisKeyInfo keyInfo, ByteBuf val, long rank,
         int count, long maxLen) throws RedisResponseException {
         boolean isDesc = rank < 0;
-        if (isDesc) {
-            rank = -rank;
-        }
         boolean hasCount = count != -1;
         if (!hasCount) {
             count = 1;
@@ -141,13 +146,6 @@ public class ListRead extends ListCommandsBase {
             return hasCount ?
                 ArrayRedisMessage.EMPTY_INSTANCE :
                 FullBulkStringRedisMessage.NULL_INSTANCE;
-        }
-
-        if (isDesc) {
-            long len = lpState.getLen();
-            assert len > 0;
-            // reverse the indexes to count from the start of the list
-            Collections.reverse(matches);
         }
 
         if (hasCount) {
@@ -273,7 +271,15 @@ public class ListRead extends ListCommandsBase {
                 if (rank == 0) {
                     throw new RedisResponseException(ErrorPrefix.ERR,
                         "RANK can't be zero: use 1 to start from the first " +
-                        "match, 2 from the second, ...");
+                        "match, 2 from the second ... or use negative to " +
+                        "start from the end of the list");
+                }
+                // To conform to Redis behavior.
+                if (rank == Long.MIN_VALUE) {
+                    throw new RedisResponseException(ErrorPrefix.ERR,
+                        "value is out of range, value must between " +
+                        String.format("%d and %d", Long.MIN_VALUE + 1,
+                            Long.MAX_VALUE));
                 }
             } else if (arg.equalsIgnoreCase("COUNT")) {
                 count = Utils.byteBufToLong(cmd.args[i + 1]);

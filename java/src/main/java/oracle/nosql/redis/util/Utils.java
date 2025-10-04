@@ -7,6 +7,8 @@
 
 package oracle.nosql.redis.util;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.security.MessageDigest;
 import java.util.concurrent.TimeUnit;
 
@@ -19,7 +21,6 @@ import oracle.nosql.driver.TimeToLive;
 import oracle.nosql.driver.values.ArrayValue;
 import oracle.nosql.driver.values.FieldValue;
 import oracle.nosql.driver.values.MapValue;
-import oracle.nosql.driver.values.StringValue;
 import oracle.nosql.redis.RedisResponseException;
 import oracle.nosql.redis.RedisResponseException.ErrorPrefix;
 
@@ -106,11 +107,65 @@ public class Utils {
     // avoid errors.
     private static final int TTL_MAX_HOURS = Integer.MAX_VALUE / 2;
     private static final int TTL_MAX_DAYS = TTL_MAX_HOURS / 24;
+    private static final int REDIS_FLOAT_MAX_SCALE = 17;
+
+    private static final String ERR_INVALID_FLOAT =
+        "value is not a valid float";
 
     private static RedisResponseException missingOrInvalidField(String name,
         String type) {
         return RedisResponseException.corrupt(String.format(
             "Missing or invalid %s field %s", type, name));
+    }
+
+    // For the results represented in INCRBYFLOAT commands: must not use
+    // exponent, also must have no more than 17 digits after decimal point and
+    // must not have trailing zeroes.
+    private static String redisFloatToString(double d) {
+        // INCRBYFLOAT does not allow infinity/NaN, but we check here for
+        // completeness.
+        if (!Double.isFinite(d)) {
+            return Double.toString(d);
+        }
+        BigDecimal bd = BigDecimal.valueOf(d);
+        // Note that the below check is needed for very small values, e.g.
+        // 1e-100, which will result in large number of digits after decimal
+        // point.
+        if (bd.scale() > REDIS_FLOAT_MAX_SCALE) {
+            bd = bd.setScale(REDIS_FLOAT_MAX_SCALE, RoundingMode.HALF_UP);
+        }
+        return bd.stripTrailingZeros().toPlainString();
+    }
+
+    private static double parseRedisFloat(String val)
+        throws RedisResponseException{
+        // Unlike Double.parseDouble(), Redis does not allow numeric value
+        // surrounded by whitespace or control chars < \u0020.
+        // It seems that Long.parseLong() already does not allow whitespace so
+        // we don't need to modify it.
+        if (val.isEmpty() || val.charAt(0) <= 0x20 ||
+            val.charAt(val.length() - 1) <= 0x20) {
+            throw new RedisResponseException(ErrorPrefix.ERR,
+                ERR_INVALID_FLOAT);
+        }
+        try {
+            return Double.parseDouble(val);
+        } catch(NumberFormatException ex) {
+            // Redis parses values inf, +inf, -inf, +infinity, -infinity,
+            // ignoring the case, as corresponding +/- infinity.
+            if (val.equalsIgnoreCase("inf") ||
+                val.equalsIgnoreCase("infinity") ||
+                val.equalsIgnoreCase("+inf") ||
+                val.equalsIgnoreCase("+infinity")) {
+                return Double.POSITIVE_INFINITY;
+            }
+            if (val.equalsIgnoreCase("-inf") ||
+                val.equalsIgnoreCase("-infinity")) {
+                return Double.NEGATIVE_INFINITY;
+            }
+            throw new RedisResponseException(ErrorPrefix.ERR,
+                ERR_INVALID_FLOAT);
+        }
     }
 
     public static String byteBufToString(ByteBuf buf)
@@ -146,17 +201,26 @@ public class Utils {
 
     public static double byteBufToDouble(ByteBuf buf)
         throws RedisResponseException {
-        String str = byteBufToString(buf);
-        try {
-            return Double.parseDouble(str);
-        } catch(NumberFormatException ex) {
-            throw new RedisResponseException(ErrorPrefix.ERR,
-                "value is not a valid float");
-        }
+        return parseRedisFloat(byteBufToString(buf));
     }
 
     public static ByteBuf doubleToByteBuf(double val) {
-        return stringToByteBuf(Double.toString(val));
+        return stringToByteBuf(redisFloatToString(val));
+    }
+
+    // Used by INCRBYFLOAT and HINCRBYFLOAT commands.
+    public static ByteBuf incrByFloat(ByteBuf val, double delta)
+        throws RedisResponseException {
+        // To conform to Redis error response.
+        if (Double.isNaN(delta)) {
+            throw new RedisResponseException(ERR_INVALID_FLOAT);
+        }
+        double res = (val != null ? byteBufToDouble(val) : 0) + delta;
+        if (!Double.isFinite(res)) {
+            throw new RedisResponseException(ErrorPrefix.ERR,
+                "increment would produce NaN or Infinity");
+        }
+        return doubleToByteBuf(res);
     }
 
     public static <T> T lambdaUnchecked(

@@ -48,7 +48,7 @@ set ::tls_module 0
 set ::stack_logging 0
 set ::verbose 0
 set ::quiet 0
-set ::denytags { needs:debug needs:info needs:client needs:dump-restore not-implemented not-supported not-applicable cluster:skip }
+set ::denytags { needs:debug needs:info needs:client needs:dump-restore not-implemented not-supported not-applicable cluster:skip resp3 }
 set ::skiptests {}
 set ::skipunits {}
 set ::no_latency 0

@@ -10,6 +10,8 @@ package oracle.nosql.redis;
 import java.util.HashMap;
 import java.util.concurrent.ExecutorService;
 
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.group.ChannelGroup;
 import io.netty.handler.codec.redis.RedisMessage;
 import oracle.nosql.driver.NoSQLHandle;
 import oracle.nosql.redis.commands.*;
@@ -27,6 +29,7 @@ public class CommandHandlers {
     private final HashMap<String, CommandHandler> cmdMap = new HashMap<>();
     private final NoSQLHandle nosqlHandle;
     private final RedisServerConfig config;
+    private final ChannelGroup clientChannels;
     private final PreparedStatementCache pstmtCache;
 
     private ConnectionCommands connCommands;
@@ -37,9 +40,11 @@ public class CommandHandlers {
     private HashCommands hashCommands;
     private JSONCommands jsonCommands;
     
-    CommandHandlers(NoSQLHandle nosqlHandle, RedisServerConfig config) {
+    CommandHandlers(NoSQLHandle nosqlHandle, RedisServerConfig config,
+        ChannelGroup clientChannels) {
         this.nosqlHandle = nosqlHandle;
         this.config = config;
+        this.clientChannels = clientChannels;
         pstmtCache = new PreparedStatementCache(nosqlHandle);        
     }
 
@@ -47,7 +52,7 @@ public class CommandHandlers {
         connCommands = new ConnectionCommands(nosqlHandle, config, pstmtCache);
         genericCommands = new GenericCommands(nosqlHandle, pstmtCache, this);
         serverManagementCommands = new ServerManagementCommands(nosqlHandle,
-            config, pstmtCache);
+            config, pstmtCache, clientChannels);
         stringCommands = new StringCommands(nosqlHandle, config, pstmtCache);
         listCommands = new ListCommands(nosqlHandle, config, pstmtCache);
         hashCommands = new HashCommands(nosqlHandle, config, pstmtCache);

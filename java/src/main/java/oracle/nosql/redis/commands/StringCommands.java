@@ -161,6 +161,10 @@ public class StringCommands extends CommandsBase {
                 (setOpt == SetOpt.XX && !oldVal.isValid())) {
                 return toGetOldVal ? valInfoToResp(oldVal) : failureReply;
             }
+            if (toGetOldVal && oldVal.isValid() &&
+                !getValueType(oldVal.val).equals(TYPE_STRING)) {
+                throw RedisResponseException.wrongType();
+            }
             RedisValueInfo newVal = RedisValueInfo.create(
                 makeStringValue(valBuf), null, exp);
             doChkSet(keyInfo, newVal, oldVal);
@@ -203,17 +207,28 @@ public class StringCommands extends CommandsBase {
         });
     }
 
-    private RedisMessage doIncrBy(ByteBuf keyBuf, final long arg)
+    private RedisMessage doIncrBy(ByteBuf keyBuf, long arg, boolean toAdd)
         throws RedisResponseException {
         // It is in principle possible to avoid repeating the conversion
         // between long and ByteBuf in getResult by making getNewVal,
-        // doGetSEtString and doGetSet generic and providing additional
+        // doGetSetString and doGetSet generic and providing additional
         // conversion interface args, however this will add more complexity to
         // doGetSet, so may not be worth it.
         return doGetSetString(keyBuf,
-            (val) -> Utils.longToByteBuf((val != null ?
-                Utils.byteBufToLong(val) : 0) + arg),
-                val -> new IntegerRedisMessage(Utils.byteBufToLong(val)));
+            (val) -> {
+                long longVal = val != null ? Utils.byteBufToLong(val) : 0;
+                long res;
+                try {
+                    res = toAdd ?
+                        Math.addExact(longVal, arg) :
+                        Math.subtractExact(longVal, arg);
+                } catch (ArithmeticException e) {
+                    throw new RedisResponseException(ErrorPrefix.ERR,
+                        "increment or decrement would overflow");
+                }
+                return Utils.longToByteBuf(res);
+            },
+            val -> new IntegerRedisMessage(Utils.byteBufToLong(val)));
     }
 
     private RedisMessage handleMSet(RedisClientContext client, RawCommand cmd,
@@ -382,6 +397,17 @@ public class StringCommands extends CommandsBase {
         long start = Utils.byteBufToLong(cmd.args[1]);
         long end = Utils.byteBufToLong(cmd.args[2]);
         int len = buf.readableBytes();
+
+        // Supposedly, when indexes are too negative that they are out of
+        // range (negative even after adding the value length), they are
+        // converted to 0, so if this is the case for both start and end, the
+        // first byte of the value will be returned. However, the observed
+        // behavior is that when both indexes are negative and start > end,
+        // empty string is returned. This does not make sense to me, but we
+        // have to comply with the Redis behavior in this case.
+        if (start < 0 && start > end) {
+            return FullBulkStringRedisMessage.EMPTY_INSTANCE;
+        }
         
         if (start < 0) {
             start = Math.max(len + start, 0);
@@ -489,9 +515,13 @@ public class StringCommands extends CommandsBase {
         chkExactNumArgs(cmd, 3);
         
         final long off = Utils.byteBufToLong(cmd.args[1]);
-        if (off < 0 || off > MAX_STR_LEN) {
+        if (off < 0) {
             throw new RedisResponseException(ErrorPrefix.ERR,
                 "offset is out of range");
+        }
+        if (off > MAX_STR_LEN) {
+            throw new RedisResponseException(ErrorPrefix.ERR,
+                "string exceeds maximum allowed size");
         }
         
         final ByteBuf rangeVal = cmd.args[2];
@@ -532,36 +562,34 @@ public class StringCommands extends CommandsBase {
     public RedisMessage handleIncr(RedisClientContext client,
         RawCommand cmd) throws RedisResponseException {
         chkExactNumArgs(cmd, 1);
-        return doIncrBy(cmd.args[0], 1);
+        return doIncrBy(cmd.args[0], 1, true);
     }
 
     public RedisMessage handleIncrBy(RedisClientContext client,
         RawCommand cmd) throws RedisResponseException {
         chkExactNumArgs(cmd, 2);
         final long arg = Utils.byteBufToLong(cmd.args[1]);
-        return doIncrBy(cmd.args[0], arg);
+        return doIncrBy(cmd.args[0], arg, true);
     }
 
     public RedisMessage handleDecr(RedisClientContext client,
         RawCommand cmd) throws RedisResponseException {
         chkExactNumArgs(cmd, 1);
-        return doIncrBy(cmd.args[0], -1);
+        return doIncrBy(cmd.args[0], 1, false);
     }
 
     public RedisMessage handleDecrBy(RedisClientContext client,
     RawCommand cmd) throws RedisResponseException {
         chkExactNumArgs(cmd, 2);
         final long arg = Utils.byteBufToLong(cmd.args[1]);
-        return doIncrBy(cmd.args[0], -arg);
+        return doIncrBy(cmd.args[0], arg, false);
     }
 
     public RedisMessage handleIncrByFloat(RedisClientContext client,
     RawCommand cmd) throws RedisResponseException {
         chkExactNumArgs(cmd, 2);
         final double arg = Utils.byteBufToDouble(cmd.args[1]);
-        return doGetSetString(cmd.args[0],
-            (val) -> Utils.doubleToByteBuf(
-                (val != null ? Utils.byteBufToDouble(val) : 0) + arg),
+        return doGetSetString(cmd.args[0], val -> Utils.incrByFloat(val, arg),
             (val) -> new FullBulkStringRedisMessage(val));
     }
 

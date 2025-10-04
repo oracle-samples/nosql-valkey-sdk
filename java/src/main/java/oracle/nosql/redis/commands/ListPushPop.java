@@ -208,14 +208,18 @@ public class ListPushPop extends ListCommandsBase {
             // Mimics the behavior observed with Redis server when count = 0.
             if (cnt == 0) {
                 return doLLen(keyInfo) == 0 ?
-                    FullBulkStringRedisMessage.NULL_INSTANCE :
+                    ArrayRedisMessage.NULL_INSTANCE :
                     ArrayRedisMessage.EMPTY_INSTANCE;
             }
 
             List<RedisMessage> res = doLRPop(keyInfo, cnt == -1 ? 1 : cnt,
                 isLeft);
             if (res == null) {
-                return FullBulkStringRedisMessage.NULL_INSTANCE;
+                // Mimics the observed behavior that array null instance is
+                // returned if count is specified.
+                return cnt == -1 ?
+                    FullBulkStringRedisMessage.NULL_INSTANCE :
+                    ArrayRedisMessage.NULL_INSTANCE;
             }
             
             assert !res.isEmpty();
@@ -243,7 +247,7 @@ public class ListPushPop extends ListCommandsBase {
 
             return !allRes.isEmpty() ?
                 new ArrayRedisMessage(allRes) :
-                FullBulkStringRedisMessage.NULL_INSTANCE;
+                ArrayRedisMessage.NULL_INSTANCE;
         }
     }
 
@@ -272,8 +276,9 @@ public class ListPushPop extends ListCommandsBase {
 
         for(int i = 0; i < keyCnt; i++) {
             ByteBuf keyBuf = keys[i + keyOff];
-            RedisMessage res = handleLRPop(client, keyBuf, (int)cnt, isLeft);
-            if (res != FullBulkStringRedisMessage.NULL_INSTANCE) {
+            RedisMessage res = handleLRPop(client, keyBuf, cnt, isLeft);
+            if (res != FullBulkStringRedisMessage.NULL_INSTANCE &&
+                res != ArrayRedisMessage.NULL_INSTANCE) {
                 assert res instanceof ArrayRedisMessage;
                 return new ArrayRedisMessage(Arrays.asList(
                     new FullBulkStringRedisMessage(keyBuf.retain()), res));
@@ -334,6 +339,7 @@ public class ListPushPop extends ListCommandsBase {
     // We do exponential backoff until delay reaches MAX_DELAY_MS, then we
     // retry with constant delay until timeout expires.
     private RedisMessage doBlockingOp(
+        RedisClientContext client,
         ThrowingNoArgFunction<RedisMessage, RedisResponseException> op,
         double timeout) throws RedisResponseException {
         if (timeout < 0) {
@@ -348,29 +354,34 @@ public class ListPushPop extends ListCommandsBase {
             System.currentTimeMillis() + (long)Math.ceil(timeout * 1000) :
             Long.MAX_VALUE;
 
-        while(true) {
-            RedisMessage res = doWithRetries(op::apply);
-            if (res != FullBulkStringRedisMessage.NULL_INSTANCE) {
-                return res;
-            }
+        client.setBlocked(true);
+        try {
+            while (true) {
+                RedisMessage res = doWithRetries(op::apply);
+                if (res != FullBulkStringRedisMessage.NULL_INSTANCE) {
+                    return res;
+                }
 
-            long remaining = expTime - System.currentTimeMillis();
-            if (remaining < MIN_DELAY_MS) {
-                return FullBulkStringRedisMessage.NULL_INSTANCE;
-            }
+                long remaining = expTime - System.currentTimeMillis();
+                if (remaining < MIN_DELAY_MS) {
+                    return FullBulkStringRedisMessage.NULL_INSTANCE;
+                }
 
-            if (delay < MAX_DELAY_MS) {
-                delay = Math.min(MAX_DELAY_MS, delay * 2 +
-                    (int)(Math.random() * MAX_ADD_RND_DELAY_MS));
-            }
+                if (delay < MAX_DELAY_MS) {
+                    delay = Math.min(MAX_DELAY_MS, delay * 2 +
+                        (int) (Math.random() * MAX_ADD_RND_DELAY_MS));
+                }
 
-            delay = Math.min(delay, remaining);
+                delay = Math.min(delay, remaining);
 
-            try {
-                Thread.sleep(delay);
-            } catch(InterruptedException ex) {
-                return FullBulkStringRedisMessage.NULL_INSTANCE;
+                try {
+                    Thread.sleep(delay);
+                } catch (InterruptedException ex) {
+                    return FullBulkStringRedisMessage.NULL_INSTANCE;
+                }
             }
+        } finally {
+            client.setBlocked(false);
         }
     }
 
@@ -379,8 +390,9 @@ public class ListPushPop extends ListCommandsBase {
         chkMinNumArgs(cmd, 2);
         int keyCnt = cmd.args.length - 1;
         double timeout = Utils.byteBufToDouble(cmd.args[cmd.args.length - 1]);
-        return doBlockingOp(() -> doMultiKeyPop(client, cmd.args, 0, keyCnt,
-            1, isLeft), timeout);
+        return doBlockingOp(client,
+            () -> doMultiKeyPop(client, cmd.args, 0, keyCnt, 1, isLeft),
+            timeout);
     }
 
     private RedisMessage handleLMPop(RedisClientContext client,
@@ -429,12 +441,11 @@ public class ListPushPop extends ListCommandsBase {
 
         final int elemCnt = (int)cnt;
         return isBlocking ?
-            doBlockingOp(() -> doMultiKeyPop(client, cmd.args, 2,
+            doBlockingOp(client, () -> doMultiKeyPop(client, cmd.args, 2,
                 (int)numKeys, elemCnt, isLeft), timeout) :
             doMultiKeyPop(client, cmd.args, 1, (int)numKeys, (int)cnt,
                 isLeft);
     }
-
 
     private RedisMessage handleLMove(RedisClientContext client,
         ByteBuf srcKeyBuf, ByteBuf dstKeyBuf, boolean isSrcLeft,
@@ -444,7 +455,7 @@ public class ListPushPop extends ListCommandsBase {
 
         if (timeoutBuf != null) {
             double timeout = Utils.byteBufToDouble(timeoutBuf);
-            return doBlockingOp(() -> doLMove(srcKeyInfo, dstKeyInfo,
+            return doBlockingOp(client, () -> doLMove(srcKeyInfo, dstKeyInfo,
                 isSrcLeft, isDstLeft), timeout);
         }
 

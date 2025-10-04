@@ -12,6 +12,8 @@ import java.util.concurrent.Executors;
 
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.*;
+import io.netty.channel.group.ChannelGroup;
+import io.netty.channel.group.DefaultChannelGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
@@ -21,6 +23,7 @@ import io.netty.handler.codec.redis.RedisDecoder;
 import io.netty.handler.codec.redis.RedisEncoder;
 import io.netty.handler.logging.LogLevel;
 import io.netty.handler.logging.LoggingHandler;
+import io.netty.util.concurrent.GlobalEventExecutor;
 import oracle.nosql.driver.NoSQLHandle;
 import oracle.nosql.driver.NoSQLHandleConfig;
 import oracle.nosql.driver.NoSQLHandleFactory;
@@ -55,6 +58,8 @@ public class NoSQLRedisServer {
     
     private final ServerBootstrap serverBootstrap = new ServerBootstrap();
     private Channel serverChannel;
+    private ChannelGroup clientChannels =
+        new DefaultChannelGroup(GlobalEventExecutor.INSTANCE);
     private final RedisServerConfig config;
     private final NoSQLHandle nosqlHandle;
     private final CommandHandlers cmdHandlers;
@@ -68,7 +73,7 @@ public class NoSQLRedisServer {
         this.nosqlHandle = NoSQLHandleFactory.createNoSQLHandle(
             config.nosqlConfig);
         
-        cmdHandlers = new CommandHandlers(nosqlHandle, config);
+        cmdHandlers = new CommandHandlers(nosqlHandle, config, clientChannels);
         cmdHandlers.init();
 
         initDB();
@@ -91,7 +96,7 @@ public class NoSQLRedisServer {
                     p.addLast(new RedisArrayAggregator());
                     p.addLast(new RedisEncoder());
                     p.addLast(new RedisServerHandler(cmdHandlers,
-                        cmdWorkerPool));
+                        cmdWorkerPool, clientChannels));
                 }
             });
     }

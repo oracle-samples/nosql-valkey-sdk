@@ -471,9 +471,9 @@ public class HashUpdate extends HashCommandsBase {
         chkExactNumArgs(cmd, 3);
         final double arg = Utils.byteBufToDouble(cmd.args[2]);
         return doUpdateVal(makeRedisKeyInfo(cmd.args[0]),
-            makeRedisKeyInfo(cmd.args[1]), oldVal -> Utils.doubleToByteBuf(
-                (oldVal != null ? Utils.byteBufToDouble(oldVal) : 0) + arg),
-                newVal -> new FullBulkStringRedisMessage(newVal));
+            makeRedisKeyInfo(cmd.args[1]),
+            oldVal -> Utils.incrByFloat(oldVal, arg),
+            newVal -> new FullBulkStringRedisMessage(newVal));
     }
 
     public RedisMessage handleHSetNX(RedisClientContext client,

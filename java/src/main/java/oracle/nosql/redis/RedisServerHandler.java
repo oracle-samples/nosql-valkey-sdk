@@ -12,21 +12,24 @@ import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
+import io.netty.channel.group.ChannelGroup;
 import io.netty.handler.codec.redis.ErrorRedisMessage;
 import io.netty.handler.codec.redis.RedisMessage;
 import io.netty.util.ReferenceCountUtil;
 import oracle.nosql.redis.CommandHandlers.CommandHandler;
 
 class RedisServerHandler extends SimpleChannelInboundHandler<RedisMessage> {
-    
+
     private final CommandHandlers handlers;
     private final ExecutorService cmdWorkerPool;
+    private final ChannelGroup clientChannels;
     private final RedisClientContext client;
 
     RedisServerHandler(CommandHandlers handlers,
-        ExecutorService cmdWorkerPool) {
+        ExecutorService cmdWorkerPool, ChannelGroup clientChannels) {
         this.handlers = handlers;
         this.cmdWorkerPool = cmdWorkerPool;
+        this.clientChannels = clientChannels;
         this.client = new RedisClientContext();
     }
 
@@ -80,9 +83,17 @@ class RedisServerHandler extends SimpleChannelInboundHandler<RedisMessage> {
     }
 
     @Override
-    public void channelInactive(ChannelHandlerContext ctx) {
-        // This is called when the channel is closed.
-        // Todo: any necessary cleanup on RedisClientContext when implemented.
+    public void channelActive(ChannelHandlerContext ctx) throws Exception {
+        ctx.channel().attr(RedisClientContext.ATTR_KEY).set(client);
+        clientChannels.add(ctx.channel());
+        super.channelActive(ctx);
+    }
+
+    @Override
+    public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+        ctx.channel().attr(RedisClientContext.ATTR_KEY).set(null);
+        clientChannels.remove(ctx.channel());
+        super.channelInactive(ctx);
     }
     
 }

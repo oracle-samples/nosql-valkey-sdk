@@ -7,6 +7,18 @@
 
 package oracle.nosql.redis;
 
+import io.netty.util.AttributeKey;
+
 public class RedisClientContext {
-	
+
+    public static final AttributeKey<RedisClientContext> ATTR_KEY =
+        AttributeKey.valueOf("oracle.nosql.redis.RedisClientContext");
+
+    private volatile boolean isBlocked;
+
+    public boolean isBlocked() { return isBlocked; }
+
+    public void setBlocked(boolean isBlocked) {
+        this.isBlocked = isBlocked;
+    }
 }
