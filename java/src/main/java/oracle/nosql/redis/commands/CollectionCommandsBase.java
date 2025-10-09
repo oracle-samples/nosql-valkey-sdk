@@ -84,8 +84,10 @@ abstract class CollectionCommandsBase extends CommandsBase {
         static String getCid(MapValue val) throws RedisResponseException {
             FieldValue fldCid = val.get(FLD_CID);
             if (fldCid == null || !fldCid.isString()) {
-                throw RedisResponseException.corrupt(
-                    "Missing or invalid value cid field");
+                throw isCollectionType(getValueType(val)) ?
+                    RedisResponseException.corrupt(
+                        "Missing or invalid value cid field") :
+                    RedisResponseException.wrongType();
             }
     
             String cid = fldCid.getString();
@@ -109,6 +111,8 @@ abstract class CollectionCommandsBase extends CommandsBase {
         final V data;
 
         CollectionValueResult(RedisValueInfo val, V data) {
+            assert val != null;
+            assert data != null || !val.isValid();
             this.val = val;
             this.data = data;
         }
@@ -142,6 +146,13 @@ abstract class CollectionCommandsBase extends CommandsBase {
     CollectionCommandsBase(NoSQLHandle nosqlHandle,
         RedisServerConfig config, PreparedStatementCache pstmtCache) {
         super(nosqlHandle, config, pstmtCache);
+    }
+
+    // So far, we only use this for error handling.
+    static boolean isCollectionType(String type) {
+        return type.equals(TYPE_LIST) || type.equals(TYPE_HASH) ||
+            type.equals(TYPE_SET) || type.equals(TYPE_ZSET) ||
+            type.equals(TYPE_STREAM);
     }
 
     // Make put request for the collection header.

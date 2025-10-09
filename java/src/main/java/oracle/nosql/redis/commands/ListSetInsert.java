@@ -413,6 +413,7 @@ public class ListSetInsert extends ListCommandsBase {
                 queryListElems(keyInfo, SQL_LINSERT_PIVOT, true,
                     new StringValue(makeStrVal(pivot)));
 
+            // See comments in queryListElems().
             if (!cvr.isValid()) {
                 return InsertResult.LIST_NOT_FOUND;
             }
@@ -421,11 +422,14 @@ public class ListSetInsert extends ListCommandsBase {
                 return InsertResult.PIVOT_NOT_FOUND;
             }
 
+            // Note that it is possible that the list would be changed between
+            // these two queries, or even deleted (and something else created
+            // under the same key). However, we condition any updates on the
+            // list row version returned by the first query, so if that
+            // happens, no updates will be performed.
             List<MapValue> rows = doQuery(keyInfo,
                 isBefore ? SQL_LINSERT_BEFORE : SQL_LINSERT_AFTER,
                 new NumberValue(cvr.data.elemIds.get(0)));
-            // There should be at most 2 elements - the pivot and the
-            // element before/after if exists.
             if (!rows.isEmpty()) {
                 chkSingleResult(rows);
                 cvr.data.elemIds.add(rowToElemId(rows.get(0)));
@@ -436,13 +440,11 @@ public class ListSetInsert extends ListCommandsBase {
 
             header.len++;
 
-            if (lvi.elemIds.isEmpty()) {
-                return InsertResult.PIVOT_NOT_FOUND; // pivot is not found
-            }
-
             BigDecimal pivotId = lvi.elemIds.get(0);
             BigDecimal newId;
 
+            // There should be at most 2 elements - the pivot and the
+            // element before/after if exists.
             if (lvi.elemIds.size() == 1) {
                 // Inserting at either end of the list, same as for
                 // LPUSH/RPUSH.
@@ -494,31 +496,26 @@ public class ListSetInsert extends ListCommandsBase {
         RedisKeyInfo keyInfo = makeRedisKeyInfo(cmd.args[0]);
 
         return doWithRetries(() -> {
-            List<MapValue> rows = doQuery(keyInfo,
-                isAsc ? SQL_LSET : SQL_LSET_DESC, new LongValue(idx));
+            CollectionValueResult<ListValueInfo> cvr =
+                queryListElems(keyInfo, isAsc ? SQL_LSET : SQL_LSET_DESC, true,
+                    new LongValue(idx));
 
-            if (rows.isEmpty()) {
+            // See comments in queryListElems().
+            if (!cvr.isValid()) {
+                throw RedisResponseException.noSuchKey();
+            }
+
+            if (cvr.data.elemIds.isEmpty()) {
                 throw new RedisResponseException(ErrorPrefix.ERR,
                     "index out of range");
             }
 
-            chkSingleResult(rows);
-
-            MapValue row0 = rows.get(0);
-            RedisValueInfo val = RedisValueInfo.create(rowToValue(row0),
-                rowToVer(row0), getExpTime(rowToKey(row0)));
-            // This may happen if the list has expired.
-            if (!val.isValid()) {
-                throw new RedisResponseException(ErrorPrefix.ERR,
-                    "index out of range");
-            }
-
-            ListValueInfo lvi = new ListValueInfo(val, rows);
+            ListValueInfo lvi = cvr.data;
             ListHeader header = lvi.header;
             assert(header != null);
 
             WriteMultipleRequest wmReq = new WriteMultipleRequest();
-            wmReq.add(makePutKeyReq(keyInfo, header, val), true);
+            wmReq.add(makePutKeyReq(keyInfo, header, cvr.val), true);
             assert lvi.elemIds.size() == 1;
             wmReq.add(makePutElemReq(keyInfo, lvi.elemIds.get(0),
                 header.cid, cmd.args[2]), false);

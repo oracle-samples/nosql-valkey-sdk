@@ -7,10 +7,7 @@
  
  package oracle.nosql.redis.commands;
 
-import java.util.HashSet;
-import java.util.List;
-import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.*;
 import java.util.function.LongBinaryOperator;
 
 import io.netty.buffer.ByteBuf;
@@ -36,7 +33,7 @@ import static oracle.nosql.redis.util.Utils.*;
 
 public class GenericCommands extends CommandsBase {
 
-    static enum TTLOpt {
+    enum TTLOpt {
         NX,
         XX,
         GT,
@@ -89,6 +86,11 @@ public class GenericCommands extends CommandsBase {
         "SELECT count(*) AS res FROM redis $r " + WHERE_KEY_IDS_COND +
         AND_NOT_EXPIRED;
 
+    private static final String ERR_NX_NOT_COMPAT =
+        "NX and XX, GT or LT options at the same time are not compatible";
+    private static final String ERR_GT_LT_NOT_COMPAT =
+        "GT and LT options at the same time are not compatible";
+
     private final CommandHandlers cmdHandlers;
 
     private static int compExp(long exp1, long exp2) {
@@ -116,7 +118,8 @@ public class GenericCommands extends CommandsBase {
 
     // For commands that set expiration time, such as
     // EXPIRE, PEXPIRE, EXPIREAT, PEXPIREAT, PERSIST.
-    private RedisMessage doSetExp(ByteBuf keyBuf, long exp, TTLOpt ttlOpt)
+    private RedisMessage doSetExp(ByteBuf keyBuf, long exp,
+        EnumSet<TTLOpt> ttlOpt)
         throws RedisResponseException {
         RedisKeyInfo keyInfo = makeRedisKeyInfo(keyBuf);
 
@@ -124,10 +127,12 @@ public class GenericCommands extends CommandsBase {
             RedisValueInfo oldVal = doGet(keyInfo);
             if (!oldVal.isValid() ||
                 (ttlOpt != null &&
-                    (ttlOpt == TTLOpt.NX && oldVal.exp != NO_EXP) ||
-                    (ttlOpt == TTLOpt.XX && oldVal.exp == NO_EXP) ||
-                    (ttlOpt == TTLOpt.GT && compExp(exp, oldVal.exp) <= 0) ||
-                    (ttlOpt == TTLOpt.LT && compExp(exp, oldVal.exp) >= 0))) {
+                    ((ttlOpt.contains(TTLOpt.NX) && oldVal.exp != NO_EXP) ||
+                    (ttlOpt.contains(TTLOpt.XX) && oldVal.exp == NO_EXP) ||
+                    (ttlOpt.contains(TTLOpt.GT) &&
+                        compExp(exp, oldVal.exp) <= 0) ||
+                    (ttlOpt.contains(TTLOpt.LT) &&
+                        compExp(exp, oldVal.exp) >= 0)))) {
                 return zeroReply;
             }
             RedisValueInfo newVal = RedisValueInfo.create(oldVal.val, null,
@@ -149,30 +154,60 @@ public class GenericCommands extends CommandsBase {
         throws RedisResponseException {
         // First 2 args are key and exp time.
         chkMinNumArgs(cmd, 2);
-        TTLOpt ttlOpt = null;
+        EnumSet<TTLOpt> ttlOpt = null;
 
         for(int i = 2; i < cmd.args.length; i++) {
-            String arg = Utils.byteBufToString(cmd.args[i]);
-            if (arg.equalsIgnoreCase("NX")) {
-                chkNotSet(ttlOpt);
-                ttlOpt = TTLOpt.NX;
-            } else if (arg.equalsIgnoreCase("XX")) {
-                chkNotSet(ttlOpt);
-                ttlOpt = TTLOpt.XX;
-            } else if (arg.equalsIgnoreCase("GT")) {
-                chkNotSet(ttlOpt);
-                ttlOpt = TTLOpt.GT;
-            } else if (arg.equalsIgnoreCase("LT")) {
-                chkNotSet(ttlOpt);
-                ttlOpt = TTLOpt.LT;
-            } else {
-                throw new RedisResponseException(ErrorPrefix.ERR,
-                    "Unsupported option " + arg);
+            if (ttlOpt == null) {
+                ttlOpt = EnumSet.noneOf(TTLOpt.class);
+            }
+            String arg = Utils.byteBufToString(cmd.args[i]).toUpperCase();
+            switch (arg) {
+                case "NX":
+                    if (ttlOpt.contains(TTLOpt.XX) ||
+                        ttlOpt.contains(TTLOpt.GT) ||
+                        ttlOpt.contains(TTLOpt.LT)) {
+                        throw new RedisResponseException(ErrorPrefix.ERR,
+                            ERR_NX_NOT_COMPAT);
+                    }
+                    ttlOpt.add(TTLOpt.NX);
+                    break;
+                case "XX":
+                    if (ttlOpt.contains(TTLOpt.NX)) {
+                        throw new RedisResponseException(ErrorPrefix.ERR,
+                            ERR_NX_NOT_COMPAT);
+                    }
+                    ttlOpt.add(TTLOpt.XX);
+                    break;
+                case "GT":
+                    if (ttlOpt.contains(TTLOpt.NX)) {
+                        throw new RedisResponseException(ErrorPrefix.ERR,
+                            ERR_NX_NOT_COMPAT);
+                    }
+                    if (ttlOpt.contains(TTLOpt.LT)) {
+                        throw new RedisResponseException(ErrorPrefix.ERR,
+                            ERR_GT_LT_NOT_COMPAT);
+                    }
+                    ttlOpt.add(TTLOpt.GT);
+                    break;
+                case "LT":
+                    if (ttlOpt.contains(TTLOpt.NX)) {
+                        throw new RedisResponseException(ErrorPrefix.ERR,
+                            ERR_NX_NOT_COMPAT);
+                    }
+                    if (ttlOpt.contains(TTLOpt.GT)) {
+                        throw new RedisResponseException(ErrorPrefix.ERR,
+                            ERR_GT_LT_NOT_COMPAT);
+                    }
+                    ttlOpt.add(TTLOpt.LT);
+                    break;
+                default:
+                    throw new RedisResponseException(ErrorPrefix.ERR,
+                        "Unsupported option " + arg);
             }
         }
 
         return doSetExp(cmd.args[0],
-            makeExpTime(cmd.args[1], ttlMode), ttlOpt);
+            makeExpTime(cmd.args[1], ttlMode, cmd.name), ttlOpt);
     }
 
     // For collections, this will delete collection elements after a key is
@@ -300,7 +335,7 @@ public class GenericCommands extends CommandsBase {
             if (!throwIfNotFound) {
                 return false;
             }
-            throw new RedisResponseException(ErrorPrefix.ERR, "no such key");
+            throw RedisResponseException.noSuchKey();
         }
 
         RedisKeyInfo dstKeyInfo = makeRedisKeyInfo(dstKeyBuf);
@@ -320,14 +355,16 @@ public class GenericCommands extends CommandsBase {
         if (srcKeyInfo.slot != dstKeyInfo.slot) {
             throw RedisResponseException.crossSlot();
         }
-        // renaming to the same name is a no-op
-        if (srcKeyInfo.id.equals(dstKeyInfo.id)) {
-            return true;
-        }
 
         RedisValueInfo srcVal = doGet(srcKeyInfo);
         if (!srcVal.isValid()) {
-            throw new RedisResponseException(ErrorPrefix.ERR, "no such key");
+            throw RedisResponseException.noSuchKey();
+        }
+
+        // Renaming to the same name is a no-op, but this has to be checked
+        // after checking the existence of src key, per Redis behavior.
+        if (srcKeyInfo.id.equals(dstKeyInfo.id)) {
+            return !isNX;
         }
 
         RedisValueInfo dstVal = RedisValueInfo.NONE;
@@ -471,7 +508,7 @@ public class GenericCommands extends CommandsBase {
         RawCommand cmd) throws RedisResponseException
     {
         chkExactNumArgs(cmd, 1);
-        return doSetExp(cmd.args[0], NO_EXP, TTLOpt.XX);
+        return doSetExp(cmd.args[0], NO_EXP, EnumSet.of(TTLOpt.XX));
     }
 
     public RedisMessage handleType(RedisClientContext client, RawCommand cmd)

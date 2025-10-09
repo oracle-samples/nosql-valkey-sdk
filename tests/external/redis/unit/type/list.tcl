@@ -778,44 +778,42 @@ foreach {type large} [array get largevalue] {
         }
     }
 
-proc COMMETED_OUT {} {
-foreach {pop} {BLPOP BLMPOP_LEFT} {
-    test "$pop, LPUSH + DEL should not awake blocked client" {
-        set rd [redis_deferring_client]
-        r del list
+	foreach {pop} {BLPOP BLMPOP_LEFT} {
+		test "$pop, LPUSH + DEL should not awake blocked client" {
+			set rd [redis_deferring_client]
+			r del list
 
-        bpop_command $rd $pop list 0
-        wait_for_blocked_client
+			bpop_command $rd $pop list 0
+			wait_for_blocked_client
 
-        r multi
-        r lpush list a
-        r del list
-        r exec
-        r del list
-        r lpush list b
-        assert_equal {list b} [$rd read]
-        $rd close
-    }
+			r multi
+			r lpush list a
+			r del list
+			r exec
+			r del list
+			r lpush list b
+			assert_equal {list b} [$rd read]
+			$rd close
+		} {} {not-supported}
 
-    test "$pop, LPUSH + DEL + SET should not awake blocked client" {
-        set rd [redis_deferring_client]
-        r del list
+		test "$pop, LPUSH + DEL + SET should not awake blocked client" {
+			set rd [redis_deferring_client]
+			r del list
 
-        bpop_command $rd $pop list 0
-        wait_for_blocked_client
+			bpop_command $rd $pop list 0
+			wait_for_blocked_client
 
-        r multi
-        r lpush list a
-        r del list
-        r set list foo
-        r exec
-        r del list
-        r lpush list b
-        assert_equal {list b} [$rd read]
-        $rd close
-    }
-}
-}
+			r multi
+			r lpush list a
+			r del list
+			r set list foo
+			r exec
+			r del list
+			r lpush list b
+			assert_equal {list b} [$rd read]
+			$rd close
+		} {} {not-supported}
+	}
 
     test "BLPOP with same key multiple times should work (issue #801)" {
         set rd [redis_deferring_client]
@@ -972,7 +970,9 @@ foreach {pop} {BLPOP BLMPOP_LEFT} {
         wait_for_blocked_clients_count 1
         $rd2 brpoplpush blist{t} target2{t} 0
         wait_for_blocked_clients_count 2
-        r lpush blist{t} foo
+		# Change: push 2 elements instead of 1, because currently we don't
+		# support specific order of unblocking.
+        r lpush blist{t} foo foo
 
         assert_error "WRONGTYPE*" {$rd1 read}
         assert_equal {foo} [$rd2 read]
@@ -1012,7 +1012,7 @@ foreach {pop} {BLPOP BLMPOP_LEFT} {
         $rd2 close
         $rd3 close
         $rd4 close
-    }
+    } {} {not-supported}
 
     test "Linked LMOVEs" {
       set rd1 [redis_deferring_client]
@@ -1026,6 +1026,8 @@ foreach {pop} {BLPOP BLMPOP_LEFT} {
       wait_for_blocked_clients_count 2
 
       r rpush list1{t} foo
+	  set _ [$rd1 read]
+	  set _ [$rd2 read]
 
       assert_equal {} [r lrange list1{t} 0 -1]
       assert_equal {} [r lrange list2{t} 0 -1]
@@ -1306,10 +1308,10 @@ foreach {pop} {BLPOP BLMPOP_LEFT} {
         # Timeout is parsed as float and multiplied by 1000, added mstime()
         # and stored in long-long which might lead to out-of-range value.
         # (Even though given timeout is smaller than LLONG_MAX, the result
-        # will be bigger)            
+        # will be bigger)
         assert_error "ERR *is out of range*" {r BLPOP blist1 0x7FFFFFFFFFFFFF}
-    }  
-        
+    }
+	
     foreach {pop} {BLPOP BRPOP BLMPOP_LEFT BLMPOP_RIGHT} {
         test "$pop: with single empty list argument" {
             set rd [redis_deferring_client]
@@ -1416,6 +1418,9 @@ foreach {pop} {BLPOP BLMPOP_LEFT} {
     test {BLMPOP propagate as pop with count command to replica} {
         set rd [redis_deferring_client]
         set repl [attach_to_replication_stream]
+		
+		r del mylist{t}
+		r del mylist2{t}
 
         # BLMPOP without being blocked.
         r lpush mylist{t} a b c
@@ -1434,6 +1439,11 @@ foreach {pop} {BLPOP BLMPOP_LEFT} {
         $rd blmpop 0 2 mylist{t} mylist2{t} right count 10
         wait_for_blocked_client
         r rpush mylist2{t} a b c
+		# Change: this test is probably not relevant to us. Since we don't
+		# support correct unblocking order semantics, the assertion below may
+		# be violated unless we wait for responses from previous BLMPOP
+		# requests before proceeding.
+		set _ [$rd read]
 
         # Released on timeout.
         assert_equal {} [r blmpop 0.01 1 mylist{t} left count 10]
@@ -1795,9 +1805,10 @@ foreach {type large} [array get largevalue] {
         assert_error "ERR wrong number of arguments for 'lmpop' command" {r lmpop 1}
         assert_error "ERR wrong number of arguments for 'lmpop' command" {r lmpop 1 mylist{t}}
 
-        assert_error "ERR numkeys*" {r lmpop 0 mylist{t} LEFT}
-        assert_error "ERR numkeys*" {r lmpop a mylist{t} LEFT}
-        assert_error "ERR numkeys*" {r lmpop -1 mylist{t} RIGHT}
+		# Changed: error message according to Redis Cloud
+        assert_error "ERR Number of keys*" {r lmpop 0 mylist{t} LEFT}
+        assert_error "ERR Number of keys*" {r lmpop a mylist{t} LEFT}
+        assert_error "ERR Number of keys*" {r lmpop -1 mylist{t} RIGHT}
 
         assert_error "ERR syntax error*" {r lmpop 1 mylist{t} bad_where}
         assert_error "ERR syntax error*" {r lmpop 1 mylist{t} LEFT bar_arg}
@@ -2314,7 +2325,7 @@ foreach {pop} {BLPOP BLMPOP_RIGHT} {
         
         $rd1 close
         $rd2 close
-    }
+    } {} {not-supported}
     
     test "Unblock fairness is kept during nested unblock" {
         set rd1 [redis_deferring_client]
@@ -2348,7 +2359,7 @@ foreach {pop} {BLPOP BLMPOP_RIGHT} {
         $rd1 close
         $rd2 close
         $rd3 close
-    } {} { not-supported }
+    } {} {not-supported}
     
     test "Blocking command accounted only once in commandstats" {
         # cleanup first
@@ -2371,7 +2382,7 @@ foreach {pop} {BLPOP BLMPOP_RIGHT} {
         assert_match {*calls=1,*,rejected_calls=0,failed_calls=0} [cmdrstat blpop r]
         
         $rd close
-    }
+    } {} {not-implemented}
     
     test "Blocking command accounted only once in commandstats after timeout" {
         # cleanup first

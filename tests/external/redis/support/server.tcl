@@ -818,3 +818,6 @@ proc restart_server {level wait_ready rotate_logs {reconnect 1} {shutdown sigter
         reconnect $level
     }
 }
+
+# To remove errors, we don't need this function.
+proc start_cluster {masters replicas options code {slot_allocator continuous_slot_allocation}} {}

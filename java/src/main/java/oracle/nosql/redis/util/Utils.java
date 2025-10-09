@@ -151,18 +151,29 @@ public class Utils {
         try {
             return Double.parseDouble(val);
         } catch(NumberFormatException ex) {
+            val = val.toLowerCase();
+            // For hexadecimal format, Java requires binary exponent, but Redis
+            // does not require it, so we handle the case with missing binary
+            // exponent here.
+            if (val.startsWith("0x") && val.indexOf('p') == -1) {
+                try {
+                    return Double.parseDouble(val + "p0");
+                } catch(NumberFormatException ex2) {
+                    throw new RedisResponseException(ErrorPrefix.ERR,
+                        ERR_INVALID_FLOAT);
+                }
+            }
+
             // Redis parses values inf, +inf, -inf, +infinity, -infinity,
             // ignoring the case, as corresponding +/- infinity.
-            if (val.equalsIgnoreCase("inf") ||
-                val.equalsIgnoreCase("infinity") ||
-                val.equalsIgnoreCase("+inf") ||
-                val.equalsIgnoreCase("+infinity")) {
+            if (val.equals("inf") || val.equals("infinity") ||
+                val.equals("+inf") || val.equals("+infinity")) {
                 return Double.POSITIVE_INFINITY;
             }
-            if (val.equalsIgnoreCase("-inf") ||
-                val.equalsIgnoreCase("-infinity")) {
+            if (val.equals("-inf") || val.equals("-infinity")) {
                 return Double.NEGATIVE_INFINITY;
             }
+
             throw new RedisResponseException(ErrorPrefix.ERR,
                 ERR_INVALID_FLOAT);
         }
@@ -184,15 +195,20 @@ public class Utils {
         return Unpooled.wrappedBuffer(val.getBytes(CharsetUtil.UTF_8));
     }
 
-    public static long byteBufToLong(ByteBuf buf)
+    public static long byteBufToLong(ByteBuf buf, String name)
         throws RedisResponseException {
         String str = byteBufToString(buf);
         try {
             return Long.parseLong(str);
         } catch(NumberFormatException ex) {
             throw new RedisResponseException(ErrorPrefix.ERR,
-                "value is not an integer or out of range");
+                name + " is not an integer or out of range");
         }
+    }
+
+    public static long byteBufToLong(ByteBuf buf)
+        throws RedisResponseException {
+        return byteBufToLong(buf, "value");
     }
 
     public static ByteBuf longToByteBuf(long val) {
@@ -206,6 +222,23 @@ public class Utils {
 
     public static ByteBuf doubleToByteBuf(double val) {
         return stringToByteBuf(redisFloatToString(val));
+    }
+
+    // Used by INCRBY, INCR, DECR, HINCRBY.
+    public static ByteBuf incrBy(ByteBuf val, long delta, boolean toAdd)
+        throws RedisResponseException {
+        long longVal = val != null ? Utils.byteBufToLong(val) : 0;
+        long res;
+        try {
+            res = toAdd ?
+                Math.addExact(longVal, delta) :
+                Math.subtractExact(longVal, delta);
+        } catch (ArithmeticException e) {
+            throw new RedisResponseException(
+                RedisResponseException.ErrorPrefix.ERR,
+                "increment or decrement would overflow");
+        }
+        return Utils.longToByteBuf(res);
     }
 
     // Used by INCRBYFLOAT and HINCRBYFLOAT commands.

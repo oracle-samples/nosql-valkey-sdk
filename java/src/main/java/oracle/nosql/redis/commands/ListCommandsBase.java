@@ -21,6 +21,7 @@ import oracle.nosql.driver.values.StringValue;
 import oracle.nosql.redis.RedisResponseException;
 import oracle.nosql.redis.RedisServerConfig;
 import oracle.nosql.redis.util.PreparedStatementCache;
+import oracle.nosql.redis.util.Utils;
 
 import static oracle.nosql.redis.util.Utils.getStringField;
 
@@ -128,7 +129,7 @@ abstract class ListCommandsBase extends CollectionCommandsBase {
         }
     }
 
-    static class ListValueInfo {
+    protected static class ListValueInfo {
         final ListHeader header;
         final List<BigDecimal> elemIds = new ArrayList<>();
         final List<String> elemVals;
@@ -171,7 +172,7 @@ abstract class ListCommandsBase extends CollectionCommandsBase {
         }
 
     }
-
+    
     ListCommandsBase(NoSQLHandle nosqlHandle, RedisServerConfig config,
         PreparedStatementCache pstmtCache) {
         super(nosqlHandle, config, pstmtCache);
@@ -257,19 +258,50 @@ abstract class ListCommandsBase extends CollectionCommandsBase {
     // We don't worry about expired list key here, since it will be handled
     // in doMultiUpdate().
     protected CollectionValueResult<ListValueInfo> queryListElems(
-        RedisKeyInfo keyInfo, String sql, boolean allowNoElems,
+        RedisKeyInfo keyInfo, String sql, boolean allowEmptyRes,
         boolean toGetElemVals, FieldValue... vars)
         throws RedisResponseException {
         List<MapValue> rows = doQuery(keyInfo, sql, vars);
 
         if (rows.isEmpty()) {
-            // If allowNoElems is true, it is possible that list does exist,
-            // but the query has no matching results, in this case we have to
-            // check for existence of list header. If allowNoElems is false,
-            // we assume the list doesn't exist (otherwise it would imply
-            // corrupted data).
-            return allowNoElems ?
-                doGetList(keyInfo) : CollectionValueResult.none();
+            // allowEmptyRes parameter indicates that the query may return no
+            // results even if the list is valid, in which case we have to
+            // fetch parent row (see doGetList).
+            // Unfortunately, because of the performance issue with LOJ in
+            // descending order we are not able to retrieve parent row when
+            // there are no matching child rows using the same query (see
+            // FROM_JOIN_WHERE_KEY_ID above). If allowEmptyRes is false and
+            // the query returns no results, this could mean one of the
+            // following:
+            // 1) List doesn't exist or has expired (currently we don't have
+            // expiration condition in the above query, but the expired list
+            // elements could be purged).
+            // 2) The key is not a list but is of a different type.
+            // 3) The data is corrupted.
+            // In order to check for these, we have no choice but to send extra
+            // request to retrieve list header (see doGetList) whether
+            // allowEmptyRes is true or false.
+            // However, by calling doGetList() here we are breaking atomicity,
+            // which makes it possible that another list was created with the
+            // same key after our query but before doGetList() invocation. If
+            // allowEmptyRes is false and doGetList() returns a valid list
+            // header, we have no choice but to assume this scenario, so we
+            // retry.
+            // But this scenario also creates a problem when allowEmptyRes is
+            // true, since the results of the query we performed are no longer
+            // valid if a new list with same key was created in the meantime.
+            // Thus, using allowEmptyRes = true is possible only when, if the
+            // query returns no results (thus the condition
+            // (!cvr.isValid() || cvr.data.elemIds.isEmpty()) is true), no
+            // updates are performed, but returned cvr is only used to
+            // determine the command return value or error message. This is
+            // the case where allowEmptyResult is currently used (commands
+            // LINSERT, LSET and LREM).
+            CollectionValueResult<ListValueInfo> cvr = doGetList(keyInfo);
+            if (!allowEmptyRes && cvr.isValid()) {
+                throw new Utils.RedisRetryException();
+            }
+            return cvr;
         }
 
         MapValue row0 = rows.get(0);
@@ -282,10 +314,10 @@ abstract class ListCommandsBase extends CollectionCommandsBase {
     }
 
     protected CollectionValueResult<ListValueInfo> queryListElems(
-        RedisKeyInfo keyInfo, String sql, boolean allowNoElems,
+        RedisKeyInfo keyInfo, String sql, boolean allowEmptyRes,
         FieldValue... vars)
         throws RedisResponseException {
-        return queryListElems(keyInfo, sql, allowNoElems, false, vars);
+        return queryListElems(keyInfo, sql, allowEmptyRes, false, vars);
     }
 
     protected CollectionValueResult<ListValueInfo> queryListElems(
@@ -297,12 +329,8 @@ abstract class ListCommandsBase extends CollectionCommandsBase {
     protected CollectionValueResult<ListValueInfo> doGetList(
         RedisKeyInfo keyInfo) throws RedisResponseException {
         RedisValueInfo val = doGet(keyInfo);
-        
-        if (!val.isValid()) {
-            return CollectionValueResult.none();
-        }
-
-        return new CollectionValueResult<>(val, new ListValueInfo(val));
+        return new CollectionValueResult<>(val,
+            val.isValid() ? new ListValueInfo(val) : null);
     }
 
     protected long doLLen(RedisKeyInfo keyInfo)

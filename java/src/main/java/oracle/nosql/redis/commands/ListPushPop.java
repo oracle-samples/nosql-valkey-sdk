@@ -44,11 +44,22 @@ public class ListPushPop extends ListCommandsBase {
     private static final int MIN_DELAY_MS = 200;
     private static final int MAX_ADD_RND_DELAY_MS = 50;
     private static final int MAX_DELAY_MS = 5000;
+    // If timeout is less than this value, we have to compute initial delay
+    // differently.
+    private static final int SMALL_TIMEOUT_MS =
+        MIN_DELAY_MS + MAX_ADD_RND_DELAY_MS;
+    // In the same proportion, so that the random portion of the delay is
+    // within the last 1/5 of the timeout (as per above values).
+    private static final int SMALL_RAND_DELAY_DIV =
+        SMALL_TIMEOUT_MS / MAX_ADD_RND_DELAY_MS;
 
     private static final String SQL_LMOVE_LEFT = String.format(SQL_ELEMS_FMT,
         "", ELEM_VAL, "", PK_COLS, LIMIT_1, "");
     private static final String SQL_LMOVE_RIGHT = String.format(SQL_ELEMS_FMT,
         "", ELEM_VAL, "", PK_COLS_DESC, LIMIT_1, "");
+
+    private static final String ERR_TIMEOUT_OUT_OF_RANGE =
+        "timeout is out of range";
 
     public ListPushPop(NoSQLHandle nosqlHandle, RedisServerConfig config,
         PreparedStatementCache pstmtCache) {
@@ -74,6 +85,53 @@ public class ListPushPop extends ListCommandsBase {
         return isLeft ?
             id.setScale(0, RoundingMode.HALF_DOWN).subtract(BigDecimal.ONE) :
             id.setScale(0, RoundingMode.HALF_UP).add(BigDecimal.ONE);
+    }
+
+    private static long timeoutToMillis(double timeout)
+        throws RedisResponseException {
+        if (timeout < 0) {
+            throw new RedisResponseException(ErrorPrefix.ERR,
+                "timeout is negative");
+        }
+
+        if (timeout == 0) {
+            return 0;
+        }
+
+        // Same as Redis error message in this case. Infinity will be checked
+        // in the try block below.
+        if (Double.isNaN(timeout)) {
+            throw new RedisResponseException(ErrorPrefix.ERR,
+                "timeout is not a float or out of range");
+        }
+
+        // Any double value > LONG_MAX gets converted to Long.MAX_VALUE when
+        // cast to long. Note that even if timeout * 1000 == Long.MAX_VALUE,
+        // we can safely throw, since we would have to add this timeout to
+        // current time to get expiration time, so this timeout is out of
+        // range.
+        long res = (long)(timeout * 1000);
+        if (res == Long.MAX_VALUE) {
+            throw new RedisResponseException(ErrorPrefix.ERR,
+                ERR_TIMEOUT_OUT_OF_RANGE);
+        }
+
+        return res;
+    }
+
+    // timeout is in seconds
+    private static long timeoutToExpTimeMillis(long timeoutMs)
+        throws RedisResponseException {
+        if (timeoutMs == 0) {
+            return Long.MAX_VALUE;
+        }
+
+        try {
+            return Math.addExact(System.currentTimeMillis(), timeoutMs);
+        } catch (ArithmeticException e) {
+            throw new RedisResponseException(ErrorPrefix.ERR,
+                ERR_TIMEOUT_OUT_OF_RANGE);
+        }
     }
 
     private static ListHeader addPushListElems(RedisKeyInfo keyInfo,
@@ -342,17 +400,17 @@ public class ListPushPop extends ListCommandsBase {
         RedisClientContext client,
         ThrowingNoArgFunction<RedisMessage, RedisResponseException> op,
         double timeout) throws RedisResponseException {
-        if (timeout < 0) {
-            throw new RedisResponseException(ErrorPrefix.ERR,
-                "timeout is negative");
-        }
-
-        long delay = MIN_DELAY_MS +
-            (int)(Math.random() * MAX_ADD_RND_DELAY_MS);
-
-        long expTime = timeout != 0 ?
-            System.currentTimeMillis() + (long)Math.ceil(timeout * 1000) :
-            Long.MAX_VALUE;
+        long timeoutMs = timeoutToMillis(timeout);
+        // For small timeouts, we cannot base delay on MIN_DELAY_MS and
+        // MAX_ADD_RND_DELAY_MS, so we use the timeout value itself, in the
+        // same proportion for fixed/randomized delay portions. For these
+        // small timeouts, there will be only one retry towards the end of the
+        // timeout period.
+        long startDelay = (timeoutMs == 0 || timeoutMs >= SMALL_TIMEOUT_MS) ?
+            MIN_DELAY_MS + (int)(Math.random() * MAX_ADD_RND_DELAY_MS) :
+            timeoutMs - (int)(Math.random() * timeoutMs) / SMALL_RAND_DELAY_DIV;
+        long delay = -1;
+        long expTime = timeoutToExpTimeMillis(timeoutMs);
 
         client.setBlocked(true);
         try {
@@ -362,17 +420,19 @@ public class ListPushPop extends ListCommandsBase {
                     return res;
                 }
 
-                long remaining = expTime - System.currentTimeMillis();
-                if (remaining < MIN_DELAY_MS) {
-                    return FullBulkStringRedisMessage.NULL_INSTANCE;
-                }
-
-                if (delay < MAX_DELAY_MS) {
+                if (delay == -1) {
+                    delay = startDelay;
+                } else if (delay < MAX_DELAY_MS) {
+                    // For small timeouts (see above), this should put the
+                    // delay past expiration.
                     delay = Math.min(MAX_DELAY_MS, delay * 2 +
                         (int) (Math.random() * MAX_ADD_RND_DELAY_MS));
                 }
 
-                delay = Math.min(delay, remaining);
+                delay = Math.min(delay, expTime - System.currentTimeMillis());
+                if (delay <= 1) {
+                    return FullBulkStringRedisMessage.NULL_INSTANCE;
+                }
 
                 try {
                     Thread.sleep(delay);
@@ -409,10 +469,10 @@ public class ListPushPop extends ListCommandsBase {
             }
         }
 
-        long numKeys = Utils.byteBufToLong(cmd.args[nkOff]);
+        long numKeys = Utils.byteBufToLong(cmd.args[nkOff], "Number of keys");
         if (numKeys <= 0) {
             throw new RedisResponseException(ErrorPrefix.ERR,
-                "numkeys should be greater than 0");
+                "Number of keys should be greater than 0");
         }
 
         // Total count also includes timout (for blocking), numkeys and
@@ -432,7 +492,8 @@ public class ListPushPop extends ListCommandsBase {
                     .equalsIgnoreCase(COUNT)) {
                 throw RedisResponseException.syntaxError();
             }
-            cnt = Utils.byteBufToLong(cmd.args[(int)numKeys + nkOff + 3]);
+            cnt = Utils.byteBufToLong(cmd.args[(int)numKeys + nkOff + 3],
+                "count");
             if (cnt <= 0) {
                 throw new RedisResponseException(ErrorPrefix.ERR,
                     "count should be greater than 0");

@@ -303,9 +303,9 @@ public class HashRead extends HashCommandsBase {
             int cnt = rows.size();
             map = new HashMap<>(cnt);
             map.put(keyId0, rowToFldVal(row0, false));
-            for(int i = 0; i < cnt; i++) {
-                map.put(rowToKeyId(row0, false),
-                    rowToFldVal(row0, false));
+            for(int i = 1; i < cnt; i++) {
+                MapValue row = rows.get(i);
+                map.put(rowToKeyId(row, false), rowToFldVal(row, false));
             }
         }
 

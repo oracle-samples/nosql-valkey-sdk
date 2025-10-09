@@ -37,8 +37,7 @@ public class ListTrimRemove extends ListCommandsBase {
         long start;
         long stop;
 
-        ListTrimInfo(ListValueInfo valInfo, long start, long stop)
-            throws RedisResponseException {
+        ListTrimInfo(ListValueInfo valInfo, long start, long stop) {
             super(valInfo.header);
             this.start = start;
             this.stop = stop;
@@ -54,10 +53,10 @@ public class ListTrimRemove extends ListCommandsBase {
         boolean isDesc) throws RedisResponseException {
         return doWithRetries(() -> {
             CollectionValueResult<ListValueInfo> cvr = queryListElems(keyInfo,
-                isDesc ? SQL_LREM_DESC : SQL_LREM,
+                isDesc ? SQL_LREM_DESC : SQL_LREM, true,
                 new StringValue(makeStrVal(val)), new LongValue(cnt));
 
-            if (!cvr.isValid()) {
+            if (!cvr.isValid() || cvr.data.elemIds.isEmpty()) {
                 return 0;
             }
 

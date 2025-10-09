@@ -181,6 +181,52 @@ public class HashUpdate extends HashCommandsBase {
         });
     }
 
+    private int doHandleHSet(RawCommand cmd) throws RedisResponseException {
+        chkMinNumArgs(cmd, 3);
+        RedisKeyInfo keyInfo = makeRedisKeyInfo(cmd.args[0]);
+
+        // one or more field-value pairs plus the key
+        if (cmd.args.length % 2 != 1) {
+            throw RedisResponseException.numArgs(cmd.name);
+        }
+
+        // We put the fields and values into a map at first even for multi-row
+        // format. This is to account for potential duplicate fields in input.
+        // Redis allows duplicate fields in SET commands and just uses the
+        // last value to set. We have to elimitate duplicates to calculate
+        // correct added count and also because WriteMultipleRequest cannot
+        // contain requests with duplicate primary keys.
+        MapValue fvMap = new MapValue();
+        boolean hasLargeEntry = false;
+
+        for(int i = 1; i < cmd.args.length; i += 2) {
+            RedisKeyInfo hki = makeRedisKeyInfo(cmd.args[i]);
+            String val = makeStrVal(cmd.args[i + 1]);
+
+            // For simplicity, we store the data in the same format in
+            // smallVal as in multi-row format, having "key" and "value"
+            // field for each entry. Note that the key might also store
+            // per-hash-field expiration time (added to Redis 7.4) as well
+            // as scanId. It is preferable to compute scanId in the same
+            // way as for multi-row format so that the scan still works
+            // even if the hash gets converted to multi-row format during
+            // the scan.
+            fvMap.put(hki.id, new MapValue()
+                .put(FLD_KEY, makeRedisKey(hki)).put(FLD_VALUE, val));
+
+            if (hki.data.length() + val.length() > MAX_SMALL_HASH_ENT_SIZE) {
+                hasLargeEntry = true;
+            }
+        }
+
+        int addedCnt = 0;
+        while(fvMap.size() > 0) {
+            addedCnt += doHSet(keyInfo, fvMap, hasLargeEntry);
+        }
+
+        return addedCnt;
+    }
+
     private int prepareHDel(RedisKeyInfo keyInfo, String[] fKeyIds,
         HDelInfo hdi, WriteMultipleRequest wmReq, RedisValueInfo oldVal)
         throws RedisResponseException {
@@ -376,7 +422,7 @@ public class HashUpdate extends HashCommandsBase {
 
     public void registerCommands(HashMap<String, CommandHandler> cmdMap) {
         cmdMap.put(CMD_HSET, this::handleHSet);
-        cmdMap.put(CMD_HMSET, this::handleHSet);
+        cmdMap.put(CMD_HMSET, this::handleHMSet);
         cmdMap.put(CMD_HDEL, this::handleHDel);
         cmdMap.put(CMD_HINCRBY, this::handleHIncrBy);
         cmdMap.put(CMD_HINCRBYFLOAT, this::handleHIncrByFloat);
@@ -385,49 +431,13 @@ public class HashUpdate extends HashCommandsBase {
 
     public RedisMessage handleHSet(RedisClientContext client, RawCommand cmd)
         throws RedisResponseException {
-        chkMinNumArgs(cmd, 3);
-        RedisKeyInfo keyInfo = makeRedisKeyInfo(cmd.args[0]);
+        return new IntegerRedisMessage(doHandleHSet(cmd));
+    }
 
-        // one or more field-value pairs plus the key
-        if (cmd.args.length % 2 != 1) {
-            throw RedisResponseException.numArgs(cmd.name);
-        }
-
-        // We put the fields and values into a map at first even for multi-row
-        // format. This is to account for potential duplicate fields in input.
-        // Redis allows duplicate fields in SET commands and just uses the
-        // last value to set. We have to elimitate duplicates to calculate
-        // correct added count and also because WriteMultipleRequest cannot
-        // contain requests with duplicate primary keys.
-        MapValue fvMap = new MapValue();
-        boolean hasLargeEntry = false;
-
-        for(int i = 1; i < cmd.args.length; i += 2) {
-            RedisKeyInfo hki = makeRedisKeyInfo(cmd.args[i]);
-            String val = makeStrVal(cmd.args[i + 1]);
-            
-            // For simplicity, we store the data in the same format in
-            // smallVal as in multi-row format, having "key" and "value"
-            // field for each entry. Note that the key might also store
-            // per-hash-field expiration time (added to Redis 7.4) as well
-            // as scanId. It is preferable to compute scanId in the same
-            // way as for multi-row format so that the scan still works
-            // even if the hash gets converted to multi-row format during
-            // the scan.
-            fvMap.put(hki.id, new MapValue()
-                .put(FLD_KEY, makeRedisKey(hki)).put(FLD_VALUE, val));
-
-            if (hki.data.length() + val.length() > MAX_SMALL_HASH_ENT_SIZE) {
-                hasLargeEntry = true;
-            }
-        }
-
-        int addedCnt = 0;
-        while(fvMap.size() > 0) {
-            addedCnt += doHSet(keyInfo, fvMap, hasLargeEntry);
-        }
-
-        return new IntegerRedisMessage(addedCnt);
+    public RedisMessage handleHMSet(RedisClientContext client, RawCommand cmd)
+        throws RedisResponseException {
+        doHandleHSet(cmd);
+        return okReply;
     }
 
     public RedisMessage handleHDel(RedisClientContext client, RawCommand cmd)
@@ -460,10 +470,8 @@ public class HashUpdate extends HashCommandsBase {
         chkExactNumArgs(cmd, 3);
         final long arg = Utils.byteBufToLong(cmd.args[2]);
         return doUpdateVal(makeRedisKeyInfo(cmd.args[0]),
-            makeRedisKeyInfo(cmd.args[1]), oldVal -> Utils.longToByteBuf(
-                (oldVal != null ? Utils.byteBufToLong(oldVal) : 0) + arg),
-                newVal -> new IntegerRedisMessage(
-                    Utils.byteBufToLong(newVal)));
+            makeRedisKeyInfo(cmd.args[1]), val -> Utils.incrBy(val, arg, true),
+            newVal -> new IntegerRedisMessage(Utils.byteBufToLong(newVal)));
     }
 
     public RedisMessage handleHIncrByFloat(RedisClientContext client,

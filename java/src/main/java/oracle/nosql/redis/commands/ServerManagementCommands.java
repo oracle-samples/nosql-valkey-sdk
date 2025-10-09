@@ -1,5 +1,7 @@
 package oracle.nosql.redis.commands;
 
+import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
@@ -24,7 +26,7 @@ import static oracle.nosql.redis.util.Utils.*;
 public class ServerManagementCommands extends CommandsBase {
 
     private static final String SQL_GET_NUM_KEYS =
-        "SELECT count(*) AS res FROM redis";
+        "SELECT count(*) AS res FROM redis $r WHERE " + NOT_EXPIRED;
     private static final String SQL_DEL_ALL_KEYS = "DELETE FROM redis";
     private static final String SQL_DEL_ALL_LIST_ELEMS =
         "DELETE FROM redis.lists";
@@ -52,6 +54,7 @@ public class ServerManagementCommands extends CommandsBase {
     public static final String CMD_DBSIZE = "DBSIZE";
     public static final String CMD_CONFIG = "CONFIG";
     public static final String CMD_INFO = "INFO";
+    public static final String CMD_TIME = "TIME";
 
     private final ChannelGroup clientChannels;
 
@@ -77,6 +80,7 @@ public class ServerManagementCommands extends CommandsBase {
         cmdMap.put(CMD_DBSIZE, this::handleDBSize);
         cmdMap.put(CMD_CONFIG, this::handleConfig);
         cmdMap.put(CMD_INFO, this::handleInfo);
+        cmdMap.put(CMD_TIME, this::handleTime);
     }
 
     public RedisMessage handleFlushDB(RedisClientContext client,
@@ -177,6 +181,18 @@ public class ServerManagementCommands extends CommandsBase {
         return sb != null ?
             new FullBulkStringRedisMessage(stringToByteBuf(sb.toString())) :
             FullBulkStringRedisMessage.EMPTY_INSTANCE;
+    }
+
+    public RedisMessage handleTime(RedisClientContext client, RawCommand cmd)
+        throws RedisResponseException {
+        chkExactNumArgs(cmd, 0);
+        Instant now = Instant.now();
+        List<RedisMessage> res = new ArrayList<>();
+        res.add(new FullBulkStringRedisMessage(
+            longToByteBuf(now.getEpochSecond())));
+        res.add(new FullBulkStringRedisMessage(
+            longToByteBuf(now.getNano() / 1000)));
+        return new ArrayRedisMessage(res);
     }
 
 }

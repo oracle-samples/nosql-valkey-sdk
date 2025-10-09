@@ -161,7 +161,7 @@ proc ::redis::__dispatch__raw__ {id method argv} {
         set argv [lrange $argv 0 end-1]
     }
     if {[info command ::redis::__method__$method] eq {}} {
-        catch {unset ::redis::attributes($id)}
+        catch {unset -nocomplain ::redis::attributes($id)}
         set cmd "*[expr {[llength $argv]+1}]\r\n"
         append cmd "$[string length $method]\r\n$method\r\n"
         foreach a $argv {
@@ -218,19 +218,19 @@ proc ::redis::__method__flush {id fd} {
 
 proc ::redis::__method__close {id fd} {
     catch {close $fd}
-    catch {unset ::redis::fd($id)}
-    catch {unset ::redis::addr($id)}
-    catch {unset ::redis::blocking($id)}
-    catch {unset ::redis::deferred($id)}
-    catch {unset ::redis::readraw($id)}
-    catch {unset ::redis::attributes($id)}
-    catch {unset ::redis::reconnect($id)}
-    catch {unset ::redis::tls($id)}
-    catch {unset ::redis::state($id)}
-    catch {unset ::redis::statestack($id)}
-    catch {unset ::redis::callback($id)}
-    catch {unset ::redis::curr_argv($id)}
-    catch {unset ::redis::testing_resp3($id)}
+    catch {unset -nocomplain ::redis::fd($id)}
+    catch {unset -nocomplain ::redis::addr($id)}
+    catch {unset -nocomplain ::redis::blocking($id)}
+    catch {unset -nocomplain ::redis::deferred($id)}
+    catch {unset -nocomplain ::redis::readraw($id)}
+    catch {unset -nocomplain ::redis::attributes($id)}
+    catch {unset -nocomplain ::redis::reconnect($id)}
+    catch {unset -nocomplain ::redis::tls($id)}
+    catch {unset -nocomplain ::redis::state($id)}
+    catch {unset -nocomplain ::redis::statestack($id)}
+    catch {unset -nocomplain ::redis::callback($id)}
+    catch {unset -nocomplain ::redis::curr_argv($id)}
+    catch {unset -nocomplain ::redis::testing_resp3($id)}
     catch {interp alias {} ::redis::redisHandle$id {}}
 }
 

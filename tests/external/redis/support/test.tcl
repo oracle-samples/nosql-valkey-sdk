@@ -197,7 +197,7 @@ proc test {name code {okpattern undefined} {tags {}}} {
         catch {
             set r [redis [srv 0 host] [srv 0 port] 0 $::tls]
             catch {
-                $r debug log "### Starting test $::cur_test"
+                #$r debug log "### Starting test $::cur_test"
             }
             $r close
         }

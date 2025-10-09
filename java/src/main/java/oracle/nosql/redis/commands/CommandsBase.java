@@ -60,7 +60,7 @@ public abstract class CommandsBase {
         KEEP_TTL // Keep existing TTL of the key
     }
 
-    public static enum SetOpt {
+    public enum SetOpt {
         NX,
         XX
     }
@@ -647,37 +647,42 @@ public abstract class CommandsBase {
         return isKeyExpired(rowToKey(row));
     }
 
-    static long makeExpTime(ByteBuf expArg, TTLMode mode, boolean chkExpArg,
-        String cmdName) throws RedisResponseException {
+    static long makeExpTime(ByteBuf expArg, TTLMode mode, String cmdName,
+        boolean chkPositive) throws RedisResponseException {
         if (mode == null) {
             return NO_EXP;
         } else if (mode == TTLMode.KEEP_TTL) {
             return KEEP_TTL;
         }
 
+        // The below mimics error handling done in Redis.
         long exp = Utils.byteBufToLong(expArg);
-        if (chkExpArg && exp <= 0) {
-            // Match the format in Redis Server.
+
+        try {
+            if (chkPositive && exp <= 0) {
+                throw new ArithmeticException();
+            }
+            switch(mode) {
+                case EX:
+                    exp = Math.addExact(System.currentTimeMillis(),
+                        Math.multiplyExact(exp, 1000));
+                    break;
+                case EXAT:
+                    exp = Math.multiplyExact(exp, 1000);
+                    break;
+                case PX:
+                    exp = Math.addExact(System.currentTimeMillis(), exp);
+                    break;
+                case PXAT:
+                    break;
+                default:
+                    assert false;
+                    break;
+            }
+        } catch(ArithmeticException ex) {
             throw new RedisResponseException(ErrorPrefix.ERR,
                 String.format("invalid expire time in '%s' command",
                     cmdName.toLowerCase()));
-        }
-
-        switch(mode) {
-            case EX:
-                exp = System.currentTimeMillis() + exp * 1000;
-                break;
-            case EXAT:
-                exp = exp * 1000;
-                break;
-            case PX:
-                exp = System.currentTimeMillis() + exp;
-                break;
-            case PXAT:
-                break;
-            default:
-                assert false;
-                break;
         }
 
         // avoid exp to clash with defined special negative values (NO_EXP and
@@ -685,9 +690,9 @@ public abstract class CommandsBase {
         return exp > 0 ? exp : EXPIRED;
     }
 
-    static long makeExpTime(ByteBuf expArg, TTLMode mode)
+    static long makeExpTime(ByteBuf expArg, TTLMode mode, String cmdName)
         throws RedisResponseException {
-        return makeExpTime(expArg, mode, false, null);
+        return makeExpTime(expArg, mode, cmdName, false);
     }
 
     RedisResponseException failedAtomicRetries() {

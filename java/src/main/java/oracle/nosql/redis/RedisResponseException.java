@@ -83,6 +83,10 @@ public class RedisResponseException extends Exception {
             escapeSimpleString(cmd) + " is not supported");
     }
 
+    public static RedisResponseException noSuchKey() {
+        return new RedisResponseException(ErrorPrefix.ERR, "no such key");
+    }
+
     // In some cases it is not possible to throw checked
     // RedisResponseException, e.g. when implementing an iterator, in which
     // case we use this workaround. RedisServerHandler will check for this.

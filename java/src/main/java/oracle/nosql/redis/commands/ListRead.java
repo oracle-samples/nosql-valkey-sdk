@@ -57,7 +57,7 @@ public class ListRead extends ListCommandsBase {
         private final ArrayList<Long> matches;
         private long rank;
         private long len = -1;
-        private long pos;
+        private long pos = -1;
         private final int count;
         private final boolean isDesc;
 
@@ -73,10 +73,13 @@ public class ListRead extends ListCommandsBase {
 
         // Returns true if we have count matches, otherwise false.
         boolean applyRow(MapValue row) throws RedisResponseException {
+            pos++;
+
             if (isDesc) {
                 if (len == -1) {
                     len = valToLen(row);
                 }
+
                 if (pos >= len) {
                     throw RedisResponseException.corrupt(
                         "Invalid list length: " + len);
@@ -96,7 +99,6 @@ public class ListRead extends ListCommandsBase {
                 }
             }
 
-            pos++;
             return false;
         }
 
@@ -104,10 +106,9 @@ public class ListRead extends ListCommandsBase {
             return matches;
         }
 
-        long getLen() {
-            return len;
+        boolean isListEmpty() {
+            return pos == -1;
         }
-        
     }
 
     public ListRead(NoSQLHandle nosqlHandle, RedisServerConfig config,
@@ -117,10 +118,20 @@ public class ListRead extends ListCommandsBase {
 
     private List<RedisMessage> doLRange(RedisKeyInfo keyInfo, long off,
         int len, boolean isDesc) throws RedisResponseException {
-        return doQuery(keyInfo,
+        List<RedisMessage> res = doQuery(keyInfo,
             isDesc ? SQL_LRANGE_DESC : SQL_LRANGE, val ->
                 new FullBulkStringRedisMessage(getStrVal(rowToElemVal(val))),
                     new LongValue(len), new LongValue(off));
+        if (res.isEmpty()) {
+            // If the query returns no results, we have to check if the key
+            // is of wrong type (not a list) to return correct error message.
+            // Unfortunately, since we cannot do parent table to child table
+            // LOJ (see comments in queryListElems()), we have to issue Get
+            // request (doGetList will try to instantiate list header and thus
+            // check the key type). Similar checks are done in functions below.
+            doGetList(keyInfo);
+        }
+        return res;
     }
 
     private RedisMessage doLPos(RedisKeyInfo keyInfo, ByteBuf val, long rank,
@@ -143,6 +154,9 @@ public class ListRead extends ListCommandsBase {
         List<Long> matches = lpState.getMatches();
         int numMatches = matches.size();
         if (numMatches == 0) {
+            if (lpState.isListEmpty()) {
+                doGetList(keyInfo); // wrong type check
+            }
             return hasCount ?
                 ArrayRedisMessage.EMPTY_INSTANCE :
                 FullBulkStringRedisMessage.NULL_INSTANCE;

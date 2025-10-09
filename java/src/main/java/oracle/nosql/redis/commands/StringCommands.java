@@ -183,7 +183,7 @@ public class StringCommands extends CommandsBase {
     private RedisMessage doSetWithExp(RawCommand cmd, TTLMode ttlMode)
         throws RedisResponseException {
         chkExactNumArgs(cmd, 3);
-        long exp = makeExpTime(cmd.args[1], ttlMode, true, cmd.name);
+        long exp = makeExpTime(cmd.args[1], ttlMode, cmd.name, true);
         return doSetString(cmd.args[0], exp, cmd.args[2], null, false);
     }
 
@@ -214,20 +214,7 @@ public class StringCommands extends CommandsBase {
         // doGetSetString and doGetSet generic and providing additional
         // conversion interface args, however this will add more complexity to
         // doGetSet, so may not be worth it.
-        return doGetSetString(keyBuf,
-            (val) -> {
-                long longVal = val != null ? Utils.byteBufToLong(val) : 0;
-                long res;
-                try {
-                    res = toAdd ?
-                        Math.addExact(longVal, arg) :
-                        Math.subtractExact(longVal, arg);
-                } catch (ArithmeticException e) {
-                    throw new RedisResponseException(ErrorPrefix.ERR,
-                        "increment or decrement would overflow");
-                }
-                return Utils.longToByteBuf(res);
-            },
+        return doGetSetString(keyBuf, val -> Utils.incrBy(val, arg, toAdd),
             val -> new IntegerRedisMessage(Utils.byteBufToLong(val)));
     }
 
@@ -480,7 +467,7 @@ public class StringCommands extends CommandsBase {
         }
         
         return doSetString(cmd.args[0],
-            makeExpTime(expArg, ttlMode, true, cmd.name), cmd.args[1],
+            makeExpTime(expArg, ttlMode, cmd.name, true), cmd.args[1],
             setOpt, isGet);
     }
 
@@ -663,7 +650,7 @@ public class StringCommands extends CommandsBase {
             throw RedisResponseException.syntaxError();
         }
 
-        final long expTime = makeExpTime(expArg, ttlMode, true, cmd.name);
+        final long expTime = makeExpTime(expArg, ttlMode, cmd.name, true);
         RedisKeyInfo keyInfo = makeRedisKeyInfo(cmd.args[0]);
         return doWithRetries(() -> {
             RedisValueInfo oldVal = doGet(keyInfo);

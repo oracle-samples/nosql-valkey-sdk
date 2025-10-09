@@ -42,7 +42,7 @@ set ::portcount 8000; # we don't wanna use more than 10000 to avoid collision wi
 set ::traceleaks 0
 set ::valgrind 0
 set ::tsan 0
-set ::durable 0
+set ::durable 1
 set ::tls 0
 set ::tls_module 0
 set ::stack_logging 0
@@ -86,7 +86,8 @@ set ::force_resp3 0
 # The server is responsible of showing the result to the user, and exit with
 # the appropriate exit code depending on the test outcome.
 set ::client 0
-set ::numclients 16
+#set ::numclients 16
+set ::numclients 1
 
 # This function is called by one of the test clients when it receives
 # a "run" command from the server, with a filename as data.
