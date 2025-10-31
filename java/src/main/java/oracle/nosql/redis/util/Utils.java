@@ -300,11 +300,11 @@ public class Utils {
         // Sometimes position is reported past the end of the path string.
         int adjPos = Math.min(pos, input.length());
         return RedisResponseException.unchecked(
-            new RedisResponseException(escapeSimpleString(String.format(
+            new RedisResponseException(String.format(
                 // Same format as in Redis Stack.
                 "Error occurred on position %d, \"%s  ---->>>> %s\", %s",
                 pos, input.substring(0, adjPos),
-                input.substring(adjPos), msg)), cause));
+                input.substring(adjPos), msg), cause));
     }
 
     public static RuntimeException parseException(String input, int pos,

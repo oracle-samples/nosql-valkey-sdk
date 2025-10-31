@@ -20,11 +20,11 @@ public class RedisResponseException extends Exception {
     }
 
     public RedisResponseException(String message) {
-        super(message);
+        super(escapeSimpleString(message));
     }
 
     public RedisResponseException(String message, Throwable cause) {
-        super(message, cause);
+        super(escapeSimpleString(message), cause);
     }
 
     public RedisResponseException(ErrorPrefix errPrefix, String message,
@@ -44,7 +44,7 @@ public class RedisResponseException extends Exception {
 
     public static RedisResponseException corrupt(String msg) {
         return new RedisResponseException(ErrorPrefix.CORRUPT,
-            "Encountered corrupted data format" +
+            "Encountered corrupted data" +
                 msg == null ? "" : ": " + msg);
     }
 
@@ -63,14 +63,14 @@ public class RedisResponseException extends Exception {
 
     public static RedisResponseException nosql(Exception ex) {
         return new RedisResponseException(ErrorPrefix.NOSQL,
-            escapeSimpleString(ex.toString()), ex);
+            ex.toString(), ex);
     }
 
     public static RedisResponseException unknownCommand(RawCommand cmd) {
         // Todo: print "with arguments beginning with" followed by args as
         // done by real Redis server.
         return new RedisResponseException(ErrorPrefix.ERR,
-            "Unknown command: " + escapeSimpleString(cmd.name));
+            "Unknown command: " + cmd.name);
     }
 
     public static RedisResponseException crossSlot() {
@@ -80,7 +80,7 @@ public class RedisResponseException extends Exception {
 
     public static RedisResponseException unsupported(String cmd) {
         return new RedisResponseException(ErrorPrefix.ERR,
-            escapeSimpleString(cmd) + " is not supported");
+            cmd + " is not supported");
     }
 
     public static RedisResponseException noSuchKey() {

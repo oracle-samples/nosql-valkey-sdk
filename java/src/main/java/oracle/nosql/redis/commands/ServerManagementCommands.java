@@ -6,6 +6,8 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.function.Predicate;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import io.netty.channel.group.ChannelGroup;
 import io.netty.handler.codec.redis.ArrayRedisMessage;
@@ -130,15 +132,22 @@ public class ServerManagementCommands extends CommandsBase {
         RawCommand cmd) throws RedisResponseException {
         String[] sects = INFO_ALL_SECTS;
         if (cmd.args != null && cmd.args.length != 0) {
-            sects = Arrays.stream(cmd.args).map(arg ->
-                lambdaUnchecked(() -> Utils.byteBufToString(arg)))
+            String[] arr = Arrays.stream(cmd.args).map(
+                arg -> lambdaUnchecked(() ->
+                    Utils.byteBufToString(arg).toLowerCase()))
                 .distinct().toArray(String[]::new);
+            // We will change this once we start to differentiate these
+            // values. Note that we don't have modules, so "all" and
+            // "everything" will probably always be the same.
+            if (!Arrays.stream(arr).anyMatch(arg -> arg.equals("all") ||
+                arg.equals("default") ||arg.equals("everything") )) {
+                sects = arr;
+            }
         }
 
         // Currently the following is used to run existing Redis tests.
-        StringBuilder sb = null;
+        StringBuilder sb = new StringBuilder();
         for(String sect: sects) {
-            sect = sect.toLowerCase();
             String[] data = null;
             switch (sect) {
                 case INFO_SERVER:
@@ -162,9 +171,7 @@ public class ServerManagementCommands extends CommandsBase {
                 continue;
             }
 
-            if (sb == null) {
-                sb = new StringBuilder();
-            } else {
+            if (sb.length() != 0) {
                 // Sections are separated by blank lines.
                 sb.append("\r\n");
             }
@@ -178,9 +185,10 @@ public class ServerManagementCommands extends CommandsBase {
             }
         }
 
-        return sb != null ?
-            new FullBulkStringRedisMessage(stringToByteBuf(sb.toString())) :
-            FullBulkStringRedisMessage.EMPTY_INSTANCE;
+        // It seems that Redis always appends blank line at the end, even for
+        // empty response.
+        sb.append("\r\n");
+        return new FullBulkStringRedisMessage(stringToByteBuf(sb.toString()));
     }
 
     public RedisMessage handleTime(RedisClientContext client, RawCommand cmd)

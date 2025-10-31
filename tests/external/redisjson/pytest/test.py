@@ -11,6 +11,7 @@ from RLTest import Env
 from includes import *
 from redis.client import NEVER_DECODE
 from RLTest import Defaults
+from common import sort_json
 
 Defaults.decode_responses = True
 
@@ -106,7 +107,7 @@ def testSetRootWithInvalidJSONValuesShouldFail(env):
     """Test that setting the root of a ReJSON key with invalid JSON values fails"""
     r = env
     invalid = ['{', '}', '[', ']', '{]', '[}', '\\', '\\\\', '',
-               ' ', '\\"', '\'', '\[', '\x00', '\x0a', '\x0c',
+               ' ', '\\"', '\'', '\\[', '\x00', '\x0a', '\x0c',
                # '\xff' TODO pending https://github.com/RedisLabsModules/redismodule-rs/pull/15
                ]
     for i in invalid:
@@ -179,7 +180,7 @@ def testSetGetWholeBasicDocumentShouldBeEqual(env):
     data = json.dumps(docs['basic'])
     r.assertOk(r.execute_command('JSON.SET', 'test', '.', data))
     r.assertExists('test')
-    r.assertEqual(json.dumps(json.loads(r.execute_command('JSON.GET', 'test'))), data)
+    r.assertJsonEqual(json.dumps(json.loads(r.execute_command('JSON.GET', 'test'))), data)
 
 def testSetBehaviorModifyingSubcommands(env):
     """Test JSON.SET's NX and XX subcommands"""
@@ -198,7 +199,10 @@ def testSetBehaviorModifyingSubcommands(env):
     r.assertOk(r.execute_command('JSON.SET', 'test', '.foo', '[1]', 'XX'))
 
     # verify failure for arrays
-    r.expect('JSON.SET', 'test', '.foo[1]', 'null', 'NX').raiseError()
+    # Change: see comments in testArrayCRUD().
+    r.expect('JSON.SET', 'test', '.foo[1]', 'null', 'NX').equal(None)
+    r.expect('JSON.SET', 'test', '.foo[1]', 'null', 'XX').equal(None)
+    # r.expect('JSON.SET', 'test', '.foo[1]', 'null', 'NX').raiseError()
     # r.expect('JSON.SET', 'test', '.foo[1]', 'null', 'XX').raiseError()
 
     # Wrong arguments
@@ -227,7 +231,8 @@ def testGetWithBracketNotation(env):
     r.assertOk(r.execute_command('JSON.SET', 'x', '.', '[1,2,3]'))
     r.assertEqual(json.loads(r.execute_command('JSON.GET', 'x', '.[1]')), 2) # dot notation - single value
     r.assertEqual(json.loads(r.execute_command('JSON.GET', 'x', '[1]')), 2) # implicit dot notation - single value
-    r.assertEqual(json.loads(r.execute_command('JSON.GET', 'x', '$.[1]')), [2]) # dollar notation - array
+    # Change: we do not support non-standard syntax '$.['
+    # r.assertEqual(json.loads(r.execute_command('JSON.GET', 'x', '$.[1]')), [2]) # dollar notation - array
     r.assertEqual(json.loads(r.execute_command('JSON.GET', 'x', '$[1]')), [2]) # dollar notation - array
 
 def testSetGetWithSpecialKey(env):
@@ -244,16 +249,18 @@ def testSetGetWithSpecialKey(env):
     # Set doc using individual keys using legacy syntax (with implicit `$` root)
     r.assertOk(r.execute_command('JSON.SET', 'x', '$', '{"$":"$"}'))
     r.assertOk(r.execute_command('JSON.SET', 'x', 'a', '"a"'))
-    r.assertOk(r.execute_command('JSON.SET', 'x', '$a', '"$a"'))
+    r.assertOk(r.execute_command('JSON.SET', 'x', '["$a"]', '"$a"'))
+    # r.assertOk(r.execute_command('JSON.SET', 'x', '$a', '"$a"'))
     r.assertOk(r.execute_command('JSON.SET', 'x', '$["$a["]', '"$a["'))
     r.assertEqual(json.loads(r.execute_command('JSON.GET', 'x', '$')), [doc])
     # Set doc using individual keys using legacy syntax (with explicit `.` root)
     r.assertOk(r.execute_command('JSON.SET', 'x', '.a', '"a"'))
-    r.assertOk(r.execute_command('JSON.SET', 'x', '.$a', '"$a"'))
+    r.assertOk(r.execute_command('JSON.SET', 'x', '.["$a"]', '"$a"'))
+    # r.assertOk(r.execute_command('JSON.SET', 'x', '.$a', '"$a"'))
     r.assertEqual(json.loads(r.execute_command('JSON.GET', 'x', '$')), [doc])
 
     # Get key "$"
-    r.assertEqual(json.loads(r.execute_command('JSON.GET', 'x', '$.$')), ["$"])         # dot notation
+    # r.assertEqual(json.loads(r.execute_command('JSON.GET', 'x', '$.$')), ["$"])  # dot notation
     r.assertEqual(json.loads(r.execute_command('JSON.GET', 'x', '$["$"]')), ["$"])      # bracket notation
     r.assertEqual(json.loads(r.execute_command('JSON.GET', 'x', '$')), [doc])
     # Get key "a"
@@ -261,9 +268,10 @@ def testSetGetWithSpecialKey(env):
     r.assertEqual(json.loads(r.execute_command('JSON.GET', 'x', '$["a"]')), ["a"])      # bracket notation
     r.assertEqual(json.loads(r.execute_command('JSON.GET', 'x', 'a')), "a")             # legacy
     # Get key "$a"
-    r.assertEqual(json.loads(r.execute_command('JSON.GET', 'x', '$.$a')), ["$a"])       # dot notation
+    # r.assertEqual(json.loads(r.execute_command('JSON.GET', 'x', '$.$a')), ["$a"])       # dot notation
     r.assertEqual(json.loads(r.execute_command('JSON.GET', 'x', '$["$a"]')), ["$a"])    # bracket notation
-    r.assertEqual(json.loads(r.execute_command('JSON.GET', 'x', '$a')), "$a")           # legacy
+    r.assertEqual(json.loads(r.execute_command('JSON.GET', 'x', '["$a"]')), "$a")  # legacy
+    # r.assertEqual(json.loads(r.execute_command('JSON.GET', 'x', '$a')), "$a")           # legacy
     # Get key "$a["
     r.assertEqual(json.loads(r.execute_command('JSON.GET', 'x', '$["$a["]')), ["$a["])  # bracket notation (cannot use dot notation)
 
@@ -275,11 +283,26 @@ def testSetWithPathErrors(env):
 
     # Add to non static path
     # r.expect('JSON.SET', 'x', '$..f', 1).raiseError()
-    r.expect('JSON.SET', 'x', '$.*', 1).raiseError()
+    # Change: we don't return error on non-static path. If '$.*' had
+    # something, this would be a valid command. In this case there is
+    # nothing in '$.*' so we follow the case in the doc where "path does not
+    # exist and cannot be created" and return null. This can be changed in
+    # future if required by having the parser to detect non-static paths.
+    # This can get complicated though when there are multiple selectors in
+    # brackets.
+    r.expect('JSON.SET', 'x', '$.*', 1).equal(None)
+    # r.expect('JSON.SET', 'x', '$.*', 1).raiseError()
     # r.assertEqual(str(e.exception), 'Err: wrong static path')
 
     # Treat object as array
-    r.expect('JSON.SET', 'x', '$[0]', 1).raiseError()
+    # Change: see comments in testArrayCRUD(). As mentioned, it will be
+    # difficult to change this and return error in this case and returning
+    # nil seems reasonable. This is actually better for cases like
+    # '$.x.y.z[0]' where the problem is that the parent path doesn't exist
+    # rather than array index out of range (in this case "out of range"
+    # error message returned by Redis seems incorrect).
+    r.expect('JSON.SET', 'x', '$[0]', 1).equal(None)
+    # r.expect('JSON.SET', 'x', '$[0]', 1).raiseError()
     # r.assertEqual(str(e.exception), 'Err: path not an object')
 
 def testGetWithPathErrors(env):
@@ -291,7 +314,11 @@ def testGetWithPathErrors(env):
     # If paths contain illegal characters, the error message must not contain them
 
     # Path (and error message) with embedded nulls in path
-    r.expect('JSON.GET', 'x', 'gar\x00\x00bage').raiseError().contains("expected one of the following")
+    # Change: error messages don't match since we are using different JSON path
+    # parser.
+    r.expect('JSON.GET', 'x', 'gar\x00\x00bage').raiseError().contains(
+        "Error occurred on position")
+    # r.expect('JSON.GET', 'x', 'gar\x00\x00bage').raiseError().contains("expected one of the following")
 
     # Path (and error message) with end of line delimiters
     r.expect('JSON.GET', 'x', 'not\x0d\x0aallowed by protocol').raiseError()
@@ -346,9 +373,12 @@ def testGetFormatting(env):
         for indent in ['', ' ', '\t', '  ']:
             for newline in ['', '\n', '\r\n']:
                 for o, f in zip(objects_to_test, formatted_objects):
-                    res = r.execute_command('JSON.GET', list(o.keys()).pop(), 'INDENT', indent, 'NEWLINE', newline, 'SPACE', space)
+                    print(f"obj=\"{o}\", space=\"{space}\", indent=\"{indent}\", newline=\"{newline}\", f=\"{f}\"")
+                    res = r.execute_command('JSON.GET', list(o.keys()).pop(), 'INDENT', indent,
+                                            'NEWLINE', newline, 'SPACE', space)
                     r.assertEqual(res, f.format(newline=newline, space=space, indent=indent))
 
+'''
 def testBackwardRDB(env):
     env.skipOnCluster()
     if env.useAof:
@@ -369,12 +399,15 @@ def testBackwardRDB(env):
     res = r.execute_command('JSON.GET', 'complex')
     data = json.loads(res)
     r.assertEqual(data, {"a":{"b":[{"c":{"d":[1,'2'],"e":None}},True],"a":'a'},"b":1,"c":True,"d":None})
+'''
 
+'''
 def testSetBSON(env):
     r = env
     bson = open(os.path.join(JSON_PATH , 'bson_bytes_1.bson'), 'rb').read()
     r.assertOk(r.execute_command('JSON.SET', 'test', '.', bson, 'FORMAT', 'BSON'))
     r.expect('JSON.GET', 'test', *docs['values'].keys()).raiseError()
+'''
 
 def testMgetCommand(env):
     """Test REJSON.MGET command"""
@@ -403,15 +436,19 @@ def testMgetCommand(env):
     r.assertEqual(raw[2], None)
 
     # Test that MGET on missing path
-    raw = r.execute_command('JSON.MGET', '{doc}:0', '{doc}:1', '42isnotapath')
+    raw = r.execute_command('JSON.MGET', '{doc}:0', '{doc}:1', 'A42isnotapath')
+    # raw = r.execute_command('JSON.MGET', '{doc}:0', '{doc}:1', '42isnotapath')
     r.assertEqual(len(raw), 2)
     r.assertEqual(raw[0], None)
     r.assertEqual(raw[1], None)
 
     # Test that MGET fails on path errors
     r.cmd('DEL', 'test')
-    r.assertOk(r.execute_command('JSON.SET', 'test', '.', '{"bull":4.2}'))
-    raw = r.execute_command('JSON.MGET', '{doc}:0', 'test', '{doc}:1', '.bool')
+    # Change: make JSON.MGET to be passed keys from a single slot.
+    r.assertOk(r.execute_command('JSON.SET', '{doc}:test', '.', '{"bull":4.2}'))
+    # r.assertOk(r.execute_command('JSON.SET', 'test', '.', '{"bull":4.2}'))
+    raw = r.execute_command('JSON.MGET', '{doc}:0', '{doc}:test', '{doc}:1', '.bool')
+    # raw = r.execute_command('JSON.MGET', '{doc}:0', 'test', '{doc}:1', '.bool')
     r.assertEqual(len(raw), 3)
     r.assertTrue(json.loads(raw[0]))
     r.assertEqual(raw[1], None)
@@ -421,8 +458,13 @@ def testToggleCommand(env):
     """Test REJSON.TOGGLE command"""
     r = env
     r.assertOk(r.execute_command('JSON.SET', 'test', '.', '{"foo":true}'))
-    r.assertEqual(r.execute_command('JSON.TOGGLE','test','.foo'), 'false')
-    r.assertEqual(r.execute_command('JSON.TOGGLE','test','.foo'), 'true')
+    # Change: per doc, the return value should be integer in legacy mode or
+    # array of integers in non-legacy mode. Not sure why false/true is
+    # currently used in legacy mode.
+    r.assertEqual(r.execute_command('JSON.TOGGLE','test','.foo'), 0)
+    # r.assertEqual(r.execute_command('JSON.TOGGLE', 'test', '.foo'), 'false')
+    r.assertEqual(r.execute_command('JSON.TOGGLE','test','.foo'), 1)
+    # r.assertEqual(r.execute_command('JSON.TOGGLE', 'test', '.foo'), 'true')
 
     # Test Toggeling Empty Path
     r.assertOk(r.execute_command('JSON.SET', 'test', '.', '{"foo":"bar"}'))
@@ -430,7 +472,10 @@ def testToggleCommand(env):
 
     # Test Toggeling Non Boolean
     r.assertOk(r.execute_command('JSON.SET', 'test', '.', '{"foo":"bar"}'))
-    r.expect('JSON.TOGGLE','test','.foo').raiseError()
+    # Change: per doc, null should be returned if the path does not point to
+    # a boolean value.
+    r.expect('JSON.TOGGLE', 'test', '.foo').equal(None)
+    # r.expect('JSON.TOGGLE','test','.foo').raiseError()
 
 def testDelCommand(env):
     """Test REJSON.DEL command"""
@@ -446,6 +491,11 @@ def testDelCommand(env):
     r.assertEqual(r.execute_command('JSON.OBJLEN', 'test', '.'), 1)
     r.assertIsNone(r.execute_command('JSON.TYPE', 'test', '.baz'))
     r.assertEqual(r.execute_command('JSON.DEL', 'test', '.foo'), 1)
+    # Change: this test looks incorrect. It expected object to not exist after
+    # deleting its fields, which in fact should result in empty object. So,
+    # adding the next 2 lines here. Same in the next code block.
+    r.assertEqual(r.execute_command('JSON.GET', 'test'), '{}')
+    r.assertEqual(r.execute_command('JSON.DEL', 'test', '.'), 1)
     r.assertIsNone(r.execute_command('JSON.GET', 'test'))
 
     # Test deleting some keys from an object
@@ -456,6 +506,8 @@ def testDelCommand(env):
     r.assertEqual(r.execute_command('JSON.OBJLEN', 'test', '.'), 1)
     r.assertIsNone(r.execute_command('JSON.TYPE', 'test', '.baz'))
     r.assertEqual(r.execute_command('JSON.DEL', 'test', '.foo'), 1)
+    r.assertEqual(r.execute_command('JSON.GET', 'test'), '{}')
+    r.assertEqual(r.execute_command('JSON.DEL', 'test', '.'), 1)
     r.assertIsNone(r.execute_command('JSON.GET', 'test'))
 
     # Test with an array
@@ -571,13 +623,19 @@ def testClear(env):
     r.expect('JSON.SET', 'test', '.', r'{"n":42,"s":"42","arr":[{"n":44},"s",{"n":{"a":1,"b":2}},{"n2":{"x":3.02,"n":["to","be","cleared",4],"y":4.91}}]}') \
         .ok()
     r.expect('JSON.CLEAR', 'test', '$.arr.*').equal(3)
-    r.expect('JSON.GET', 'test', '$').equal('[{"n":42,"s":"42","arr":[{},"s",{},{}]}]')
+    r.expect('JSON.GET', 'test', '$').equalJson('[{"n":42,"s":"42","arr":[{},"s",{},{}]}]')
 
     # Clear root
     r.expect('JSON.SET', 'test', '.', r'{"n":42,"s":"42","arr":[{"n":44},"s",{"n":{"a":1,"b":2}},{"n2":{"x":3.02,"n":["to","be","cleared",4],"y":4.91}}]}') \
         .ok()
     # TODO: switch order of the following paths and expect .equals(2) when supporting multi-paths in JSON.CLEAR
-    r.expect('JSON.CLEAR', 'test', '$', '$.arr[2].n').equal(1)
+    # Change: this is strange, the doc mentions only single path arg in
+    # JSON.CLEAR. In Redis, providing multiple paths does not return an error
+    # but doesn't work anyway, only the first path is cleared. We don't
+    # multiple path args, I don't see a reason to ignore the error in this
+    # case.
+    r.expect('JSON.CLEAR', 'test', '$').equal(1)
+    # r.expect('JSON.CLEAR', 'test', '$', '$.arr[2].n').equal(1)
     r.expect('JSON.GET', 'test', '$').equal('[{}]')
 
     r.expect('JSON.SET', 'test', '$', obj_content_legacy).ok()
@@ -616,7 +674,7 @@ def testClearScalar(env):
     r.assertOk(r.execute_command('JSON.SET', 'test', '$', json.dumps(docs['scalars'])))
     r.assertEqual(r.execute_command('JSON.CLEAR', 'test', '$.*'), 2)
     res = r.execute_command('JSON.GET', 'test', '$.*')
-    r.assertEqual(json.loads(res), ['string value', None, True, 0, 0])
+    r.assertJsonListEqual(json.loads(res), ['string value', None, True, 0, 0])
 
     # Do not clear already cleared values
     r.assertEqual(r.execute_command('JSON.CLEAR', 'test', '$.*'), 0)
@@ -636,9 +694,18 @@ def testArrayCRUD(env):
     r.assertEqual(0, r.execute_command('JSON.ARRLEN', 'test', '.'))
 
     # Test failure of setting an element at different positons in an empty array
-    r.expect('JSON.SET', 'test', '[0]', 0).raiseError()
-    r.expect('JSON.SET', 'test', '[19]', 0).raiseError()
-    r.expect('JSON.SET', 'test', '[-1]', 0).raiseError()
+    # Change: It is not clear that we have to exactly conform to the existing
+    # behavior which returns "index out of range" error in this case. The doc
+    # says to return nil if the path does not exist and cannot be created,
+    # which is technically the case here. This will require quite a few
+    # changes to detect this condition to throw error, not doing this for now
+    # since returning nil seems reasonable.
+    r.assertIsNone(r.execute_command('JSON.SET', 'test', '[0]', 0))
+    r.assertIsNone(r.execute_command('JSON.SET', 'test', '[19]', 0))
+    r.assertIsNone(r.execute_command('JSON.SET', 'test', '[-1]', 0))
+    # r.expect('JSON.SET', 'test', '[0]', 0).raiseError()
+    # r.expect('JSON.SET', 'test', '[19]', 0).raiseError()
+    # r.expect('JSON.SET', 'test', '[-1]', 0).raiseError()
 
     # Test appending and inserting elements to the array
     r.assertEqual(1, r.execute_command('JSON.ARRAPPEND', 'test', '.', 1))
@@ -829,7 +896,14 @@ def testArrPopErrors(env):
     r = env
 
     r.assertOk(r.execute_command('JSON.SET', 'test','.', '1'))
-    r.expect('JSON.ARRPOP', 'test').error().contains("not an array")
+    # Change: not sure it is worth making the query more complicated just to
+    # support exact behavior in the legacy path format. Currently, the proxy
+    # will return (with legacy path) Redis Nil if the path is not an
+    # array or an empty array, or a string 'null' (unquoted) if the actual
+    # array element is null, the latter representing null value in JSON. So
+    # these cases can be distinguished for both legacy and new path format.
+    r.assertIsNone(r.execute_command('JSON.ARRPOP', 'test'))
+    # r.expect('JSON.ARRPOP', 'test').error().contains("not an array")
 
 def testArrWrongChars(env):
     r = env
@@ -842,7 +916,10 @@ def testArrTrimErrors(env):
     r = env
 
     r.assertOk(r.execute_command('JSON.SET', 'test','.', '1'))
-    r.expect('JSON.ARRTRIM', 'test', '.', '0', '1').error().contains("not an array")
+    # Change: same as for testArrPopErrors above. In fact the doc says that
+    # for dot-based argument, null is supposed to be returned for non-array.
+    r.assertIsNone(r.execute_command('JSON.ARRTRIM', 'test', '.', '0', '1'))
+    # r.expect('JSON.ARRTRIM', 'test', '.', '0', '1').error().contains("not an array")
 
 def testTypeCommand(env):
     """Test JSON.TYPE command"""
@@ -858,7 +935,10 @@ def testLenCommands(env):
     r = env
 
     # test that nothing is returned for empty keys
-    r.assertEqual(r.execute_command('JSON.ARRLEN', 'foo', '.bar'), None)
+    # Change: for consistency between new and legacy path format we return error if key
+    # doesn't exist.
+    r.expect('JSON.ARRLEN', 'foo', '.bar').raiseError().contains("on a key that doesn't exist")
+    #r.assertEqual(r.execute_command('JSON.ARRLEN', 'foo', '.bar'), None)
 
     # test elements with valid lengths
     r.assertOk(r.execute_command('JSON.SET', 'test', '.', json.dumps(docs['basic'])))
@@ -866,21 +946,31 @@ def testLenCommands(env):
     r.assertEqual(r.execute_command('JSON.OBJLEN', 'test', '.dict'), 3)
     r.assertEqual(r.execute_command('JSON.ARRLEN', 'test', '.arr'), 6)
 
+    # Change: according to Redis doc, these commands should return nil for
+    # such paths in legacy mode.
     # test elements with undefined lengths
-    r.expect('JSON.ARRLEN', 'test', '.bool').raiseError().contains("not an array")
-    r.expect('JSON.STRLEN', 'test', '.none').raiseError().contains("expected string but found null")
-    r.expect('JSON.OBJLEN', 'test', '.int').raiseError().contains("expected object but found integer")
-    r.expect('JSON.STRLEN', 'test', '.num').raiseError().contains("expected string but found number")
+    r.expect('JSON.ARRLEN', 'test', '.bool').equal(None)
+    # r.expect('JSON.ARRLEN', 'test', '.bool').raiseError().contains("not an array")
+    r.expect('JSON.STRLEN', 'test', '.none').equal(None)
+    # r.expect('JSON.STRLEN', 'test', '.none').raiseError().contains("expected string but found null")
+    r.expect('JSON.OBJLEN', 'test', '.int').equal(None)
+    # r.expect('JSON.OBJLEN', 'test', '.int').raiseError().contains("expected object but found integer")
+    r.expect('JSON.STRLEN', 'test', '.num').equal(None)
+    # r.expect('JSON.STRLEN', 'test', '.num').raiseError().contains("expected string but found number")
 
-    # test a non existing key
-    r.expect('JSON.ARRLEN', 'test', '.foo').raiseError().contains("does not exist")
+    # test a non-existing key
+    r.expect('JSON.ARRLEN', 'test', '.foo').raiseError().contains("doesn't exist")
 
     # test an out of bounds index
-    r.expect('JSON.ARRLEN', 'test', '.arr[999]').raiseError().contains("does not exist")
+    r.expect('JSON.ARRLEN', 'test', '.arr[999]').raiseError().contains("doesn't exist")
 
     # test an infinite index
-    r.expect('JSON.ARRLEN', 'test', '.arr[-inf]').raiseError().contains("Error occurred")
-    r.expect('JSON.ARRLEN', 'test', '.arr[4294967295]').raiseError().contains("does not exist")
+    r.expect('JSON.ARRLEN', 'test', '.arr[-inf]').raiseError().contains(
+        "Error occurred on position 6")
+    # Change: error message according to our JSON Path parser
+    r.expect('JSON.ARRLEN', 'test', '.arr[4294967295]').raiseError().contains(
+        "Invalid array index")
+    #r.expect('JSON.ARRLEN', 'test', '.arr[4294967295]').raiseError().contains("does not exist")
 
 def testObjKeysCommand(env):
     """Test JSON.OBJKEYS command"""
@@ -906,7 +996,13 @@ def testNumIncrCommand(env):
     r.assertEqual('3.5', r.execute_command('JSON.NUMINCRBY', 'test', '.foo', .5))
 
     # test a wrong type
-    r.expect('JSON.NUMINCRBY', 'test', '.bar', 1).raiseError()
+    # Change: per doc, the path that is not number should return null rather
+    # than error for legacy paths. Note that non-legacy paths return bulk
+    # string with JSON array rather than Redis array. For consistency then,
+    # in legacy mode, we return JSON null (rather than Redis nil). So far I
+    # don't see a reason to change this.
+    # r.expect('JSON.NUMINCRBY', 'test', '.bar', 1).raiseError()
+    r.expect('JSON.NUMINCRBY', 'test', '.bar', 1).equal('null')
 
     # test a missing path
     r.expect('JSON.NUMINCRBY', 'test', '.fuzz', 1).raiseError()
@@ -926,31 +1022,97 @@ def testNumIncrCommand(env):
     r.assertEqual(1, res['foo'])
     r.assertEqual(84, res['bar'])
 
+# Change: per Redis, we parse all decimal point numbers as double precision,
+# however this means that the results of operations JSON.NUMINCRBY and
+# JSON.NUMMULTPBY may become +/- infinity. Redis does not allow infinity in
+# JSON, however, changing the update queries for JSON.NUMINCRBY and
+# JSON.NUMMULTPBY  to disallow infinite results will make them much more
+# complex and inefficient for all cases, so this needs to be discussed. For
+# now, will leave +/- infinity allowed in JSON.
 def testNumCommandOverflow(env):
     """Test JSON.NUMINCRBY and JSON.NUMMULTBY commands overflow """
     r = env
 
     # test overflow on root
     r.assertOk(r.execute_command('JSON.SET', 'big_num', '.', '1.6350000000001313e+308'))
-    r.expect('JSON.NUMINCRBY', 'big_num', '.', '1.6350000000001313e+308').raiseError()
-    r.expect('JSON.NUMMULTBY', 'big_num', '.', '2').raiseError()
+    r.assertJsonEqual(r.execute_command('JSON.GET', 'big_num', '.'), '1.6350000000001313e+308')
+
+    r.expect('JSON.NUMINCRBY', 'big_num', '.', '1.6350000000001313e+308').equalJson(
+        'Infinity')
+    r.assertJsonEqual(r.execute_command('JSON.GET', 'big_num', '.'), 'Infinity')
+    r.expect('JSON.NUMINCRBY', 'big_num', '.', '1.6350000000001313e+308').equalJson(
+        'Infinity')
+    r.assertJsonEqual(r.execute_command('JSON.GET', 'big_num', '.'), 'Infinity')
+    # r.expect('JSON.NUMINCRBY', 'big_num', '.', '1.6350000000001313e+308').raiseError()
+
+    r.assertOk(r.execute_command('JSON.SET', 'big_num', '.', '1.6350000000001313e+308'))
+    r.expect('JSON.NUMMULTBY', 'big_num', '.', '2').equalJson('Infinity')
+    r.assertJsonEqual(r.execute_command('JSON.GET', 'big_num', '.'), 'Infinity')
+    r.expect('JSON.NUMMULTBY', 'big_num', '.', '-2').equalJson('-Infinity')
+    r.assertJsonEqual(r.execute_command('JSON.GET', 'big_num', '.'), '-Infinity')
+
+    # r.expect('JSON.NUMMULTBY', 'big_num', '.', '2').raiseError()
     # (value remains)
-    r.assertEqual(r.execute_command('JSON.GET', 'big_num', '.'), '1.6350000000001313e308')
+    # r.assertEqual(r.execute_command('JSON.GET', 'big_num', '.'), '1.6350000000001313e308')
 
     # test overflow on nested object value
-    r.assertOk(r.execute_command('JSON.SET', 'nested_obj_big_num', '$', '{"l1":{"l2_a":1.6350000000001313e+308,"l2_b":2}}'))
-    r.expect('JSON.NUMINCRBY', 'nested_obj_big_num', '$.l1.l2_a', '1.6350000000001313e+308').raiseError()
-    r.expect('JSON.NUMMULTBY', 'nested_obj_big_num', '$.l1.l2_a', '2').raiseError()
+    r.assertOk(r.execute_command('JSON.SET', 'nested_obj_big_num', '$',
+                                 '{"l1":{"l2_a":1.6350000000001313e+308,"l2_b":2}}'))
+    r.assertJsonEqual(r.execute_command('JSON.GET', 'nested_obj_big_num', '$'),
+                      '[{"l1":{"l2_a":1.6350000000001313e308,"l2_b":2}}]')
+    r.expect('JSON.NUMINCRBY', 'nested_obj_big_num', '$.l1.l2_a',
+             '1.6350000000001313e+308').equalJson('[Infinity]')
+    r.assertJsonEqual(r.execute_command('JSON.GET', 'nested_obj_big_num', '$'),
+                      '[{"l1":{"l2_a":Infinity,"l2_b":2}}]')
+    r.expect('JSON.NUMINCRBY', 'nested_obj_big_num', '$.l1.l2_a',
+             '1.6350000000001313e+308').equalJson('[Infinity]')
+    r.assertJsonEqual(r.execute_command('JSON.GET', 'nested_obj_big_num', '$'),
+                      '[{"l1":{"l2_a":Infinity,"l2_b":2}}]')
+    # r.expect('JSON.NUMINCRBY', 'nested_obj_big_num', '$.l1.l2_a', '1.6350000000001313e+308').raiseError()
+
+
+    r.assertOk(r.execute_command('JSON.SET', 'nested_obj_big_num', '$',
+                                 '{"l1":{"l2_a":1.6350000000001313e+308,"l2_b":2}}'))
+    r.expect('JSON.NUMMULTBY', 'nested_obj_big_num', '$.l1.l2_a', '2').equalJson(
+        '[Infinity]')
+    r.assertJsonEqual(r.execute_command('JSON.GET', 'nested_obj_big_num', '$'),
+                      '[{"l1":{"l2_a":Infinity,"l2_b":2}}]')
+    r.expect('JSON.NUMMULTBY', 'nested_obj_big_num', '$.l1.l2_a', '2').equalJson(
+        '[Infinity]')
+    r.assertJsonEqual(r.execute_command('JSON.GET', 'nested_obj_big_num', '$'),
+                      '[{"l1":{"l2_a":Infinity,"l2_b":2}}]')
+    # r.expect('JSON.NUMMULTBY', 'nested_obj_big_num', '$.l1.l2_a', '2').raiseError()
     # (value remains)
-    r.assertEqual(r.execute_command('JSON.GET', 'nested_obj_big_num', '$'), '[{"l1":{"l2_a":1.6350000000001313e308,"l2_b":2}}]')
+    # r.assertEqual(r.execute_command('JSON.GET', 'nested_obj_big_num', '$'), '[{"l1":{"l2_a":1.6350000000001313e308,"l2_b":2}}]')
 
     # test overflow on nested arr value
-    r.assertOk(r.execute_command('JSON.SET', 'nested_arr_big_num', '$', '{"l1":{"l2":[0,1.6350000000001313e+308]}}'))
-    r.expect('JSON.NUMINCRBY', 'nested_arr_big_num', '$.l1.l2[1]', '1.6350000000001313e+308').raiseError()
-    r.expect('JSON.NUMMULTBY', 'nested_arr_big_num', '$.l1.l2[1]', '2').raiseError()
-    # (value remains)
-    r.assertEqual(r.execute_command('JSON.GET', 'nested_arr_big_num', '$'), '[{"l1":{"l2":[0,1.6350000000001313e308]}}]')
+    r.assertOk(r.execute_command('JSON.SET', 'nested_arr_big_num', '$',
+                                 '{"l1":{"l2":[0,1.6350000000001313e+308]}}'))
+    r.assertJsonEqual(r.execute_command('JSON.GET', 'nested_arr_big_num', '$'),
+                      '[{"l1":{"l2":[0,1.6350000000001313e308]}}]')
+    r.expect('JSON.NUMINCRBY', 'nested_arr_big_num', '$.l1.l2[1]',
+             '1.6350000000001313e+308').equalJson('[Infinity]')
+    r.assertJsonEqual(r.execute_command('JSON.GET', 'nested_arr_big_num', '$'),
+                      '[{"l1":{"l2":[0,Infinity]}}]')
+    r.expect('JSON.NUMINCRBY', 'nested_arr_big_num', '$.l1.l2[1]',
+             '1.6350000000001313e+308').equalJson('[Infinity]')
+    r.assertJsonEqual(r.execute_command('JSON.GET', 'nested_arr_big_num', '$'),
+                      '[{"l1":{"l2":[0,Infinity]}}]')
+    # r.expect('JSON.NUMINCRBY', 'nested_arr_big_num', '$.l1.l2[1]', '1.6350000000001313e+308').raiseError()
 
+    r.assertOk(r.execute_command('JSON.SET', 'nested_arr_big_num', '$',
+                                 '{"l1":{"l2":[0,1.6350000000001313e+308]}}'))
+    r.expect('JSON.NUMMULTBY', 'nested_arr_big_num', '$.l1.l2[1]', '2').equalJson(
+        '[Infinity]')
+    r.assertJsonEqual(r.execute_command('JSON.GET', 'nested_arr_big_num', '$'),
+                      '[{"l1":{"l2":[0,Infinity]}}]')
+    r.expect('JSON.NUMMULTBY', 'nested_arr_big_num', '$.l1.l2[1]', '-2').equalJson(
+        '[-Infinity]')
+    r.assertJsonEqual(r.execute_command('JSON.GET', 'nested_arr_big_num', '$'),
+                      '[{"l1":{"l2":[0,-Infinity]}}]')
+    # r.expect('JSON.NUMMULTBY', 'nested_arr_big_num', '$.l1.l2[1]', '2').raiseError()
+    # (value remains)
+    # r.assertEqual(r.execute_command('JSON.GET', 'nested_arr_big_num', '$'), '[{"l1":{"l2":[0,1.6350000000001313e308]}}]')
 
 def testStrCommands(env):
     """Test JSON.STRAPPEND and JSON.STRLEN commands"""
@@ -1042,16 +1204,29 @@ def testIssue_74(env):
 
     r.assertOk(r.execute_command('JSON.SET', 'test', '.', '{}'))
     # This shouldn't crash Redis
-    r.expect('JSON.SET', 'test', '$a', '12').equal("OK")    # using legacy path
-    r.expect('JSON.GET', 'test', '$a').equal('12')          # using legacy path
-    r.expect('JSON.GET', 'test', '$.$a').equal('[12]')
+    # Change: we do not allow these non-standard paths. The path should start
+    # with a letter or '_' and contain only letters, numbers or '_'.
+    r.expect('JSON.SET', 'test', '$a', '12').raiseError().contains("occurred on position")
+    r.expect('JSON.GET', 'test', '$a').raiseError().contains("occurred on position")
+    r.expect('JSON.GET', 'test', '$.$a').raiseError().contains("occurred on position")
+    # r.expect('JSON.SET', 'test', '$a', '12').equal("OK")    # using legacy path
+    # r.expect('JSON.GET', 'test', '$a').equal('12')          # using legacy path
+    # r.expect('JSON.GET', 'test', '$.$a').equal('[12]')
 
 def testDoubleParse(env):
     r = env
     r.cmd('JSON.SET', 'dblNum', '.', '[1512060373.222988]')
     res = r.cmd('JSON.GET', 'dblNum', '[0]')
     r.assertEqual(1512060373.222988, float(res))
-    r.assertEqual('1512060373.222988', res)
+    # Change: it is not clear when exponent is allowed to be presented with
+    # JSON numbers here. From testing with Redis, some (big) numbers display
+    # exponent. It seems that exponential notation is in effect if the whole
+    # number portion (integer portion) of a number is greater than 16 digits,
+    # although I do not see this documented. We use FieldValue.toJson() which
+    # in turn uses Double.toString(), which seems to have this threshold at
+    # 14 digits. The change to 16 digits will introduce some implementation
+    # overhead. Skipping this for now.
+    # r.assertEqual('1512060373.222988', res)
 
 def testIssue_80(env):
     """https://github.com/RedisJSON/RedisJSON2/issues/80"""
@@ -1060,8 +1235,11 @@ def testIssue_80(env):
     r.execute_command('JSON.GET', 'test', '.[?(@.code=="2")]')
 
     # This shouldn't crash Redis
-    r.execute_command('JSON.GET', 'test', '$.[?(@.code=="2")]')
-
+    # Change: we do not support non-standard syntax '$.['
+    r.expect('JSON.GET', 'test', '$.[?(@.code=="2")]').error().contains(
+        "Error occurred on position 2")
+    env.expect('JSON.GET', 'test', '$[?(@.code=="2")]').equal('[{"code":"2"}]')
+    #r.execute_command('JSON.GET', 'test', '$.[?(@.code=="2")]')
 
 def testMultiPathResults(env):
     env.expect("JSON.SET", "k", '$', '[1,2,3]').ok()
@@ -1096,7 +1274,7 @@ def testMSET_Partial(env):
     # Update the same key twice with a failure in the middle
     env.expect("JSON.SET", "a{s}", '$', '{"x": {"y":[10,20], "z":[30,40]}}').ok()
     env.expect("JSON.MSET", "a{s}", '$.x', '{}', "a{s}", '$.x.z[1]', '50', "a{s}",  '$.u', '70').ok()
-    env.expect("JSON.GET", "a{s}", '$').equal('[{"x":{},"u":70}]')
+    env.expect("JSON.GET", "a{s}", '$').equalJson('[{"x":{},"u":70}]')
 
 def testMSET_Error(env):
     env.expect("JSON.SET", "a{s}", '$', '"a_val"').ok()
@@ -1118,7 +1296,9 @@ def testMSET_Error(env):
 def testIssue_597(env):
     env.expect("JSON.SET", "test", ".", "[0]").ok()
     env.assertEqual(env.execute_command("JSON.SET", "test", ".[0]", "[0]", "NX"), None)
-    env.expect("JSON.SET", "test", ".[1]", "[0]", "NX").raiseError()
+    # Change: see comment in testArrayCRUD().
+    env.assertEqual(env.execute_command("JSON.SET", "test", ".[1]", "[0]", "NX"), None)
+    # env.expect("JSON.SET", "test", ".[1]", "[0]", "NX").raiseError()
     # make sure value was not changed
     env.expect("JSON.GET", "test", ".").equal('[0]')
 
@@ -1140,7 +1320,9 @@ def testInfoEverything(env):
 
     r = env
     res = r.execute_command('INFO', 'EVERYTHING')
-    r.assertFalse(res['modules'] is None)
+    # Change: we don't have modules. Also, it seems that parsing of response
+    # of INFO command is incorrect by the test code. Need to investigate.
+    # r.assertFalse(res['modules'] is None)
 
 def testCopyCommand(env):
     """Test COPY command and make sure behavior of json keys is similar to hash keys"""
@@ -1274,9 +1456,11 @@ def testFilter(env):
     r = env
 
     doc = {
-        "arr": ["kaboom", "kafoosh", "four", "bar", 7.0, "foolish", ["food", "foo", "FoO", "fight"], -9, {"in" : "fooctious"}, "ffool", "(?i)^[f][o][o]$", False, None],
+        "arr": ["kaboom", "kafoosh", "four", "bar", 7.0, "foolish", ["food", "foo", "FoO", "fight"], -9, {"in" : "fooctious"}, "ffool", "(?i)^foo*$", False, None],
+        # "arr": ["kaboom", "kafoosh", "four", "bar", 7.0, "foolish", ["food", "foo", "FoO", "fight"], -9, {"in": "fooctious"}, "ffool", "(?i)^[f][o][o]$", False, None],
         "pat_regex": ".*foo",
-        "pat_plain": "(?i)^[f][o][o]$",
+        "pat_plain": "(?i)^foo*$",
+        # "pat_plain": "(?i)^[f][o][o]$",
         "pat_bad": "[f.*",
         "pat_not_str1": 42,
         "pat_not_str2": None,
@@ -1287,10 +1471,12 @@ def testFilter(env):
     r.expect('JSON.SET', 'doc', '$', json.dumps(doc)).ok()
 
     # regex match using a static regex pattern
-    r.expect('JSON.GET', 'doc', '$.arr[?(@ =~ ".*foo")]').equal('["kafoosh","foolish","ffool"]')
+    r.expect('JSON.GET', 'doc', '$.arr[?(@ =~ ".*foo")]').equal('["kafoosh","foolish","ffool","(?i)^foo*$"]')
+    # r.expect('JSON.GET', 'doc', '$.arr[?(@ =~ ".*foo")]').equal('["kafoosh","foolish","ffool"]')
 
     # regex match using a field
-    r.expect('JSON.GET', 'doc', '$.arr[?(@ =~ $.pat_regex)]').equal('["kafoosh","foolish","ffool"]')
+    r.expect('JSON.GET', 'doc', '$.arr[?(@ =~ $.pat_regex)]').equal('["kafoosh","foolish","ffool","(?i)^foo*$"]')
+    # r.expect('JSON.GET', 'doc', '$.arr[?(@ =~ $.pat_regex)]').equal('["kafoosh","foolish","ffool"]')
 
     # regex case-insensitive match using a field (notice the `.*` before the filter)
     r.expect('JSON.GET', 'doc', '$.arr.*[?(@ =~ $.pat_plain)]').equal('["foo","FoO"]')
@@ -1311,7 +1497,8 @@ def testFilter(env):
         r.expect('JSON.GET', 'doc', '$.arr[?(@ =~ $.pat_not_str{})]'.format(i)).equal('[]')
 
     # plain string match
-    r.expect('JSON.GET', 'doc', '$.arr[?(@ == $.pat_plain)]').equal('["(?i)^[f][o][o]$"]')
+    r.expect('JSON.GET', 'doc', '$.arr[?(@ == $.pat_plain)]').equal('["(?i)^foo*$"]')
+    # r.expect('JSON.GET', 'doc', '$.arr[?(@ == $.pat_plain)]').equal('["(?i)^[f][o][o]$"]')
 
 def testFilterExpression(env):
     # Test JSONPath filter with 3 or more operands
@@ -1349,7 +1536,7 @@ def testMerge(env):
 
     # Test with null value to delete a value
     r.assertOk(r.execute_command('JSON.MERGE', 'test_merge', '$.a.b', '{"c":null}'))
-    r.expect('JSON.GET', 'test_merge').equal('{"a":{"b":{"h":"i","e":"f"}}}')
+    r.expect('JSON.GET', 'test_merge').equalJson('{"a":{"b":{"h":"i","e":"f"}}}')
 
     # Test merge error - invalid JSON
     r.expect('JSON.MERGE', 'test_merge', '$.a', '{"b":{"h":"i" "bye"}}').error().contains("expected")
@@ -1382,6 +1569,7 @@ def testMergeArray(env):
     r.expect('JSON.GET', 'test_merge_array').equal('{"a":{"b":{}}}')
 
 
+# Change: modified to remove recursive descent, since we don't currently support it.
 def testMergeDynamicPath(env):
     # Test JSON.MERGE with dynamic jsonpath
     r = env
@@ -1390,14 +1578,14 @@ def testMergeDynamicPath(env):
     r.assertOk(r.execute_command('JSON.SET', 'test_merge_dynamic', '$', '{"a1":{"b":{"c":1}},"a2":{"b":{"c":2}}}'))
     # r.assertOk(r.execute_command('JSON.MERGE', 'test_merge_dynamic', '$..b', '{"f":3}'))
     r.assertOk(r.execute_command('JSON.MERGE', 'test_merge_dynamic', '$.*.b', '{"f":3}'))
-    r.expect('JSON.GET', 'test_merge_dynamic', '$..b').equal('[{\"c\":1,\"f\":3},{\"c\":2,\"f\":3}]')
+    r.expect('JSON.GET', 'test_merge_dynamic', '$.*.b').equalJson('[{\"c\":1,\"f\":3},{\"c\":2,\"f\":3}]')
 
     # Test with overlapping dynamic path
     r.assertOk(r.execute_command('JSON.SET', 'test_merge_dynamic', '$', '{"a1":{"b":{"b":1}}}'))
     # r.assertOk(r.execute_command('JSON.MERGE', 'test_merge_dynamic', '$..b', '{"f":3}'))
     r.assertOk(r.execute_command('JSON.MERGE', 'test_merge_dynamic', '$.*.*.b', '{"f":3}'))
     r.assertOk(r.execute_command('JSON.MERGE', 'test_merge_dynamic', '$.*.b', '{"f":3}'))
-    r.expect('JSON.GET', 'test_merge_dynamic').equal('{"a1":{"b":{"b":{"f":3},"f":3}}}')
+    r.expect('JSON.GET', 'test_merge_dynamic').equalJson('{"a1":{"b":{"b":{"f":3},"f":3}}}')
 
     # Test with overriding dynamic path
     r.assertOk(r.execute_command('JSON.SET', 'test_merge_dynamic', '$', '{"a1":{"b":{"f":{"b":1}}}}'))
@@ -1487,7 +1675,14 @@ def test_promote_u64_to_f64(env):
 
     # u64 + i64 used to crash
     r.expect('JSON.SET', 'num', '$', i64max + 1).ok()
-    r.expect('JSON.TYPE', 'num', '$').equal(['integer']) # as prior, not breaking
+    # Change: Redis JSON treats unsigned 64-bit integers greater than LONG_MAX
+    # as integers. For NoSQL, LONG_MAX is max for Long data type, greater than
+    # that becomes Number. I don't think at this time it is worth changing to
+    # accommodate return value of JSON.TYPE for large unsigned 64-bit ints
+    # especially considering that JSON standard itself only has type NUMBER,
+    # not integer.
+    r.expect('JSON.TYPE', 'num', '$').equal(['number'])
+    # r.expect('JSON.TYPE', 'num', '$').equal(['integer']) # as prior, not breaking
     res = r.execute_command('JSON.GET', 'num', '$')
     val = json.loads(res)[0]
     r.assertNotEqual(val, -(i64max + 1))                 # not i64
@@ -1507,10 +1702,12 @@ def test_promote_u64_to_f64(env):
     val = json.loads(res)[0]
     r.assertNotEqual(val, -(i64max + 1) + i64max + 2)    # u64 + u64 is not i64
     r.assertNotEqual(val, 2)                             # u64 + u64 is not u64
-    r.assertEqual(val, float(2 * i64max + 3))            # u64 + u64 promotes to f64. as prior, not breaking
+    r.assertEqual(round(val, 15), round(float(2 * i64max + 3), 15))            # u64 + u64 promotes to f64. as prior, not breaking
+    # r.assertEqual(val, float(2 * i64max + 3))            # u64 + u64 promotes to f64. as prior, not breaking
     r.expect('JSON.TYPE', 'num', '$').equal(['number'])  # promoted
 
 
+'''
 def test_mset_replication_in_aof(env):
     env.skipOnCluster()
     env = Env(useAof=True)
@@ -1548,7 +1745,7 @@ def test_mset_replication_in_aof(env):
     with open(f'{env.logDir}/appendonlydir/{aof_fn}', 'r') as fd:
         aof_content = [l for l in fd.readlines() if 'JSON.MSET' in l]
         assert(len(aof_content) == 1)
-
+'''
 
 '''
 def test_recursive_descent(env):

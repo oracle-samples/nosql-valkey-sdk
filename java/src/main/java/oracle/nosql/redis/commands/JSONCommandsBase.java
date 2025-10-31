@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 import oracle.nosql.redis.RedisServerConfig;
+import oracle.nosql.redis.util.JSONDeserializer;
 import org.antlr.v4.runtime.BaseErrorListener;
 import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
@@ -32,6 +33,7 @@ import oracle.nosql.driver.values.JsonNullValue;
 import oracle.nosql.driver.values.MapValue;
 import oracle.nosql.driver.values.StringValue;
 import oracle.nosql.redis.RedisResponseException;
+import oracle.nosql.redis.RedisResponseException.ErrorPrefix;
 import oracle.nosql.redis.commands.jsonpath.JSONPathToSQLVisitor;
 import oracle.nosql.redis.commands.jsonpath.parser.JSONPathLexer;
 import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser;
@@ -77,10 +79,12 @@ abstract class JSONCommandsBase extends CommandsBase {
     protected static final String ERR_NEW_VAL_NOT_ROOT =
         "new objects must be created at the root";
     protected static final String ERR_KEY_NOT_EXISTS =
-        "operation attempted on non-existing key";
+        "could not perform this operation on a key that doesn't exist";
     protected static final String ERR_WRONG_TYPE =
         "Existing key has wrong Redis type";
-    protected static String ERR_NOT_ARRAY = "result is not an array";
+    protected static final String ERR_NOT_ARRAY = "result is not an array";
+    protected static final String ERR_UNWRAPPED_ARR_ELEM =
+        "unwrapped array element";
 
     public static final String CMD_JSON_SET = "JSON.SET";
     public static final String CMD_JSON_GET = "JSON.GET";
@@ -135,8 +139,8 @@ abstract class JSONCommandsBase extends CommandsBase {
 
             // JSONPath should either be "$" or start with "$." or "$[".
             // Otherwise, it is a legacy path. Note that if path starts with
-            // "$" but not followed by ".", it is a legacy path and "$" is not
-            // root but part of a property name.
+            // "$" but not followed by "." or "[", it is a legacy path and "$"
+            // is not root but part of a property name.
             boolean isLegacy = (c != '$') || (path.length() != 1 &&
                 (path.charAt(1) != '.' && path.charAt(1) != '['));
 
@@ -144,8 +148,16 @@ abstract class JSONCommandsBase extends CommandsBase {
             // Legacy syntax allows path such as ["a"] or .a, which should mean
             // $["a"] and $.a correspondingly.
             if (isLegacy) {
-                path = (path.startsWith("[") || path.startsWith(".")) ?
-                    ROOT_PATH + path : ROOT_PATH_PFX + path;
+                if (path.startsWith(".")) {
+                    // per Redis, allow paths starting with ".["
+                    path = ROOT_PATH +
+                        ((path.length() > 1 && path.charAt(1) == '[') ?
+                            path.substring(1) : path);
+                } else if (path.startsWith("[")) {
+                    path = ROOT_PATH + path;
+                } else {
+                    path = ROOT_PATH_PFX + path;
+                }
             }
 
             return new PathInfo(path, oldPath, isRoot, isLegacy);
@@ -266,13 +278,16 @@ abstract class JSONCommandsBase extends CommandsBase {
 
     protected static FieldValue byteBufToJson(ByteBuf buf)
         throws RedisResponseException {
+        String str;
         try {
-            return FieldValue.createFromJson(
-                byteBufToString(buf), null);
-        } catch(JsonParseException ex) {
+            str = byteBufToString(buf);
+        } catch(Exception ex) {
+            // To conform to Redis error message in this case.
             throw new RedisResponseException(
-                escapeSimpleString(ex.getMessage()), ex);
+                "Couldn't parse as UTF-8 string", ex);
         }
+
+        return JSONDeserializer.deserialize(str);
     }
 
     protected static MapValue makeJSONValue(FieldValue val)
@@ -295,6 +310,11 @@ abstract class JSONCommandsBase extends CommandsBase {
         return res.get(0);
     }
 
+    protected static FieldValue chkLegacyResNoThrow(PathInfo pi,
+        ArrayValue res) {
+        return !pi.isLegacy ? res : (res.size() != 0 ? res.get(0) : null);
+    }
+
     protected static RedisMessage chkLegacyRes(PathInfo pi,
         ArrayRedisMessage res) throws RedisResponseException {
         if (!pi.isLegacy) {
@@ -308,6 +328,17 @@ abstract class JSONCommandsBase extends CommandsBase {
         }
 
         return ls.get(0);
+    }
+
+    protected static RedisMessage chkLegacyResNoThrow(PathInfo pi,
+        ArrayRedisMessage res) {
+        if (!pi.isLegacy) {
+            return res;
+        }
+
+        List<RedisMessage> ls = res.children();
+        return !ls.isEmpty() ?
+            ls.get(0) : FullBulkStringRedisMessage.NULL_INSTANCE;
     }
 
     protected static ParseTree parsePath(String path) {
@@ -479,8 +510,7 @@ abstract class JSONCommandsBase extends CommandsBase {
                 convVal.asMap().get(ARRAY_CONV_KEY) : null;
             
             if (origVal == null) {
-                throw RedisResponseException.corrupt(
-                    "unwrapped array element");
+                throw RedisResponseException.corrupt(ERR_UNWRAPPED_ARR_ELEM);
             }
             
             arr.set(i, untransformValue(origVal));
@@ -621,7 +651,8 @@ abstract class JSONCommandsBase extends CommandsBase {
     protected ArrayRedisMessage getIntArrayReply(MapValue row)
         throws RedisResponseException {
         if (row == null) {
-            throw new RedisResponseException(ERR_KEY_NOT_EXISTS);
+            throw new RedisResponseException(ErrorPrefix.ERR,
+                ERR_KEY_NOT_EXISTS);
         }
     
         chkIsJSON(row);

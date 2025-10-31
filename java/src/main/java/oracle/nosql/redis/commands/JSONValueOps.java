@@ -195,7 +195,7 @@ public class JSONValueOps extends JSONCommandsBase {
 
         MapValue row = doSQLGet(pStmt);
         if (row == null) {
-            throw new RedisResponseException(ERR_KEY_NOT_EXISTS);
+            return FullBulkStringRedisMessage.NULL_INSTANCE;
         }
     
         chkIsJSON(row);
@@ -215,7 +215,7 @@ public class JSONValueOps extends JSONCommandsBase {
                 stringToByteBuf(val.getString())));
         }
 
-        return chkLegacyRes(pi, new ArrayRedisMessage(res));
+        return chkLegacyResNoThrow(pi, new ArrayRedisMessage(res));
     }
 
     public RedisMessage handleJSONObjKeys(RedisClientContext client,

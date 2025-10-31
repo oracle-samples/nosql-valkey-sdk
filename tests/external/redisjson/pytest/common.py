@@ -1,11 +1,15 @@
 import signal
 from contextlib import contextmanager
 from functools import wraps
+
+from RLTest.env import Query
+
 from includes import *
 from packaging import version
 from unittest import SkipTest
 from RLTest import Env
 import inspect
+import json
 
 @contextmanager
 def TimeLimit(timeout):
@@ -76,3 +80,62 @@ def server_version_is_at_least(ver):
 
 def server_version_is_less_than(ver):
     return not server_version_is_at_least(ver)
+
+# Change: these tests often compare returned JSON values. However, in JSON
+# the order of object keys is not defined, so the tests give false positive
+# when the returned string has object keys in different order. The below is
+# a workaround to correct this by sorting the object keys before comparison.
+# Regarding the ..._list_... functions below:
+# Redis JSON (with non-legacy paths) usually returns an array of results. For
+# some cases such as '$.*' where .* refers to object fields, the order of
+# results in that array is not defined, so we should compare such arrays
+# without regards to order.
+
+def sort_json_val(val):
+    if isinstance(val, list):
+        return list(map(sort_json_val, val))
+    if not isinstance(val, dict):
+        return val
+    sortedList = sorted(val.items())
+    sortedVal = {}
+    for k, v in sortedList:
+        sortedVal[k] = sort_json_val(v)
+    return sortedVal
+
+def sort_json_list_val(val):
+    if (isinstance(val, list)):
+        val = sorted(val, key=str)
+    return val
+
+def sort_json(str):
+    return json.dumps(sort_json_val(json.loads(str)))
+
+def sort_json_list(str):
+    return json.dumps(sort_json_list_val(json.loads(str)))
+
+def assertJsonEqual(self, first, second, depth=0, message=None):
+    if (isinstance(first, str)):
+        self.assertEqual(sort_json(first), sort_json(second), depth, message)
+    else:
+        self.assertEqual(sort_json_val(first), sort_json_val(second), depth, message)
+
+def assertJsonListEqual(self, first, second, depth=0, message=None):
+    if (isinstance(first, str)):
+        self.assertEqual(sort_json_list(first), sort_json_list(second), depth, message)
+    else:
+        self.assertEqual(sort_json_list_val(first), sort_json_list_val(second), depth, message)
+
+def equalJson(self, expected):
+    self.env.assertJsonEqual(self.res, expected, 1)
+    return self
+
+def equalJsonList(self, expected):
+    self.env.assertJsonListEqual(self.res, expected, 1)
+    return self
+
+Env.assertJsonEqual = assertJsonEqual
+Env.assertJsonListEqual = assertJsonListEqual
+Query.equalJson = equalJson
+Query.equalJsonList = equalJsonList
+
+
