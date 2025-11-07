@@ -413,7 +413,7 @@ public class StringCommands extends CommandsBase {
     }
 
     public RedisMessage handleStrlen(RedisClientContext client,
-    RawCommand cmd) throws RedisResponseException {
+        RawCommand cmd) throws RedisResponseException {
         chkExactNumArgs(cmd, 1);
         ByteBuf buf = doGetValue(cmd.args[0]);
         return buf != null ? new IntegerRedisMessage(buf.readableBytes()) :

@@ -1415,6 +1415,11 @@ foreach {pop} {BLPOP BLMPOP_LEFT} {
     } {{xlist bar} {xlist foo} {}} { not-supported }
 }
 
+	# Change: this test is probably not relevant for us and the sequence of
+	# blocking BLMPOPs below is problematic since we don't guarantee the order
+	# of unblocking. This can lead to either no blocked clients (error from
+	# wait_for_blocked_client) or some BLMPOP operations not getting
+	# unblocked. So, will disable this testcase.
     test {BLMPOP propagate as pop with count command to replica} {
         set rd [redis_deferring_client]
         set repl [attach_to_replication_stream]
@@ -1439,11 +1444,6 @@ foreach {pop} {BLPOP BLMPOP_LEFT} {
         $rd blmpop 0 2 mylist{t} mylist2{t} right count 10
         wait_for_blocked_client
         r rpush mylist2{t} a b c
-		# Change: this test is probably not relevant to us. Since we don't
-		# support correct unblocking order semantics, the assertion below may
-		# be violated unless we wait for responses from previous BLMPOP
-		# requests before proceeding.
-		set _ [$rd read]
 
         # Released on timeout.
         assert_equal {} [r blmpop 0.01 1 mylist{t} left count 10]
@@ -1467,7 +1467,7 @@ foreach {pop} {BLPOP BLMPOP_LEFT} {
             {set foo{t} bar}
         }
         close_replication_stream $repl
-    } {} {needs:repl}
+    } {} {needs:repl not-applicable}
 
     test {LPUSHX, RPUSHX - generic} {
         r del xlist

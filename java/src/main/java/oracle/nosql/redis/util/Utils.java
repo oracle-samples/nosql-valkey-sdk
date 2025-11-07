@@ -11,11 +11,11 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.security.MessageDigest;
 import java.util.concurrent.TimeUnit;
+import java.util.Base64;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
-import io.netty.handler.codec.base64.Base64;
 import io.netty.util.CharsetUtil;
 import oracle.nosql.driver.TimeToLive;
 import oracle.nosql.driver.values.ArrayValue;
@@ -112,6 +112,9 @@ public class Utils {
     private static final String ERR_INVALID_FLOAT =
         "value is not a valid float";
 
+    private static final Base64.Encoder b64encoder = Base64.getEncoder();
+    private static final Base64.Decoder b64decoder = Base64.getDecoder();
+
     private static RedisResponseException missingOrInvalidField(String name,
         String type) {
         return RedisResponseException.corrupt(String.format(
@@ -177,6 +180,28 @@ public class Utils {
             throw new RedisResponseException(ErrorPrefix.ERR,
                 ERR_INVALID_FLOAT);
         }
+    }
+
+    // Using the result of io.netty.handler.codec.base64.Base64.decode() in
+    // the pipeline produces a leak, the cause of which is unclear. For now,
+    // switched to use java.util.Base64. For encode(), this is actually
+    // better, because io.netty.handler.codec.base64.Base64 allocates direct
+    // buffers which bears extra cost, and there is no reason for to have that
+    // cost since we are not passing encoded buffers down the pipeline.
+    // We can always switch base64 implementation by just changing the
+    // functions below.
+
+    public static String base64encode(byte[] bytes) {
+        return b64encoder.encodeToString(bytes);
+    }
+
+    public static String base64encode(ByteBuf buf) {
+        return b64encoder.encodeToString(
+            ByteBufUtil.getBytes(buf, 0, buf.readableBytes(), false));
+    }
+
+    public static ByteBuf base64decode(String str) {
+        return Unpooled.wrappedBuffer(b64decoder.decode(str));
     }
 
     public static String byteBufToString(ByteBuf buf)
@@ -273,10 +298,9 @@ public class Utils {
     public static String createDigest(ByteBuf buf) {
         try {
             MessageDigest digest = MessageDigest.getInstance(SHA256_ALG);
-            byte[] res = digest.digest(ByteBufUtil.getBytes(buf, 0,
-                buf.readableBytes(), false));
-            return Base64.encode(Unpooled.wrappedBuffer(res)).toString(
-                CharsetUtil.UTF_8);
+            byte[] res = digest.digest(ByteBufUtil.getBytes(
+                buf, 0, buf.readableBytes(), false));
+            return base64encode(res);
         } catch(Exception ex) {
             // This shouldn't happen.
             assert false;

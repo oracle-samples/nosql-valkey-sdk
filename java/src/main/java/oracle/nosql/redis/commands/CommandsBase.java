@@ -14,7 +14,6 @@ import java.util.List;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
-import io.netty.handler.codec.base64.Base64;
 import io.netty.handler.codec.redis.IntegerRedisMessage;
 import io.netty.handler.codec.redis.SimpleStringRedisMessage;
 import io.netty.util.CharsetUtil;
@@ -481,15 +480,13 @@ public abstract class CommandsBase {
     //base64-encode longer keys.
     static RedisKeyInfo makeRedisKeyInfo(ByteBuf buf, long exp) {
         boolean isBin = !ByteBufUtil.isText(buf, CharsetUtil.UTF_8);
-        if (isBin) {
-            buf = Base64.encode(buf);
-        }
-        
-        String data = buf.toString(CharsetUtil.UTF_8);
+        String data = isBin ?
+            base64encode(buf) : buf.toString(CharsetUtil.UTF_8);
+
         String id = data.length() <= SIMPLE_KEY_MAX ?
             (isBin ? BIN_KEY_PFX : STR_KEY_PFX) + data :
             HASH_PFX + Utils.createDigest(buf);
-        
+
         return new RedisKeyInfo(getKeyHashSlot(buf), id, data, isBin, exp);
     }
 
@@ -613,29 +610,24 @@ public abstract class CommandsBase {
         if (!isBin && pfx != STR_VAL_PFX) {
             throw RedisResponseException.corrupt("Invalid value");
         }
-        
-        ByteBuf res = Unpooled.copiedBuffer(val.substring(1),
-            CharsetUtil.UTF_8);
-        if (isBin) {
-            try {
-                res = Base64.decode(res);
-            } catch(Exception ex) {
-                throw RedisResponseException.corrupt(
-                    "Invalid base64 encoding of value");
-            }
+
+        if (!isBin) {
+            return Unpooled.copiedBuffer(val.substring(1),
+                CharsetUtil.UTF_8);
         }
 
-        return res;
+        try {
+            return Utils.base64decode(val.substring(1));
+        } catch(IllegalArgumentException ex) {
+            throw RedisResponseException.corrupt("Invalid base64 string");
+        }
     }
     
     static String makeStrVal(ByteBuf buf) {
         boolean isText = ByteBufUtil.isText(buf, CharsetUtil.UTF_8);
-        if (!isText) {
-            buf = Base64.encode(buf);
-        }
-
-        return (isText ? STR_VAL_PFX : BIN_VAL_PFX) +
-            buf.toString(CharsetUtil.UTF_8);
+        return isText ?
+            STR_VAL_PFX + buf.toString(CharsetUtil.UTF_8) :
+            BIN_VAL_PFX + Utils.base64encode(buf);
     }
 
     static boolean isKeyExpired(MapValue key) {
