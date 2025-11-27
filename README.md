@@ -1,609 +1,1421 @@
-# Oracle NoSQL Redis SDK for Java
+# Oracle NoSQL Redis Proxy and SDK
 
 ## About
 
-The Oracle NoSQL Redis SDK for Java provides interfaces,
-documentation, and examples to help develop Java
-applications that connect to the Oracle NoSQL
-Database Cloud Service, Oracle NoSQL Database or to the Oracle NoSQL
-Cloud Simulator (which runs on a local machine). In order to
-run the Oracle NoSQL Cloud Simulator, a separate download is
-necessary from the Oracle NoSQL OTN download page. The Oracle NoSQL
-Database Cloud Service and Cloud Simulator are referred to as the "cloud
-service" while the Oracle NoSQL Database is referred to as "on-premise."
+Oracle NoSQL Redis Proxy provides a way for applications to use Oracle NoSQL
+database as a [Redis](https://redis.io/about/) store. It allows you to store
+Redis types and data structures persistenly in Oracle NoSQL database tables
+and access them using any of supported
+[Redis Clients](https://redis.io/docs/latest/develop/clients/) or a command
+line interface.
 
-The API for all environments is the same, with the exception of some
-environment-specific classes and methods, mostly related to authentication
-and authorization. The API documentation clearly notes environment-specific
-information.
+The Redis proxy runs as a TCP listener and uses
+[Redis Serialization Protocol](https://redis.io/docs/latest/develop/reference/protocol-spec/)
+(RESP) to interact with clients. You can install and run the Redis proxy as a
+Docker container. You can also invoke it on the command line using Java. For
+Java developers, there are also APIs to start and run the Redis proxy within
+the application process.
 
-## Requirements
+## Prerequisites
 
-Java versions 8 and higher are supported.
+1. Container Engine such as Docker, Rancher Desktop, etc. to install as Docker
+container
+
+    or
+
+    Java Runtime 11 or later to install as Java archive.
+
+2. [Redis CLI](https://redis.io/docs/latest/develop/tools/cli/)
+
+    and/or
+
+    one of
+    [Redis Client API Libraries](https://redis.io/docs/latest/develop/clients/).
+
+3. Access to Oracle NoSQL Database.
+
+    For use with the Oracle NoSQL Database Cloud Service:
+    * An Oracle Cloud Infrastructure account
+    * A user created in that account, in a group with a policy that grants the
+    desired permissions.
+    See
+    [Oracle NoSQL Database Cloud Service](https://docs.oracle.com/en/cloud/paas/nosql-cloud/index.html)
+    for more information.
+
+    For Cloud Simulator, see
+    [Oracle NoSQL Cloud Simulator](https://www.oracle.com/downloads/cloud/nosql-cloud-sdk-downloads.html).
+
+    For use with the Oracle NoSQL Database On Premise:
+    * [Oracle NoSQL Database](https://www.oracle.com/database/technologies/related/nosql.html).
+
+    Note: the Redis proxy only supports Oracle NoSQL Database Server version
+    25.3 and later.
+
+    See
+[Oracle NoSQL Database Downloads](https://www.oracle.com/database/technologies/nosql-database-server-downloads.html)
+to download Oracle NoSQL Database. See
+[Oracle NoSQL Database Documentation](https://docs.oracle.com/en/database/other-databases/nosql-database/index.html)
+to get started with Oracle NoSQL Database. In particular, see
+[Administrator Guide](https://docs.oracle.com/en/database/other-databases/nosql-database/25.3/admin/index.html)
+on how to install, configure and run Oracle NoSQL Database Service.
 
 ## Installation
 
-The Oracle NoSQL SDK for Java can be included in a project in 2 ways:
+You can install the Redis proxy as either:
 
-1. Include a dependency in a Maven project
-2. Download from GitHub
+* Docker container from the GitHub Container Registry:
 
-### Install as a Project Dependency
+    ```bash
+    docker pull ghcr.io/oracle/nosql-redis-proxy:<tag>
+    docker tag ghcr.io/oracle/nosql-redis-proxy:<tag> oracle/nosql-redis-proxy
+    ```
 
-This dependency can be used to include the SDK and its dependencies in your
-project. The version changes with each release.
+    where <tag> is the tag for the image (use *latest* for the latest build).
 
-```
-<dependency>
-  <groupId>com.oracle.nosql.sdk</groupId>
-  <artifactId>nosqldriver</artifactId>
-  <version>5.3.7</version>
-</dependency>
-```
+* Java archive from Maven Central:
 
-### Download from GitHub
+    To run as a standalone Java program, download the jar with dependencies:
 
-You can download the Oracle NoSQL SDK for Java as an archive from
-[GitHub](https://github.com/oracle/nosql-java-sdk/releases). The archive
-contains the runtime library and its dependencies, examples, and
-API documentation.
+    ```bash
+    mvn dependency:copy \
+      -Dartifact=com.oracle.nosql.redis:nosql-redis:<version>:jar:jar-with-dependencies \
+      -DoutputDirectory=<download-directory>
+    ```
 
-## Documentation
+    This should download *nosql-redis-<version>-jar-with-dependencies.jar*
+(where <version> is the version, e.g. 1.0.0). Alternatively, you can download
+it manually from [Maven Central](link to the project artifacts).
 
-See [Oracle NoSQL SDK for Java javadoc](https://oracle.github.io/nosql-java-sdk/) for the latest API documentation.
+    To start the Redis proxy within your Java application, add it as
+dependency of your project in *pom.xml*:
 
-General documentation about the Oracle NoSQL Database and the Oracle NoSQL Database Cloud Service can be found in these locations:
+    ```xml
+    <dependency>
+      <groupId>com.oracle.nosql.redis</groupId>
+      <artifactId>nosql-redis</artifactId>
+      <version>0.1.0</version>
+    </dependency>
+    ```
 
-* [Oracle NoSQL Database Cloud Service](https://docs.oracle.com/en/cloud/paas/nosql-cloud/nosql_dev.html)
-* [Oracle NoSQL Database On Premise](https://docs.oracle.com/en/database/other-databases/nosql-database/)
-
-## Changes
-
-See [CHANGELOG](./CHANGELOG.md) for changes in each release.
-
-## Connect to the Oracle NoSQL Database
-
-There are 3 environments, or services that can be used by the Oracle NoSQL
-SDK for Java:
-
-1. Oracle NoSQL Database Cloud Service
-2. Oracle NoSQL Database On-premise
-3. Oracle NoSQL Database Cloud Simulator
-
-The next sections describe how to connect to each and what information is
-required.
-
-### Connecting to the Oracle NoSQL Database Cloud Service
-
-There are 3 ways to authorize an application using the Oracle NoSQL Database Cloud Service:
-
-1. As a cloud user, or *User Principal*
-2. As an *Instance Principal*, where an instance is a compute instance in the Oracle cloud
-3. As a *Resource Principal*, where the resource is a programmatic entity in the Oracle cloud such as an OCI Function
-
-#### Authorizing with a User Principal
-
-You will need an Oracle Cloud account and credentials to use this SDK. With this
-information, you'll set up a client configuration to tell your application how to
-find the cloud service, and how to properly authenticate.
-See [Acquring Credentials](https://www.oracle.com/pls/topic/lookup?ctx=en/cloud/paas/nosql-cloud/csnsd&id=acquire-creds)
-for details of how to get credentials. This only needs to be done once for any
-user.
-
-You should have the following information in hand:
-
-1. Tenancy OCID
-2. User OCID
-3. Public key fingerprint
-4. Private key file
-5. Optional private key pass phrase
-
-You can supply your user credentials in 2 ways:
-
-1. Using a [Configuration File](https://docs.oracle.com/en-us/iaas/Content/API/Concepts/sdkconfig.htm)
-2. Directly in a [SignatureProvider](https://oracle.github.io/nosql-java-sdk/oracle/nosql/driver/iam/SignatureProvider.html) constructor
-
-See the Quickstart example below for details on using a User Principal
-
-#### Authorizing with an Instance Principal
-
-Instance Principal is an IAM service feature that enables instances to be authorized actors (or principals) to perform actions on service resources. Each compute instance has its own identity, and it authenticates using the certificates that are added to it. See [Calling Services from an instance](https://docs.cloud.oracle.com/en-us/iaas/Content/Identity/Tasks/callingservicesfrominstances.htm) for prerequisite steps to set up Instance Principal.
-
-See the Quickstart example below for code details for using an Instance Principal.
-
-#### Authorizing with a Resource Principal
-
-Resource Principal is an IAM service feature that enables the resources to be authorized actors (or principals) to perform actions on service resources. You may use Resource Principal when calling Oracle NoSQL Database Cloud Service from other Oracle Cloud service resource such as [Functions](https://docs.cloud.oracle.com/en-us/iaas/Content/Functions/Concepts/functionsoverview.htm). See [Accessing Other Oracle Cloud Infrastructure Resources from Running Functions](https://docs.cloud.oracle.com/en-us/iaas/Content/Functions/Tasks/functionsaccessingociresources.htm) for how to set up Resource Principal.
-
-See the Quickstart example below for code details for using a Resource Principal.
-
-### Connecting to the Oracle NoSQL Database On-premise
-
-The on-premise configuration requires a running instance of Oracle NoSQL
-Database. In addition a running proxy service is required. See
-[Oracle NoSQL Database Downloads](https://www.oracle.com/database/technologies/nosql-database-server-downloads.html) for downloads, and see
-[Information about the proxy](https://docs.oracle.com/en/database/other-databases/nosql-database/22.1/admin/proxy-and-driver.html)
-for proxy configuration information.
-
-On-premise authorization requires use of [StoreAccessTokenProvider](https://oracle.github.io/nosql-java-sdk/oracle/nosql/driver/kv/StoreAccessTokenProvider.html)
-See the Quickstart example below for code details for connecting on-premise.
-
-### Connecting to the Oracle NoSQL Database Cloud Simulator
-
-When you develop an application, you may wish to start with
-[Oracle NoSQL Database Cloud Simulator](https://docs.oracle.com/en/cloud/paas/nosql-cloud/csnsd/develop-oracle-nosql-cloud-simulator.html).
-The Cloud Simulator simulates the cloud service and lets you write and test
-applications locally without accessing the Oracle NoSQL Database Cloud Service.
-You may run the Cloud Simulator on localhost.
-
- See the Quickstart example below for code details for connecting to the Cloud Simulator.
-Authorization for the Cloud Simulator is a simple no-op class implemented directly
-in the Quickstart example.
+    Change the version above to the desired version.
 
 ## Quickstart
 
-The following is a quick start tutorial to run a simple program in all supported
-environments. It requires access to the Oracle NoSQL Database Cloud Service,
-a running on-premise Oracle NoSQL Database instance, or a running Oracle
-NoSQL Cloud Simulator instance. As a standalone program it will run most easily
-using a download version of the Oracle NoSQL SDK for Java.
+1. Download and install
+[Oracle NoSQL Database](https://www.oracle.com/database/technologies/nosql-database-server-downloads.html)
+Enterprise Edition.
 
-1. Copy this example into a local file named Quickstart.java
-2. If using directly-supplied cloud service credentials edit the file, adding
-credentials in the appropriate
-[SignatureProvider](https://oracle.github.io/nosql-java-sdk/oracle/nosql/driver/iam/SignatureProvider.html) constructor. The default cloud service behavior looks for credentials in $HOME/.oci/config.
-3. Compile
+2. Download and install
+[Redis CLI](https://redis.io/docs/latest/develop/tools/cli/) as indicated.
+
+    Alternatively you may install *redis-tools* package (for Debian or Ubuntu
+Linux) which includes *redis-cli*:
+
+    ```bash
+    sudo apt update
+    sudo apt install redis-tools
+    ```
+
+3. Install the Redis proxy as a Docker container as described in
+[Installation](#installation) section.
+
+4. Run KVLite. E.g.:
+
+    ```bash
+    $ cd <kv-install-dir>/kv-25.3.21/lib
+    $ java -jar kvstore.jar kvlite -root <kv-root-dir> -store kvstore \
+      -secure-config disable
+    Created new kvlite store with args:
+    -root /home/ypolonsk/test/kv/kvstore-ns/ -store kvstore \
+      -host <hostname> -port 5000 -admin-web-port -1 -secure-config disable
+    ```
+
+5. Run NoSQL Database Proxy. E.g.:
+
+    ```bash
+    $ cd <kv-install-dir>/kv-25.3.21/lib
+    $ java -jar httpproxy.jar -httpPort 8080 -storeName kvstore \
+      -helperHosts localhost:5000 -verbose true
+    Starting Proxy
+    Proxy started:
+    ...
+    ```
+
+6. On another terminal, run Redis proxy:
+(Note that NoSQL endpoint defaults to *host.docker.internal:8080*, see
+[Command Line Parameters](#command-line-parameters)).
+
+    ```bash
+    $ docker run --rm -p 6379:6379 oracle/nosql-redis-proxy -auth kvstore
+    Nov 25, 2025 3:25:55 AM io.netty.handler.logging.LoggingHandler channelRegistered
+    INFO: [id: 0xae728060] REGISTERED
+    Nov 25, 2025 3:25:55 AM io.netty.handler.logging.LoggingHandler bind
+    INFO: [id: 0xae728060] BIND: /0.0.0.0:6379
+    Nov 25, 2025 3:25:55 AM io.netty.handler.logging.LoggingHandler channelActive
+    INFO: [id: 0xae728060, L:/[0:0:0:0:0:0:0:0]:6379] ACTIVE
+    ```
+
+6. On another terminal start *redis-cli*. No arguments are necessary since
+it uses the same default host and port. Then execute some Redis commands. For
+example:
+
+    ```bash
+    $ redis-cli
+    127.0.0.1:6379> set key1 value1
+    OK
+    127.0.0.1:6379> expire key1 1000
+    (integer) 1
+    127.0.0.1:6379> ttl key1
+    (integer) 986
+    127.0.0.1:6379> copy key1 key2
+    (integer) 1
+    127.0.0.1:6379> get key1
+    "value1"
+    127.0.0.1:6379> append key2 2
+    (integer) 7
+    127.0.0.1:6379> get key2
+    "value12"
+    127.0.0.1:6379> keys key*
+    1) "key1"
+    2) "key2"
+    127.0.0.1:6379> lpush l1 5 4 3 2 1
+    (integer) 5
+    127.0.0.1:6379> lrange l1 0 -1
+    1) "1"
+    2) "2"
+    3) "3"
+    4) "4"
+    5) "5"
+    127.0.0.1:6379> rpop l1
+    "5"
+    127.0.0.1:6379> llen l1
+    (integer) 4
+    127.0.0.1:6379> hset h1 field1 value1 field2 value2 field3 1
+    (integer) 3
+    127.0.0.1:6379> hincrby h1 field3 2
+    (integer) 3
+    127.0.0.1:6379> hgetall h1
+    1) "field1"
+    2) "value1"
+    3) "field2"
+    4) "value2"
+    5) "field3"
+    6) "3"
+    127.0.0.1:6379> json.set json1 $ '{ "a": "val", "b": { "x": 1 }, "c": { "y": 1, "arr": [] }}'
+    OK
+    127.0.0.1:6379> json.set json1 $.d '{ "arr2": [] }'
+    OK
+    127.0.0.1:6379> json.get json1
+    "{\"a\":\"val\",\"b\":{\"x\":1},\"c\":{\"arr\":[],\"y\":1},\"d\":{\"arr2\":[]}}"
+    127.0.0.1:6379> json.numincrby json1 $.*.* 2
+    "[3,null,3,null]"
+    127.0.0.1:6379> json.arrappend json1 $.*.* 10
+    1) (nil)
+    2) (integer) 1
+    3) (nil)
+    4) (integer) 1
+    127.0.0.1:6379> json.get json1
+    "{\"a\":\"val\",\"b\":{\"x\":3},\"c\":{\"arr\":[10],\"y\":3},\"d\":{\"arr2\":[10]}}"
+    127.0.0.1:6379> scan 0 count 3
+    1) "210271729058178054"
+    2) 1) "json1"
+      2) "h1"
+      3) "l1"
+    127.0.0.1:6379> scan 210271729058178054 count 3
+    1) "0"
+    2) 1) "key1"
+      2) "key2"
+    ```
+
+## Running Oracle NoSQL Redis Proxy
+
+### NoSQL Database Environments
+
+You can use the Redis proxy to store and access Redis data using one of these
+Oracle NoSQL Database services:
+
+* Oracle NoSQL Database Cloud Service
+* On-Premise Oracle NoSQL Database
+* Oracle NoSQL Database Cloud Simulator
+
+The Redis proxy supports the same connection and authentication parameters as
+supported by
+[Oracle NoSQL Database language SDKs](https://docs.oracle.com/en/database/other-databases/nosql-database/25.3/nsdev/oracle-nosql-database-sdk-drivers.html),
+e.g. [Oracle NoSQL Java SDK](https://github.com/oracle/nosql-java-sdk).
+
+You can connect the Redis proxy to Oracle NoSQL Cloud Service using User
+Credentials, session token, instance principal, resource principal or OKE
+workload identity.
+The Redis proxy can also connect to On-Premise Oracle NoSQL Database (using
+secure or non-secure mode) and Oracle NoSQL Database Cloud Simulator.
+
+The connection configuration is specified when starting the Redis proxy and
+will be described in the [Command Line Parameters](#command-line-parameters)
+section. The Redis proxy will use a group of tables (described in
+[Schema and Data Format](#nosql-database-schema-and-data-format) section) to
+store Redis data. To avoid naming conflicts it is recommended to use separate
+[compartment](https://docs.oracle.com/en/cloud/foundation/cloud_architecture/governance/compartments.html)
+when connecting to Oracle NoSQL Cloud Service or
+[namespace](https://docs.oracle.com/en/database/other-databases/nosql-database/25.3/sqlreferencefornosql/namespace-management.html)
+when connection to On-Premise Oracle NoSQL Database. These can be specified as
+configuration parameters when starting the Redis proxy.
+
+### Run As Docker container
+
+```bash
+docker run [-d] [--rm] -p [<redis_proxy_host>:]<redis_proxy_port>:6379 \
+  [-v host_path1:container_path1 -v host_path2:container_path2 ...] \
+  oracle/nosql-redis-proxy [-param1 value1 -param2 value2 ...]
 ```
-$ javac -cp <path-to-nosqldriver.jar> Quickstart.java
+
+In the above:
+
+* Use *-d* to optionally run container in the background.
+* Use *--rm* to optionally remove container when it exits.
+* Use *-p* to map container port 6379 to your chosen hostname (or ip address)
+and the port on the host. The Redis proxy listens on port 6379 in the
+container. This port needs to be mapped to the port on your host in order for
+Redis clients to connect to it.
+* Use *-v* to optionally map files and directories from the host to the
+container. Note that any file paths you use as part of command line parameters
+or configuration files are the paths inside the container. You need to map
+corresponding paths from the host to the container in order for the Redis
+proxy to find them.
+* The docker image name is optionally followed by command line parameters for
+the Redis proxy, which are described in
+[Command Line Parameters](#command-line-parameters) section.
+
+For example:
+
+```bash
+docker run -rm -p 6379:6379 -v ~/.oci/config:~/.oci/config \
+  -v ~/oracle/redis-proxy/oci_api_key.pem:~/oracle/redis-proxy/oci_api_key.pem \
+  nosql-redis-proxy -auth user -region us-phoenix-1 -compartment users/john
 ```
-4. Run
-Using the cloud service on region us-ashburn-1
+
+In the above example, we are connecting the Redis proxy to Oracle NoSQL
+Database Cloud Service in region *us-phoenix-1* using user's credentials. By
+default, the credentials are stored in OCI config file *~/.oci/config*
+(where ~ is user's home directory), hence the mapping of this file from the
+host to the container. This config file may contain lines such as:
+
+```ini
+[DEFAULT]
+user=ocid1.user.oc1..<user_id>
+fingerprint=<fingerprint>
+key_file=~/oracle/redis-proxy/oci_api_key.pem
+tenancy=ocid1.tenancy.oc1..<tenant_id>
 ```
-$ java -cp .:<path-to-nosqldriver.jar> Quickstart -service cloud -endpoint us-ashburn-1
+
+In order to connect, we also need user's private key file, located at
+*~/oracle/redis-proxy/oci_api_key.pem* in this example, hence we also have to
+map this file from the host to the container at the same location (since we
+are using credentials from the host's OCI config file).
+
+This can be simplified if we store private key file in the same diretory, in
+which case we can just map the directory. In addition, we can also put the
+region in config file so that it doesn't have to be passed as a parameter:
+
+```ini
+[DEFAULT]
+user=ocid1.user.oc1..<user_id>
+fingerprint=<fingerprint>
+key_file=~/.oci/oci_api_key.pem
+tenancy=ocid1.tenancy.oc1..<tenant_id>
+region=us-phoenix-1
 ```
-Using a non-secure on-premise service on endpoint http://localhost:8090
-```
-$ java -cp .:<path-to-nosqldriver.jar> Quickstart -service onprem -endpoint http://localhost:8090
-```
-Using a Cloud Simulator instance on endpoint http://localhost:8080
-```
-$ java -cp .:<path-to-nosqldriver.jar> Quickstart -service cloudsim -endpoint http://localhost:8080
+
+```bash
+docker run -rm -p 6379:6379 -v ~/.oci:~/.oci nosql-redis-proxy -auth user \
+  -compartment users/john
 ```
 
-There is code in the example for using Instance Principal and Resource Principal authorization for the cloud
-service but it is not enabled via a command line option. There is an additional, optional argument to the
-command line that allows specification of a compartment to use, where the compartment is an OCID. This
-is required if using Instance Principal or Resource Principal authorization.
+Note: when the Redis proxy is running in container and you use *endpoint*
+parameter (see [Command Line Parameters](#command-line-parameters) section) to
+connect to Oracle NoSQL Database running on your localhost (e.g. Cloud
+Simulator or local KVLite), the hostname within the endpoint should not be
+*localhost* because this points to the localhost of the container itself.
+Instead, use *host.docker.internal* as the hostname,
+e.g. *host.docker.internal:8080*.
 
+### Run As Java Program
+
+The Redis proxy requires minimum Java 11. You can run the Redis proxy as
+follows:
+
+```bash
+java -cp path/to/nosql-redis-<version>-jar-with-dependencies.jar \
+  oracle.nosql.redis.NoSQLRedisServer [-param1 value1 -param2 value2 ...]
 ```
-/*-
- * Copyright (c) 2019, 2022 Oracle and/or its affiliates. All rights reserved.
- *
- * Licensed under the Universal Permissive License v 1.0 as shown at
- *  https://oss.oracle.com/licenses/upl/
- */
 
-import java.io.IOException;
-import java.util.ArrayList;
+The main class name (oracle.nosql.redis.NoSQLRedisServer) is optionally
+followed by command line parameters for the Redis proxy, which are described
+in [Command Line Parameters](#command-line-parameters) section.
 
-import oracle.nosql.driver.AuthorizationProvider;
-import oracle.nosql.driver.NoSQLHandle;
-import oracle.nosql.driver.NoSQLHandleConfig;
-import oracle.nosql.driver.NoSQLHandleFactory;
-import oracle.nosql.driver.iam.SignatureProvider;
-import oracle.nosql.driver.kv.StoreAccessTokenProvider;
-import oracle.nosql.driver.ops.GetRequest;
-import oracle.nosql.driver.ops.GetResult;
-import oracle.nosql.driver.ops.QueryRequest;
-import oracle.nosql.driver.ops.QueryResult;
-import oracle.nosql.driver.ops.PutRequest;
-import oracle.nosql.driver.ops.PutResult;
-import oracle.nosql.driver.ops.QueryIterableResult;
-import oracle.nosql.driver.ops.Request;
-import oracle.nosql.driver.ops.TableLimits;
-import oracle.nosql.driver.ops.TableRequest;
-import oracle.nosql.driver.values.MapValue;
+From the last example in the previous section:
 
-/**
- * A simple quickstart program to demonstrate Oracle NoSQL Database.
- * It does these things:
- * - create a table
- * - put a row
- * - get a row
- * - run a query using iterable/iterator
- * - run a query using partial results
- * - drop the table
- *
- * See the examples for more interesting operations. This quickstart is
- * intended to illustrate connecting to a service and performing a few
- * operations.
- *
- * This program can be run against:
- *  1. the cloud service
- *  2. the on-premise proxy and Oracle NoSQL Database instance, secure or
- *  not secure.
- *  3. the cloud simulator (CloudSim)
- *
- * To run:
- *   java -cp .:../lib/nosqldriver.jar Quickstart \
- *      -service <cloud|onprem|cloudsim> -endpoint <endpoint-or-region> \
- *      [-compartment <ocid>]
- *
- * The endpoint and arguments vary with the environment.
- *
- * This quick start does not directly support a secure on-premise
- * environment. See the examples for details on that environment.
- */
-public class Quickstart {
+```bash
+java -cp path/to/nosql-redis-<version>-jar-with-dependencies.jar \
+  oracle.nosql.redis.NoSQLRedisServer -auth user -compartment users/john
+```
 
-    private String endpoint;
-    private String service;
+### Run within Java Application
 
-    /* required for Instance/Resource Principal auth */
-    private String compartment = null; // an OCID
+You may also start the Redis proxy programmatically within your Java
+application. The following configuration is equivalent to the previous
+example:
 
-    /* alternative cloud authorization mechanisms */
-    private final static boolean useUserPrincipal = true;
-    private final static boolean useInstancePrincipal = false;
-    private final static boolean useResourcePrincipal = false;
+```java
+  import oracle.nosql.driver.NoSQLHandleConfig;
+  import oracle.nosql.driver.iam.SignatureProvider;
+  ...
+  NoSQLHandleConfig nosqlConfig = new NoSQLHandleConfig(
+    new SignatureProvider());
+  nosqlConfig.setDefaultCompartment("users/john");
+  NoSQLRedisServer redisSvr = new NoSQLRedisServer(
+    new RedisServerConfig(nosqlConfig));
+  redisSvr.start();
+  ...
+  redisSvr.stop(5000);
+```
 
-    private Quickstart(String[] args) {
-        /*
-         * parse arguments
-         */
-        for (int i = 0; i < args.length; i++) {
-            if (args[i].equals("-service")) {
-                service = args[++i];
-            } else if (args[i].equals("-endpoint")) {
-                endpoint = args[++i];
-            } else if (args[i].equals("-compartment")) {
-                compartment = args[++i];
-            } else {
-                System.err.println("Unknown argument: " + args[i]);
-                usage();
-            }
-        }
-        if (service == null || endpoint == null) {
-            System.err.println("-service and -endpoint are required");
-            usage();
-        }
+Note that it is advised to stop the Redis proxy (see *redisSvr.stop*
+above) before you exit your application.
+
+For more information, see [NoSQL Redis Proxy Javadoc](link needed) as well as
+[Javadoc for Oracle NoSQL Java SDK](https://oracle.github.io/nosql-java-sdk/).
+
+### Command Line Parameters
+
+The parameters are used to specify Oracle NoSQL Database environment to which
+the Redis proxy would connect, as well as some Redis proxy-specific
+configuration settings.
+
+The connection and authentication parameters are based on connection
+parameters and authentication types used by SDKs for both Oracle NoSQL
+Database Cloud Service and On-Premise Oracle NoSQL Database.
+
+For more details, see the following:
+
+* For Cloud Service, see
+[Connect to Oracle NoSQL Database Cloud Service](https://docs.oracle.com/en/cloud/paas/nosql-cloud/tasks_connect.html)
+* For On-Prem Database, see
+[Oracle NoSQL Database Proxy](https://docs.oracle.com/en/database/other-databases/nosql-database/25.3/admin/proxy.html)
+* For Cloud Simulator, see
+[Developing in Oracle NoSQL Database Cloud Simulator](https://docs.oracle.com/en/cloud/paas/nosql-cloud/donsq/index.html)
+
+The Redis proxy accepts the following parameters:
+
+* -region <region> (Cloud only) Region to use to connect to Oracle NoSQL
+Database Cloud Service. If not specified, the region will be inferred from
+OCI config file if any.
+
+* -endpoint <endpoint> Endpoint to connect to Oracle NoSQL Database. Cannot be
+used together with *-region*. If not specified, and running with Cloud
+Service, it is assumed the endpoint will be inferred from the OCI config file
+(otherwise an error is returned). If running with On-Prem Database or Cloud
+Simulator, the endpoint defaults to: *host.docker.internal:8080* if running
+inside the container, or *localhost:8080* otherwise.
+
+* -compartment <compartment> (Cloud only) Compartment to use with Oracle NoSQL
+Database Cloud Service. If not specified, defaults to root compartment of the
+tenancy.
+
+* -namespace <namespace> (On-prem only) Namespace to use with Oracle NoSQL
+Database. If not specified, root (global) namespace is used.
+
+* -auth <auth-type> Authentication type. Must be one of these values:
+
+  *user* - (Cloud only) Authenticate with user credentials. The credentials
+  must be present in OCI configuration file. See *-auth-file* and
+  *-auth-profile* parameters.
+  
+  *session-token* - (Cloud only) Authenticate with session token. The
+  credentials and the auth token file must be present in OCI configuration
+  file. See *-auth-file* and *-auth-profile* parameters.
+  
+  *instance* - (Cloud only) Authenticate with instance principal.
+
+  *resource* - (Cloud only) Authenticate with resource principal.
+  
+  *oke* - (Cloud only) Authenticate with Container Engine for Kubernetes (OKE)
+  workload identity.
+  
+  *kvstore* - (On-prem only) Authenticate with on-prem KVStore. See
+  *-auth-file* parameter.
+
+  *cloudsim* - Authenticate with the Cloud Simulator.
+
+If not specified, the default is as follows: if endpoint is specified,
+defaults to *cloudsim*, otherwise defaults to *user*.
+
+* -auth-file If authentication type is *user* or *session-token*, this
+specifies the path to the OCI config file. If authentication type is
+*kvstore*, specifies the path to the on-prem auth file containing user
+credentials, in which case it is assumed Redis proxy is connecting to
+secure on-prem KVStore. On-prem auth file must be in the following format:
+
+    ```ini
+    username=<username>
+    password=<password>
+    ```
+
+For any other auth type, specifying this parameter is an error.
+
+If not specified, the default is as follows: if auth type is *user* or
+*session-token*, the default path to OCI config file is *~/.oci/config*, where
+*~* is user's OS home directory. If auth type is *kvstore* and *-auth-file* is
+not specified, it is assumed Redis proxy is connecting to non-secure KVStore.
+
+* -auth-profile (Cloud only) If auth type is *user* or *session-token*,
+specifies the profile within the OCI congfile that is used to store user's
+credentials. If not specified, the default is *DEFAULT*. For any other auth
+type, specifying this parameter is an error.
+
+* -delegation-token-file (Cloud only) If auth type is *instance*, specifies
+the path to the file that stores delegation token. For any other auth type,
+specifying this parameter is an error.
+
+* -service-acct-token-file (Cloud only) If auth type is *oke*, specifies the
+path to the file that stores service account token. If not specified, default
+service account token file will be used. For any other auth type, specifying
+this parameter is an error.
+
+* -server-ca-cert-file (On-prem only) If auth type is *kvstore* and the
+connection is to secure KVStore (thus *-auth-file* is also specified),
+specifies the path to the file containing X509 certificate for the server's
+certificate authority (CA). This is needed only if the server's certificate is
+signed with non-public CA. The CA certificate must be in PEM format. For any
+other auth type, specifying this parameter is an error.
+
+* -table-limits (Cloud only) Specifies table limits for the table used to
+store Redis data. See
+[Schema and Data Format](#nosql-database-schema-and-data-format) section for
+information on the database schema used. Table limits must be in the format
+_\<read-units\>,\<write-units\>,\<storageGB_\> if using provisional capacity,
+or just *<storageGB>* for on-demand capacity.
+
+    E.g.:
+
+    For provional capacity: *100,100,5*
+
+    For on-demand capacity: *5*
+
+    If not specified, the default limits are as follows: 100 read units, 100 write
+units, 5 GB of storage.
+
+    Note that this parameter only has effect when starting the Redis proxy for the
+first time when the database schema is created, otherwise it is ignored.
+
+* -host Host on which Redis proxy will listen for connections. If not
+specified, defaults to *localhost*. This parameter is not valid if running
+the Redis proxy as Docker container. In this case, use port mapping to map to
+your chosen hostname/ip on the host.
+
+* -port Port on which Redis proxy will listen for connections. If not
+specified, defaults to *6379*. This parameter is not valid if running
+the Redis proxy as Docker container. In this case, use port mapping to map to
+your port on the host.
+
+* -max-retries The limit on the number of retries of certain operations if
+version mismatch is detected due to concurrent operation on the same key.
+See [Concurrency Control](#concurrency-control) section. The default is *100*.
+After the limit is reached, an error will be returned to the application.
+
+* -cleanup-on-startup Whether, on Redis proxy startup, to run a background
+cleanup thread that will check for and purge any abandoned collection element
+data that was left due to previous abnormal termination. The values are
+*true*/*false*. The default is *true*. For more information, see restriction 3
+in [Generic Commands](#generic-commands) section.
+
+Examples (based on running the Redis proxy as a Docker container):
+
+1. Connect to Cloud Service with Instance principal, change max-retries value:
+
+    ```bash
+    docker run -rm -p 6379:6379 oracle/nosql-redis-proxy -auth instance \
+      -region us-phoenix-1 -compartment users/john -max-retries 20
+    ```
+
+2. Connect to On-prem database on running on localhost, non-secure:
+
+    ```bash
+    docker run -rm -p 6379:6379 oracle/nosql-redis-proxy \
+      -endpoint http://localhost:8080 -auth kvstore
+    ```
+
+3. Connect to On-prem database on running on localhost, secure:
+
+    ```bash
+    docker run -rm -p 6379:6379 -v ~/redis_proxy/kvauth:~/kvauth \
+      nosql-redis-proxy -endpoint https://localhost:8081 -auth kvstore \
+      -auth-file ~/kvauth
+    ```
+
+4. Connect to Cloud Simulator running on localhost:
+
+    ```bash
+    docker run -rm -p 6379:6379 nosql-redis-proxy -endpoint http://localhost:8080 \
+      -auth cloudsim
+    ```
+
+## Supported Features and Limitations
+
+### Concurrency
+
+Each running proxy can serve many Redis clients. Any client that uses TCP and
+speaks Redis
+[RESP](https://redis.io/docs/latest/develop/reference/protocol-spec/) protocol
+may connect and use the Redis proxy. The current protocol supported is RESP2.
+
+In addtion, multiple proxies can be run that connect to the same Oracle NoSQL
+Service and destination (including region/endpoint and compartment/namespace)
+and thus will share the same Redis keyspace and Redis data.
+
+Multiple Redis clients connected to the same proxy or different proxies may
+issue concurrent reads and updates of data stored by the same redis key,
+including creation or deletion of a key. E.g. multiple clients may be updating
+the same string, or inserting and deleting elements from the same list.
+
+The Redis proxy will guarantee the data consistency and atomicity of each
+Redis command during concurrent updates, although certain limitations may
+apply to the atomicity of some commands:
+
+* Multikey update commands such as
+[MSET](https://redis.io/docs/latest/commands/mset/) or
+[DEL](https://redis.io/docs/latest/commands/del/) when used with multiple
+keys, have limitation that the command can be performed atomically with at
+most 50 keys. E.g. MSET disallows update of more than 50 keys and DEL, when
+provided with more than 50 keys, will split them in groups of 50 or less and
+sequentially perform atomic delete on each group and as such will not be
+overall atomic.
+* Commands on collections that may take multiple elements, such as
+[LPUSH](https://redis.io/docs/latest/commands/lpush/),
+[LPOP](https://redis.io/docs/latest/commands/lpop/),
+[HSET](https://redis.io/docs/latest/commands/hset/), etc. will not be atomic
+if provided more than 49 elements for each command, but instead the elements
+will be split into groups of 49 or less and atomic operation performed on each
+group.
+
+In the cases above when an update command is split into smaller parts, the
+overall operation may no longer be atomic, because other concurrent operations
+may interleave. In addition, in case of system failure it is possible that
+only part of the overall command becomes durable. However, the data
+consistency is still guaranteed because each of the smaller parts is
+self-contained.
+
+#### Concurrency Control
+
+The Redis proxy uses version-based concurrency control. In highly concurrent
+environment, this means that an operation may have to be retried due to
+version mismatch caused by a concurrent transaction. The limit to the number
+of retries for each command defaults to 100. You can also change this limit by
+using *-max-retries* parameter when starting the Redis proxy. After the
+number of reties reaches the limit, an error will be returned to the
+application.
+
+### Data Partitioning
+
+Oracle NoSQL Redis Proxy implements data distribution and scaling as specified
+in
+[Redis Cluster](https://redis.io/docs/latest/operate/oss_and_stack/management/scaling/).
+The data scales horizontally by being distributed accross multiple shards.
+This is achieved by using
+[Redis Cluster Key Distribution Model](https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec/#key-distribution-model).
+
+Redis key space is split into 16384 hash slots. The data for keys belonging to
+the same slot is guaranteed to be stored on the same shard of Oracle NoSQL
+Database. Effectively, this means that the slot number serves as a shard key
+for particular Redis key. The slots are computed in similar mannner to Redis
+Cluster by using *CRC16(key) mod 16384*.
+
+Just as in Redis Cluster, any command that can operate on multiple keys, such
+as MSET, MGET, DEL, etc. is only allowed when all the keys passed to it belong
+to the same slot. This corresponds to Oracle NoSQL Database requirement that
+only allows atomic operations on data that belongs to the same shard.
+
+Also, as in Redis Cluster, to facilitate creation of such keys, you can use
+[Hash Tags](https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec/#hash-tags).
+So, for example, the keys such as *name:{user12345}* and *address:{user12345}*
+are guaranteed to belong to the same slot.
+
+Note that for collection types such as
+[lists](https://redis.io/docs/latest/develop/data-types/lists/) and
+[hashes](https://redis.io/docs/latest/develop/data-types/hashes/), the Redis
+proxy always stores all data belonging to the same collection on the same
+shard, corresponding to the hash slot of the collection's key.
+
+Note that like Redis Cluster, the Redis proxy does not support multiple
+logical databases, so commands like *SELECT* and *MOVE* are not supported.
+
+### Redis Data Types and Commands
+
+The Redis proxy currently supports a limited subset of Redis types:
+
+* Strings
+* Lists
+* Hashes
+* JSON
+
+The Redis proxy supports most of Redis commands for each of the above types,
+as described below. In addition, it supports most
+[Generic commands](https://redis.io/docs/latest/commands/?group=generic) and
+some of
+[Connection Management commands](https://redis.io/docs/latest/commands/?group=connection)
+commands. A limited number of
+[Server Management commands](https://redis.io/docs/latest/commands/?group=server)
+is also supported.
+
+As in Redis, the keys are binary strings (which can be either text or binary).
+The key expiration semantics is also supported with millisecond precision.
+
+Below we will describe each of the supported command groups, which commands
+are supported and their limitations.
+
+#### Size limitations
+
+Oracle NoSQL Redis Proxy imposes more stringent size limits than are in Redis.
+
+The maximum key size is 128KB (vs 512MB in Redis). There are also limitations
+on maximum size of string values, JSON values, list elements and hash keys and
+values described in the sections below.
+
+#### Strings
+
+The Redis proxy supports most of
+[String Commands](https://redis.io/docs/latest/commands/?group=string).
+
+Supported commands:
+
+* GET
+* SET
+* SETNX
+* SETEX
+* PSETEX
+* GETRANGE
+* SUBSTR
+* STRLEN
+* APPEND
+* SETRANGE
+* INCR
+* INCRBY
+* INCRBYFLOAT
+* DECR
+* DECRBY
+* MGET
+* MSET
+* MSETNX
+* GETDEL
+* GETSET
+* GETEX
+
+Currently not supported commands: *LCS*.
+
+There are following limitations:
+
+1. The size of the string is limited to 256KB (vs 512MB in Redis).
+
+2. As noted above, for multikey commands *MGET*, *MSET* and *MSETNX*, all keys
+passed to the command must belong to the same hash slot, otherwise *CROSSSLOT*
+error is returned. In addition, *MSET* and *MSETNX* allow maximum of 50 keys
+to be passed.
+
+3. Redis allows to execute unconditional *SET*, *SETEX* and other commands
+above that set a value of existing key even if the existing key holds
+different type of value. The Redis proxy allows this as well, but doing so is
+problematic when an existing key holds a collection, like a list or a hash,
+because the storage for existing collection elements will not be immediately
+reclaimed. Instead, the cleanup thread will be run on the next proxy startup
+if *-cleanup-on-startup* parameter is *true* (which is the default).
+
+See restriction 3 in [Generic Commands](#generic-commands) section and
+*-cleanup-on-startup* in [Command Line Parameters](#command-line-parameters)
+section.
+
+In short, executing *SET*, etc. commands on a key holding a collection without
+deleting the key first is not recommended.
+
+#### Lists
+
+The Redis proxy suppports all of
+[List Commands](https://redis.io/docs/latest/commands/?group=list).
+
+Supported commands:
+
+* LPUSH
+* LPOP
+* RPUSH
+* RPOP
+* LMPOP
+* LPUSHX
+* RPUSHX
+* LLEN
+* LREM
+* LINDEX
+* LRANGE
+* LSET
+* LTRIM
+* LPOS
+* LINSERT
+* LMOVE
+* RPOPLPUSH
+* BLPOP
+* BRPOP
+* BLMPOP
+* BLMOVE
+* BRPOPLPUSH
+
+The following restrictions apply:
+
+1. The size of each list element is limited to 256KB.
+
+2. Commands that may create, update or delete multiple list elements, such as
+all varieties of PUSH and POP, LREM and LTRIM, may only be perform atomically
+for maximum of 49 elements. Otherwise, the command is split into multiple
+executions affecting 49 or less elements each.
+
+    Examples:
+
+    ```sh
+    LPUSH list elem1 elem2 ... elem100
+    ```
+
+    is equivalent to executing
+
+    ```sh
+    LPUSH list elem1 ... elem49
+    LPUSH list elem50 ... elem98
+    LPUSH list elem99 elem100
+    ```
+
+    ```sh
+    LPOP list 100
+    ```
+
+    is equivalent to executing
+
+    ```sh
+    LPOP list 49
+    LPOP list 49
+    LPOP list 2
+    ```
+
+    The same is for LREM.
+
+    The execution of LTRIM will also be split if more than 49 elements have to be
+removed from the list. The splitting favors removing from the tail of the
+list first. For example, if the list contains 150 elements (indexes 0 - 149), then
+
+    ```sh
+    LTRIM list 70 71
+    ```
+
+    is equivalent to executing
+
+    ```sh
+    LTRIM list 0 100
+    LTRIM list 20 71
+    LTRIM list 49 51
+    LTRIM list 1 2
+    ```
+
+    In the above, we wish to retain only elements 70 and 71. The first command
+removes the last 49 elements, the second command removes 29 remaining
+elements from the right and 49 - 29 = 20 elements from the left, so that
+we are left with 52 elements and the elements we retain are now at indexes
+50 and 51. The 3rd command remove first 49 elements from the left and the last
+command removes 1 remaining element from the left.
+
+3. Blocking list commands (BLPOP, BRPOP, BLMPOP, BLMOVE, BRPOPLPUSH) use
+polling and thus do not guarantee timely return. Exponential backoff algorithm
+is used starting with delay of about 200ms and doubling it with small random
+interval added. This it is possible that, if no data is available, a blocking
+command will wait longer than it takes for data to become available in the
+list.
+
+4. For blocking list commands, when multiple clients are waiting on a key,
+there is no guaranteed order of unblocking when data arrives. Unlike Redis,
+which first serves the client that has blocked on a key first, here whichever
+client happens to be polling first will get the data.
+
+5. For multi-key commands such as LMOVE, BLMOVE, RPOPLPUSH, BRPOPLPUSH all
+provided keys must belong to the same hash slot, otherwise *CROSSSLOT* error is
+returned.
+
+6. When LINSERT command is used to insert new element between existing list
+elements, on rare occasions this may require reindexing of neighboring list
+elements and very rarely elements further away. If there are many clients
+accessing the same list concurrently, reindexing may fail, and after several
+reindexing attempts an error may be returned to the user. This is a very
+remote possibility.
+
+#### Hashes
+
+The Redis proxy suppports the following
+[Hash Commands](https://redis.io/docs/latest/commands/?group=hash):
+
+* HSET
+* HMSET
+* HDEL
+* HLEN
+* HGET
+* HMGET
+* HSCAN
+* HKEYS
+* HVALS
+* HGETALL
+* HEXISTS
+* HSTRLEN
+* HINCRBY
+* HINCRBYFLOAT
+* HSETNX
+
+Commands not currently supported include all commands dealing with
+per-hash-field expiration time: *HEXPIRE*, *HEXPIREAT*, *HEXPIRETIME*, *HTTL*,
+*HPERSIST*, *HPEXPIRE*, *HPEXPIREAT*, *HPEXPIRETIME*, *HPTTL*, *HGETEX*,
+*HSETEX* (this does not affect per-key expiration time) as well as commands
+*HRANDFIELD* and *HGETDEL*.
+
+There are following limitations:
+
+1. The size of each hash entry, which for this purpose is considered as sum of
+the size of the field and the size of the value, is limited to 256KB.
+
+2. Commands that may create, update or delete multiple hash entries, such as
+HSET, HMSET and HDEL, may only be perform atomically for maximum of 49 elements.
+Otherwise, the command is split into multiple executions affecting 49 or less
+elements each.
+
+    Example:
+
+    ```sh
+    HSET hash field1 value1 field2 value2 ... field100 value100 
+    ```
+
+    is equivalent to executing
+
+    ```sh
+    HSET hash field1 value1 ... field1 field49 field49
+    HSET hash field50 value50 ... field98 value98
+    HSET hash field99 value99 field100 value100
+    ```
+
+#### JSON
+
+The Redis proxy supports most of
+[JSON Commands](https://redis.io/docs/latest/commands/?group=json).
+
+Supported commands:
+
+* JSON.SET
+* JSON.GET
+* JSON.ARRAPPEND
+* JSON.ARRINSERT
+* JSON.ARRPOP
+* JSON.ARRTRIM
+* JSON.ARRLEN
+* JSON.ARRINDEX
+* JSON.STRAPPEND
+* JSON.STRLEN
+* JSON.NUMINCRBY
+* JSON.NUMMULTBY
+* JSON.TOGGLE
+* JSON.TYPE
+* JSON.OBJKEYS
+* JSON.OBJLEN
+* JSON.DEL
+* JSON.FORGET
+* JSON.CLEAR
+* JSON.MGET
+* JSON.MERGE
+* JSON.MSET
+
+Commands not supported: *JSON.DEBUG*, *JSON.DEBUG MEMORY* and *JSON.RESP*.
+
+The Redis proxy uses
+[JSON Path](https://redis.io/docs/latest/develop/data-types/json/path/) syntax
+based on path used in
+[Redis JSON](https://redis.io/docs/latest/develop/data-types/json/), with some
+limitations:
+
+1. Recursive descent (**..**) is not currently supported.
+
+2. There is limited support for regular expressions inside a filter
+expression. In general, regular expressions supported are the ones supported
+by
+[regex_like SQL function](https://docs.oracle.com/en/database/other-databases/nosql-database/25.3/sqlreferencefornosql/regular-expressions.html),
+with couple of enhancements:
+
+    * Constructs __^__ and __$__ are supported to match the beginning and end
+of the string. Note that unlike *regex_like* function, by default the pattern
+would match any substring of the input string, unless __^__ and/or __$__ are
+used. Current syntax only allows __^__ and __$__ at the beginning/end of the
+pattern correspondingly (not including flags, see below).
+
+    * Some in-line flags are supported, using format **(?flags)**. The flags
+supported are the same as described for
+[regex_like SQL function](https://docs.oracle.com/en/database/other-databases/nosql-database/25.3/sqlreferencefornosql/regular-expressions.html).
+The expression **(?flags)** must be at the start of the pattern, before possible **^**.
+Example:  _(?isu)^pat.*$_
+
+3. Property identifier following the dot (.) must begin with a letter or
+underscore (_) and consist of only letters, digits or underscore. Examples:
+
+    Valid path: *$.abc123_*
+
+    Invalid path: *$.a%*
+
+    For more complex identifiers, use brackets instead. E.g.: *$["a%"]*
+
+4. The syntax that contains dot (.) followed by a bracket is not supported.
+E.g.: _$.a.["b"]_ is not supported. Instead, use either _$.a.b_ or _$.a["b"]_
+
+5. Legacy syntax, where paths start either with dot (.) to designate the root
+or otherwise don't start with '$' omitting the root, is supported, with
+restrictions indicated above in 3. and 4. Bracket can follow dot only if the
+dot is the first character designating the root. Examples:
+
+    Valid paths: _.["a"]_, _.a.b[*]_, a.b[1:2]
+
+    Invalid paths: _.a.[*]_, _.a%_, _a.$_, _$$_
+
+
+Besides JSON Path, there are also following restrictions and differences:
+
+1. There is limitation on maximum size of JSON value stored under a key,
+although there is not a definite limit valid for all types of NoSQL service
+which can be used by the Redis proxy. E.g. for Cloud Service, table records
+are limited to maximum size of 512KB, so together, the size of the key, the
+value and additional meta information cannot exceed this limit, otherwise an
+error would be returned.
+
+2. Numeric values allow +/- Infinity and NaN. Like Redis JSON, the Redis proxy
+stores numeric JSON values as double precision floating point number. However,
+Redis JSON disallows non-numeric numbers such as Infinity, -Infinity and NaN,
+while the Redis proxy allows them. In particular, the values of +/- Infinity
+may result when storing numeric values outside of double precision range of
+approximately +/- 1.79769E+308 or using commands *JSON.NUMINCRBY* and
+*JSON.NUMMULTBY* that would result in values outside this range.
+
+3. Like for other multi-key commands, all keys provided to *JSON.MSET* must
+belong to the same hash slot, otherwise *CROSSSLOT* error is returned.
+In addition, *JSON.MSET* may take maximum of 50 keys.
+
+#### Generic commands
+
+The Redis proxy suppports the following
+[Generic Commands](https://redis.io/docs/latest/commands/?group=generic):
+
+* COPY
+* DEL
+* RENAME
+* RENAMENX
+* EXISTS
+* TYPE
+* SCAN
+* KEYS
+* PEXPIRETIME
+* EXPIRETIME
+* PTTL
+* TTL
+* PEXPIRE
+* PEXPIREAT
+* EXPIRE
+* EXPIREAT
+* PERSIST
+
+There are following restrictions:
+
+1. For commands that may take multiple keys, like *COPY*, *DEL*, *RENAME*,
+*RENAMENX* and *EXISTS*, all keys must belong to the same hash slot, otherwise
+*CROSSSLOT* error will be returned.
+
+2. *DEL* command can delete maximum of 50 keys atomically. If more than 50
+keys are provided, the command will be split into multiple atomic operations
+of 50 keys or less.
+
+3. When commands such *DEL*, *RENAME* and *RENAMENX* and *COPY* operate on
+keys containing collections, such as lists and hashes, the deletion or copying
+of collection elements is not done atomically with the creation and/or
+deletion of the keys themselves. This does not affect concurrency or data
+integrity because the elements are bound to their keys via unique id (UUID).
+However, if the Redis proxy was terminated in the middle of such operation
+(e.g. deleting or copying of list elements), some stale data may remain in the
+database. The Redis proxy will try to cleanup such data at startup. This is
+controlled by command line parameter *-cleanup-on-startup* when starting the
+proxy, as described in [Command Line Parameters](#command-line-parameters)
+section.
+
+4. When using *SCAN* command with *MATCH* option or *KEYS* command with
+*pattern* parameter, some more advanced glob patterns may not be supported.
+For example, reverse ranges like *[z-a]* are not supported.
+
+5. For *SCAN* command, you may notice large integer values used as the cursor
+values, unlike small integer values usually shown in examples of *SCAN*
+command.
+
+#### Connection Management commands
+
+The Redis proxy supports limited number of
+[Connection Management Commands](https://redis.io/docs/latest/commands/?group=connection):
+
+* PING
+* ECHO
+* QUIT
+
+Commands *HELLO* and *CLIENT* are partially supported for testing purposes,
+but should not be used by applications.
+
+#### Server Management Commands
+
+The Redis proxy supports the following
+[Server Management Commands](https://redis.io/docs/latest/commands/?group=server):
+
+* DBSIZE
+* TIME
+
+Commands *CONFIG* and *INFO* are partially supported for testing purposes, but
+should not be used by applications.
+
+## NoSQL Database Schema and Data Format
+
+The Redis proxy uses one parent table to store Redis keys and values as well
+as two child tables to store elements of collections, for lists and hashes
+correspondingly. The tables and indexes are created the first time the Redis
+proxy connects to the database.
+
+### On Encoding of Values
+
+In Redis, both keys and values are binary strings, which means they can store
+both text and arbitrary binary data. Even though, using text for keys and/or
+values is more common.
+
+The Redis proxy stores all keys and values as UTF-8 strings. This also
+includes list elements and hash fields and values. UTF-8 text values are
+stored as is. Binary values are stored as base-64 encoding of the value. To
+distinguish between these cases, a 1-character prefix is used, 'T' for text
+and 'B' for binary.
+
+For example:
+
+* String "abcde" will be stored as "Tabcde".
+* Binary value *00 00 00 00* will be stored as "BAAAAAA==".
+
+### Main Redis Table
+
+The main Redis table is created as following:
+
+```sql
+CREATE TABLE redis(slot INTEGER, id STRING, key JSON, value JSON,
+  PRIMARY KEY(SHARD(slot), id));
+```
+
+Each row of this table stores information for a Redis key-value pair:
+
+* Short primary key uniquely identifying the Redis key.
+* The Redis key itself.
+* The value, which stores both the data type and the data. The content of the
+data depends on its data type. For collection types such as lists and hashes,
+this value stores the header of the collection. The elements of the collection
+are stored in separate child tables.
+
+The columns are:
+
+1. slot - key hash slot. See
+[Redis Cluster Key Distribution Model](https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec/#key-distribution-model).
+
+    The slot is computed as CRC16(key) mod 16384. Note that the slot also serves
+as a shard key for this table. This means that keys that hash to the same
+hash slot will always be stored on the same shard and thus may be part of the
+same atomic operation.
+
+2. id - id used to uniquely identify the key. Since slot and id serve as
+primary key and the primary key can be maximum of 64 bytes, we cannot always
+use the Redis key itself (even encoded) as the value for id. Instead, the id
+is determined as follows:
+
+    The encoded value of the key is computed as described in
+[On Encoding of Values](#on-encoding-of-values). If the resulting size is no
+greater than 60 bytes (this is because 4 bytes are also needed to store the
+slot), the resulting value will be stored as id. Otherwise, we compute
+SHA-256 digest, encoded as base-64 and prefixed with prefix 'H' to serve as
+the value of id (thus id will always start with one of the prefixes 'T', 'B'
+or 'H').
+
+3. key - JSON object in the form:
+
+    ```json
+    {
+      "data": <encoded key>,
+      "scanId": <scan id>,
+      "exp": <expiration timestamp>
     }
+    ```
 
-    private static void usage() {
-        System.err.println(
-            "Usage: java -cp <path-to-nosqldriver.jar> Quickstart \\ \n" +
-            " -service <cloud|onprem|cloudsim> -endpoint <endpoint-or-region>" +
-            " \\ \n[-compartment <ocid>]");
-        System.exit(1);
-    }
+    where:
 
-    private NoSQLHandle getHandle() {
-        NoSQLHandleConfig config = new NoSQLHandleConfig(endpoint);
-        if (compartment != null) {
-            config.setDefaultCompartment(compartment);
+    * "data" is a string that stores the full encoded value of the Redis key,
+as described in [On Encoding of Values](#on-encoding-of-values) (not the
+SHA-256 digest).
+    * "scanId" is 64-bit integer value that identifies the key for the purpose
+of the *SCAN* command (this value is needed to maintain the state between
+multiple invokations of the *SCAN* command, because the cursor used in SCAN
+is 64-bit integer).
+    * "exp" is 64-bit integer which is the key expiration time as Unix
+timestamp in milliseconds. This field is optional and only present if the key
+expiration was set by commands *SET*, *EXPIRE*, *EXPIREAT*, *PEXPIRE*,
+*PEXPIREAT*, etc.
+
+4. value - JSON object that stores the value for the key. The exact format
+depends on the type of value. Each value object has a "type" field that
+designates the type of value. Currently supported values for type field are:
+
+    _string_, _list_, _hash_, _ReJSON-RL_ (the last one mimics the type name
+used by Redis JSON).
+
+    1) For string values the format of value object is:
+
+        ```json
+        {
+          "type": "string",
+          "data": <encoded value>
         }
-        /*
-         * By default the handle will log to the console at level INFO.
-         * The default logger can be configured using a logging properties
-         * file specified on the command line, e.g.:
-         *   -Djava.util.logging.config.file=logging.properties
-         * If a user-provided Logger is desired, create and set it here:
-         *  Logger logger = Logger.getLogger("...");
-         *  config.setLogger(logger);
-         * NOTE: the referenced classes must be imported above
-         */
-        config.setRequestTimeout(5000);
-        configureAuth(config);
-        NoSQLHandle handle = NoSQLHandleFactory.createNoSQLHandle(config);
-        System.out.println("Acquired handle for service " + service +
-                           " at endpoint " + endpoint);
-        return handle;
-    }
+        ```
 
-    /*
-     * This method contains all service-specific code in this program
-     */
-    private void configureAuth(NoSQLHandleConfig config) {
-        if (service.equals("cloud")) {
-            try {
-                SignatureProvider authProvider = null;
-                if (useUserPrincipal) {
-                    /*
-                     * Use User Principal authorization using a config
-                     * file in $HOME/.oci/config
-                     */
-                    authProvider = new SignatureProvider();
+        where "data" is a string that stores the value encoded as specified in
+[On Encoding of Values](#on-encoding-of-values)
 
-                    /*
-                     * Credentials can be provided directly by editing the
-                     * appropriate information into the parameters below
-                       authProvider = new SignatureProvider(tenantId, // OCID
-                       userId,         // OCID
-                       fingerprint, // String
-                       privateKeyFile, // File
-                       passphrase);  // char[]
-                    */
-                } else {
-                    if (compartment == null) {
-                        throw new IllegalArgumentException(
-                            "Compartment is required for Instance/Resource " +
-                            "Principal authorization");
-                    }
-                    /*
-                     * There are additional constructors for both Instance and
-                     * Resource Principal, see the javadoc
-                     */
-                    if (useInstancePrincipal) {
-                        authProvider =
-                            SignatureProvider.createWithInstancePrincipal();
-                    } else if (useResourcePrincipal) {
-                        authProvider =
-                            SignatureProvider.createWithResourcePrincipal();
-                    } else {
-                        throw new IllegalArgumentException(
-                            "Authorization method is required");
-                    }
-                }
+    2) For JSON values the format of value object is:
 
-                config.setAuthorizationProvider(authProvider);
-            } catch (IOException ioe) {
-                System.err.println("Unable to configure authentication: " +
-                                   ioe);
-                System.exit(1);
-            }
-        } else if (service.equals("onprem")) {
-            config.setAuthorizationProvider(new StoreAccessTokenProvider());
-        } else if (service.equals("cloudsim")) {
-            /* cloud simulator */
-            config.setAuthorizationProvider(new AuthorizationProvider() {
-                    @Override
-                    public String getAuthorizationString(Request request) {
-                        return "Bearer cloudsim";
-                    }
-
-                    @Override
-                    public void close() {
-                    }
-                });
-        } else {
-            System.err.println("Unknown service: " + service);
-            usage();
+        ```json
+        {
+          "type": "ReJSON-RL",
+          "json": <JSON value>,
+          "pad": <used internally>
         }
-    }
+        ```
 
-    public static void main(String[] args) {
+        where "json" is a value of NoSQL datatype JSON that stores the represented
+JSON value.
 
-        final String tableName = "JavaQuickstart";
+    We will describe the format of value for lists and hashes in the next section.
 
-        /*
-         * The Quickstart instance configures and acquires a handle
-         */
-        Quickstart qs = new Quickstart(args);
+#### Secondary indexes
 
-        /*
-         * Configure and get a NoSQLHandle. All service specific configuration
-         * is handled here
-         */
-        try (NoSQLHandle handle = qs.getHandle()) {
+There is an index on *scanId* to improve performance of *SCAN* command:
 
-            /*
-             * Create a simple table with an integer key, string name and
-             * JSON data
-             */
-            final String createTableStatement =
-                "create table if not exists " + tableName +
-                "(id integer, name string, data json, primary key(id))";
+```sql
+CREATE INDEX scanIdIdx ON redis(key.scanId AS LONG);
+```
 
-            TableRequest tableRequest = new TableRequest()
-                .setStatement(createTableStatement)
-                .setTableLimits(new TableLimits(10, 10, 10));
-            /* this call will succeed or throw an exception */
-            handle.doTableRequest(tableRequest,
-                                  20000, /* wait up to 20 sec */
-                                  1000); /* poll once per second */
+### Child Collection Tables
 
-            System.out.println("Created table " + tableName + " ...");
+Because collections like lists and hashes can become very big and store many
+elements, it does not scale well to store the whole collection in one row of
+the main *redis* table. Instead, the collection elements are stored in
+separate tables *redis.lists* and *redis.hashes* which are child tables of the
+main *redis* table. Each collection element (list element or hash field-value)
+is stored in its own row.
 
-            /*
-             * Construct a row to put
-             */
-            MapValue value = new MapValue()
-                .put("id", 123)
-                .put("name", "joe")
-                .putFromJson("data", "{\"a\": 1, \"b\": 2}", null);
+Note that *redis.lists* stores elements for all lists and *redis.hashes*
+stores elements for all hashes. Since child table's primary key includes
+parent primary key, this uniquely identifies the Redis key of the collection
+to which an element belongs.
 
-            PutRequest putRequest = new PutRequest()
-                .setValue(value)
-                .setTableName(tableName);
+One particular column that is present in both child tables is *cid*
+(collection id), which is a UUID string. This serves as a unique mapping
+between a collection element (row in the child table) and the particular
+collection (stored as a row in a parent table) to which the element belongs.
+This mapping is achived by also storing the same *cid* string as part of
+*value* object described in the previous section. This mapping is needed (even
+though there is already a parent key mapping) because operations like *DEL*,
+*COPY* and *RENAME* cannot be done atomically on large collections and the
+Redis proxy must avoid data corruption in scenarios when a Redis key holding a
+collection is deleted and the same key is recreated (which may also hold a
+collection of the same type or a different value), which could be done by
+multiple Redis clients in a concurrent environment. Using UUID ensures unique
+mapping since UUID will not be reused even if a collection is deleted and new
+collection is created with the same Redis key.
 
-            PutResult putRes = handle.put(putRequest);
+Note that although using UUID protects data integrity, a "garbage" data may be
+left over in *redis.lists* or *redis.hashes* if the proxy is terminated in the
+middle of *DEL*, *COPY* or *RENAME* operation, or if one of unconditional
+*SET* commands is executed on a key holding a collection (doing this is not
+recommended). See *-cleanup-on-startup* parameter in
+[Command Line Parameters](#command-line-parameters) section.
 
-            System.out.println("Put row, result " + putRes);
+#### Lists
 
-            /*
-             * Get a row using the primary key
-             */
-            MapValue key = new MapValue().put("id", 123);
-            GetRequest getRequest = new GetRequest()
-                .setKey(key)
-                .setTableName(tableName);
-            GetResult getRes = handle.get(getRequest);
+For Redis key holding a list, the *value* column of the main *redis* table
+has the following format:
 
-            System.out.println("Got row, result " + getRes);
-
-            /*
-             * Perform a query using iterable and iterator
-             */
-            QueryRequest queryRequest = new QueryRequest()
-                .setStatement("select * from " + tableName);
-
-            /*
-             * To ensure the query resources are closed properly, use
-             * try-with-resources statement.
-             */
-            try (QueryIterableResult results =
-                    handle.queryIterable(queryRequest)) {
-                System.out.println("Query results:");
-                for (MapValue res : results) {
-                    System.out.println("\t" + res);
-                }
-            }
-
-            /*
-             * Perform a query using partial results
-             */
-            queryRequest = new QueryRequest()
-                .setStatement("select * from " + tableName);
-
-            /*
-             * Because a query can return partial results execution must occur
-             * in a loop, accumulating or processing results
-             */
-            ArrayList<MapValue> results = new ArrayList<MapValue>();
-            do {
-                QueryResult queryResult = handle.query(queryRequest);
-                results.addAll(queryResult.getResults());
-            } while (!queryRequest.isDone());
-            System.out.println("Query results again:");
-            for (MapValue res : results) {
-                System.out.println("\t" + res);
-            }
-
-            /*
-             * Drop the table
-             */
-            tableRequest = new TableRequest()
-                .setStatement("drop table if exists " + tableName);
-
-            handle.doTableRequest(tableRequest,
-                                  20000,
-                                  1000);
-            System.out.println("Dropped table " + tableName + ", done...");
-        }
-    }
+```json
+{
+  "type": "list",
+  "cid": <list's cid>,
+  "len": <list's size>
 }
 ```
 
-## Examples
+where:
 
-Several example programs are provided in the examples directory to
-illustrate the API. They can be found in the release download from GitHub or
-directly in [GitHub NoSQL Examples](https://github.com/oracle/nosql-java-sdk/tree/main/examples). These examples can be run
-against the Oracle NoSQL
-Database, the NoSQL Database Cloud Service or an instance of the Oracle
-NoSQL Cloud Simulator. The code that differentiates among the configurations
-is in the file Common.java and can be examined to understand the differences.
+* "cid" - cid string used for mapping between particular collection and its
+elements as explained above.
+* "len" - 64-bit integer that stores the number of elements in the list.
 
-### Running Examples from a Repository Clone
+*redis.lists* child table is created as follows:
 
-Examples can be run directly from a clone of the [GitHub Repository](https://oracle.github.io/nosql-java-sdk/). Once the clone has been built (mvn compile) examples can
-be run in this manner
-
-Run BasicTableExample using a cloud simulator instance on endpoint
-localhost:8080
-
-```
-$ mvn -pl examples exec:java -Dexec.mainClass=BasicTableExample \
-  -Dexec.args="http://localhost:8080"
+```sql
+CREATE TABLE redis.lists(elemId NUMBER, cid STRING AS UUID, value STRING,
+  PRIMARY KEY(elemId));
 ```
 
-Run BasicTableExample using an on-premise  instance on endpoint
-localhost:8090
+The columns are:
 
+1. elemId - numeric value that keeps order between list elements.
+
+2. cid - see explanation above
+
+3. value - the element value as a string encoded as specified in
+[On Encoding of Values](#on-encoding-of-values).
+
+#### Hashes
+
+Hashes, as collections of field-value pairs, can represent objects, so using
+a small hash (with just a few field-value pairs) can be a very common use
+case. For this reason, Redis proxy optimizes storage for small hashes by
+storing them inline, inside the *value* field of the main *redis* table. If
+the hash grows to exceed certain threshold size (number of elements), it is
+automatically converted to multi-row format where the *value* field of the
+main *redis* table only stores hash header and the elements (field-value
+pairs) are stored in *redis.hashes* child table, one per row.
+
+The coversion takes place when the size exceeds threshold size of 48
+field-value pairs (chosen as such because it is maximum size at which the
+conversion can be done atomically). The conversion also happens if any
+field-value pair exceeds certain size, currently chosen as 10 Kb (calculated
+as sum of lenghs of encoded field and value). Note that this is no backward
+conversion, i.e. if the hash becomes smaller it is not converted back to the
+inline format.
+
+For Redis key holding a hash, the *value* column of the main *redis* table
+has the following format:
+
+```json
+{
+  "type": "hash",
+  "cid": <hash's cid>,
+  "len": <hash's size>,
+  "smallVal": <inline value>
+}
 ```
-$ mvn -pl examples exec:java -Dexec.mainClass=BasicTableExample \
-  -Dexec.args="http://localhost:8090 -useKVProxy"
+
+where:
+
+* "cid" - cid string used for mapping between particular collection and its
+elements as explained above.
+* "len" - 64-bit integer that stores the number of entries in the hash. This
+field is present only if the hash is not stored inline (see above).
+* smallVal - value of the hash stored as JSON object. This field is present
+only if the hash is stored inline as described above. We will describe the
+format of this field below.
+
+Note that fields *len* and *smallVal* are mutually exclusive as desribed
+above.
+
+*redis.hashes* child table is used to store hash entries (field-value pairs),
+one per row, for hashes stored in regular multi-row format (not inline). It is
+created as follows:
+
+```sql
+CREATE TABLE redis.hashes(keyId STRING, cid STRING AS UUID, key JSON,
+  value STRING, PRIMARY KEY(keyId));
 ```
 
-Run BasicTableExample using the cloud service on region us-ashburn-1
+The columns are:
 
+1. keyId - id to uniquely identify hash entry in the given hash. It is
+analogous to the *id* column of the main *redis* table and is computed in the
+same way as described for *id* column in [Main Redis Table](#main-redis-table)
+section from the field of the entry.
+
+2. cid - see explanation in the beginning of
+[this section](#child-collection-tables).
+
+3. key - stores the field of the entry. This is analogous to the *key* column
+of the main *redis* table, described in [Main Redis Table](#main-redis-table)
+section. It is a JSON object in the following format:
+
+    ```json
+    {
+      "data": <encoded field>,
+      "scanId": <scan id>
+    }
+    ```
+
+    where "data" is the hash field stored as string encoded as specifed in
+[On Encoding of Values](#on-encoding-of-values) and "scanId" is 64-bit
+integer used for *HSCAN* command, analogous to "scanId" field of key column
+described in [Main Redis Table](#main-redis-table) section. "exp" field may
+also be added in future to support per-hash-entry expiration.
+
+4. value - the value as a string encoded as specified in
+[On Encoding of Values](#on-encoding-of-values).
+
+##### Secondary indexes
+
+There is an index on *key.scanId* to improve performance of *HSCAN* command:
+
+```sql
+CREATE INDEX hScanIdIdx ON redis.hashes(key.scanId AS LONG);
 ```
-$ mvn -pl examples exec:java -Dexec.mainClass=BasicTableExample \
-  -Dexec.args="us-ashburn-1"
+
+Going back to the case when the hash is stored inline in the main *redis*
+table (and *redis.hashes* is not used), the format of *smallVal* field of the
+*value* column mimics *keyId*, *key* and *value* columns of *redis.hashes*
+table. The format of *smallVal* is as follows:
+
+```json
+{
+  "keyId1": {
+    "key": <key1>,
+    "value": <value1>
+  },
+  "keyId2": {
+    "key": <key2>,
+    "value": <val2>
+  },
+  ...
+}
 ```
 
-### Compile and Run Examples using a Downloaded Release
+Each field of *smallVal* is the key id of the hash entry, the value of which
+is an object containing fields "key" and "value" for corresponding hash entry.
+The format for "keyId...", "key" and "value" fields in *smallVal* is the same
+as described above for *keyId*, *key* and *value* columns of *redis.hashes*.
 
-Compile Examples:
+### JSON Format
 
-    $ cd examples
-    $ javac -cp ../lib/nosqldriver.jar *.java
+As mentioned, JSON values are stored in "json" field of *value* column in the
+main *redis* table. One caveat concerns the storage of JSON arrays. For
+technical reasons, each array element is stored encapsulated into an object
+with field "v" storing the element value. E.g. JSON value
 
+```json
+{
+  "a": [1, 2, 3, 4, 5]
+}
+```
 
-#### Run using the Oracle NoSQL Database Cloud Service
+will be stored as
 
-This requires Oracle Cloud credentials.  Credentials can be provided directly in
-API or in a configuration file. The default configuration in
-examples/Common.java uses a configuration file in ~/.oci/config with the
-following contents:
+```json
+{
+  "a": [{ "v": 1 }, { "v": 2 }, { "v": 3 }, { "v": 4 }, { "v": 5 }]
+}
+```
 
-    [DEFAULT]
-    tenancy=<User OCID>
-    user=<Tenancy OCID>
-    fingerprint=<Public key fingerprint>
-    key_file=<PEM private key file>
-    pass_phrase=<Private key passphrase>
-
-Run the example using an Oracle Cloud region endpoint.
-
-    $ java -cp .:../lib/nosqldriver.jar BasicTableExample <region>
-        e.g.
-    $ java -cp .:../lib/nosqldriver.jar BasicTableExample us-ashburn-1
-
-The region argument will change depending on which region you use.
-
-#### Run using the Oracle NoSQL Database On-premise
-
-Running against the on-premise Oracle NoSQL Database on-premise requires
-a running instance of the database and running proxy service. See above.
-
-Run against a not-secure proxy and store, with the proxy running on port 80:
-
-    $ java -cp .:../lib/nosqldriver.jar BasicTableExample http://localhost:80 -useKVProxy
-
-When using a secure proxy and store the proxy will generally run on port 443 and
-requires SSL configuration. In addition the store requires a valid user and
-password which must have been created via administrative procedures.
-
-Assumptions for this command:
-
-1. a driver.trust file in the current directory with the password "123456"
-2. user "driver" with password "Driver.User@01". This user must have been created
-in the store and must have permission to create and use tables.
-
-Run the command:
-
-    $ java -Djavax.net.ssl.trustStorePassword=123456 \
-         -Djavax.net.ssl.trustStore=driver.trust -cp .:../lib/nosqldriver.jar \
-         BasicTableExample https://localhost:443 -useKVProxy -user driver \
-        -password Driver.User@01
-
-#### Run using the Oracle NoSQL Database Cloud Simulator
-
-Run against the Oracle NoSQL Cloud Simulator using its default endpoint
-of localhost:8080, assuming that the Cloud Simulator has been started. If
-started on a different host or port adjust the endpoint accordingly.
-
-    $ java -cp .:../lib/nosqldriver.jar BasicTableExample localhost:8080
-
-## Licenses
-
-See the [LICENSE](LICENSE.txt) file.
-
-The [THIRD\_PARTY\_LICENSES](THIRD_PARTY_LICENSES.txt) file contains third
-party notices and licenses.
-
-## Help
-
-* Open an issue in the [Issues](https://github.com/oracle/nosql-java-sdk/issues) page
-* Post your question on the [Oracle NoSQL Database Community](https://community.oracle.com/community/groundbreakers/database/nosql_database).
-* [Email to nosql\_sdk\_help\_grp@oracle.com](mailto:nosql_sdk_help_grp@oracle.com)
-
-When requesting help please be sure to include as much detail as possible,
-including version of the SDK and **simple**, standalone example code as needed.
-
-## Contributing
-See [CONTRIBUTING](./CONTRIBUTING.md) for details.
-
-## Security
-See [SECURITY](./SECURITY.md) for details.
+This applies to all arrays within the JSON value. The Redis proxy will
+transparently convert between this and regular representation, so Redis
+clients will not be aware of this. This format is only seen if examining the
+table data directly.

@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+import oracle.nosql.driver.RowSizeLimitException;
 import oracle.nosql.redis.RedisServerConfig;
 import oracle.nosql.redis.util.JSONDeserializer;
 import org.antlr.v4.runtime.BaseErrorListener;
@@ -39,6 +40,8 @@ import oracle.nosql.redis.commands.jsonpath.parser.JSONPathLexer;
 import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser;
 import oracle.nosql.redis.util.PreparedStatementCache;
 import oracle.nosql.redis.util.Utils;
+
+import javax.sql.RowSet;
 
 import static oracle.nosql.redis.util.Utils.*;
 
@@ -585,6 +588,9 @@ abstract class JSONCommandsBase extends CommandsBase {
                 return new RedisResponseException(
                     "unsupported or invalid regular expression", ex);
             }
+        } else if (ex instanceof RowSizeLimitException) {
+            return new RedisResponseException(
+                "json value exceeds maximum allowed size", ex);
         }
 
         return super.processNoSQLException(ex);

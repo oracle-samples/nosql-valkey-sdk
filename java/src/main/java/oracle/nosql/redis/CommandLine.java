@@ -101,6 +101,8 @@ class CommandLine {
     private int maxRetries = RedisServerConfig.DEFAULT_MAX_ATOMIC_RETRIES;
     private boolean cleanupOnStartup =
         RedisServerConfig.DEFAULT_CLEANUP_ELEMS_TABLES_ON_STARTUP;
+    private final boolean inContainer =
+        RedisServerConfig.isRunningInContainer();
 
     public CommandLine(String [] args) {
         for (int i = 0; i < args.length; i++) {
@@ -160,7 +162,6 @@ class CommandLine {
             authType = endpoint != null ? AuthType.CLOUDSIM : AuthType.USER;
         }
 
-        final boolean inContainer = RedisServerConfig.isRunningInContainer();
         if (inContainer && (host != null || port != -1)) {
             throw new IllegalArgumentException(
                 "Cannot change host or port when running in container");
@@ -363,9 +364,12 @@ class CommandLine {
             // Cloud Service, the region will be retrieved by the auth
             // provider; if using on-prem or Cloudsim, we default to endpoint
             // "localhost:8080".
-            cfg = authType == AuthType.USER ?
+            cfg = (authType != AuthType.KVSTORE &&
+                authType != AuthType.CLOUDSIM) ?
                 new NoSQLHandleConfig(authProvider) :
-                new NoSQLHandleConfig(RedisServerConfig.DEFAULT_NOSQL_ENDPOINT,
+                new NoSQLHandleConfig(inContainer ?
+                    RedisServerConfig.DEFAULT_NOSQL_ENDPOINT_IN_CONTAINER :
+                    RedisServerConfig.DEFAULT_NOSQL_ENDPOINT,
                     authProvider);
         }
 

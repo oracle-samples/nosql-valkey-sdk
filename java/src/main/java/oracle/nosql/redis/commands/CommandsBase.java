@@ -64,7 +64,10 @@ public abstract class CommandsBase {
         XX
     }
 
-    static final int SIMPLE_KEY_MAX = 63;
+    static final int KEY_MAX_SIZE = 128 * 1024;
+    // From max of 64 bytes in primary key we also have to account for:
+    // 4 bytes for slot and 1 byte for prefix ('T', 'B' or 'H').
+    static final int SIMPLE_KEY_MAX = 59;
 
     static final char STR_KEY_PFX = 'T';
     static final char STR_VAL_PFX = STR_KEY_PFX;
@@ -369,7 +372,7 @@ public abstract class CommandsBase {
         // TODO: Use doWithRetries() for this, perhaps allow storing custom
         // value in RedisRetryException, as well as callback to doWithRetries
         // that takes that value.
-        for(int i = 0; i < config.maxAtomicRetries; i++) {
+        for(int i = 0; i < config.getMaxAtomicRetries(); i++) {
             PutRequest putReq = makePutReqForSet(keyInfo, exp, val, oldVal);
             putReq.setReturnRow(true);
 
@@ -478,7 +481,15 @@ public abstract class CommandsBase {
     //time taken by isText is comparable to the actual UTF-8 conversion.
     //Another way would be to use isText() only for short keys and always
     //base64-encode longer keys.
-    static RedisKeyInfo makeRedisKeyInfo(ByteBuf buf, long exp) {
+    static RedisKeyInfo makeRedisKeyInfo(ByteBuf buf, long exp)
+        throws RedisResponseException {
+        assert buf != null;
+
+        if (buf.readableBytes() > KEY_MAX_SIZE) {
+            throw new RedisResponseException(ErrorPrefix.ERR,
+                "key exceeds maximum allowed size");
+        }
+
         boolean isBin = !ByteBufUtil.isText(buf, CharsetUtil.UTF_8);
         String data = isBin ?
             base64encode(buf) : buf.toString(CharsetUtil.UTF_8);
@@ -490,7 +501,8 @@ public abstract class CommandsBase {
         return new RedisKeyInfo(getKeyHashSlot(buf), id, data, isBin, exp);
     }
 
-    static RedisKeyInfo makeRedisKeyInfo(ByteBuf buf) {
+    static RedisKeyInfo makeRedisKeyInfo(ByteBuf buf)
+        throws RedisResponseException {
         return makeRedisKeyInfo(buf, NO_EXP);
     }
 
@@ -525,10 +537,6 @@ public abstract class CommandsBase {
     static MapValue makePrimaryKey(RedisKeyInfo keyInfo) {
         return new MapValue().put(FLD_SLOT, keyInfo.slot)
             .put(FLD_ID, keyInfo.id);
-    }
-
-    static MapValue makePrimaryKey(ByteBuf buf) {
-        return makePrimaryKey(makeRedisKeyInfo(buf));
     }
 
     // This overload takes exp separately from keyInfo, used for set methods
@@ -690,13 +698,13 @@ public abstract class CommandsBase {
     RedisResponseException failedAtomicRetries() {
         return new RedisResponseException(ErrorPrefix.NOSQL,
             "Failed to perform atomic read-update sequence after " +
-                config.maxAtomicRetries + " tries");
+                config.getMaxAtomicRetries() + " tries");
     }
 
     <R> R doWithRetries(
         Utils.ThrowingNoArgFunction<R, RedisResponseException> func)
         throws RedisResponseException {
-        return Utils.doWithRetries(func, config.maxAtomicRetries);
+        return Utils.doWithRetries(func, config.getMaxAtomicRetries());
     }
 
     boolean isCollectionType() {

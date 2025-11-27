@@ -77,6 +77,7 @@ abstract class ListCommandsBase extends CollectionCommandsBase {
         FROM_JOIN_WHERE_KEY_ID + "AND $l.elemId %s $var2 ORDER BY %s%s";
 
     protected static final BigDecimal VALUE_TWO = new BigDecimal(2);
+    protected static final int MAX_ELEM_LEN = 256 * 1024;
 
     public static final String CMD_LPUSH = "LPUSH";
     public static final String CMD_LPOP = "LPOP";
@@ -214,7 +215,13 @@ abstract class ListCommandsBase extends CollectionCommandsBase {
     }
 
     protected static PutRequest makePutElemReq(RedisKeyInfo keyInfo,
-        BigDecimal elemId, String cid, ByteBuf val) {
+        BigDecimal elemId, String cid, ByteBuf val)
+        throws RedisResponseException {
+        if (val.readableBytes() > MAX_ELEM_LEN) {
+            throw new RedisResponseException(
+                RedisResponseException.ErrorPrefix.ERR,
+                "list element exceeds maximum allowed size");
+        }
         return makePutElemReq(keyInfo, elemId, cid,
             new StringValue(makeStrVal(val)));
     }

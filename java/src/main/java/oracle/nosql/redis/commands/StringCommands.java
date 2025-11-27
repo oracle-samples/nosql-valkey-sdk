@@ -59,6 +59,13 @@ public class StringCommands extends CommandsBase {
         "SELECT $r.id, row_version($r) AS ver, $r.key.exp  AS exp FROM " +
         "redis $r " + WHERE_KEY_IDS_COND;
 
+    private static final String ERR_MAX_SIZE =
+        "string exceeds maximum allowed size";
+
+    // Max row size in the cloud is 512KB, however the row will store more
+    // than just value (in particular, key).  We can adjust this later.
+    protected static final int MAX_STR_LEN = 256 * 1024;
+
     public static final String CMD_GET = "GET";
     public static final String CMD_GETRANGE = "GETRANGE";
     public static final String CMD_SUBSTR = "SUBSTR";
@@ -81,10 +88,6 @@ public class StringCommands extends CommandsBase {
     public static final String CMD_GETSET = "GETSET";
     public static final String CMD_GETEX = "GETEX";
 
-    // Max row size in the cloud is 512KB, however the row will store more
-    // than just value (in particular, key).  We can adjust this later.
-    static final int MAX_STR_LEN = 256 * 1024;
-
     public StringCommands(NoSQLHandle nosqlHandle, RedisServerConfig config,
         PreparedStatementCache pstmtCache) {
         super(nosqlHandle, config, pstmtCache);
@@ -103,7 +106,11 @@ public class StringCommands extends CommandsBase {
         return getStrVal(getData(val));
     }
 
-    private static MapValue makeStringValue(ByteBuf buf) {
+    private static MapValue makeStringValue(ByteBuf buf)
+        throws RedisResponseException {
+        if (buf.readableBytes() > MAX_STR_LEN) {
+            throw new RedisResponseException(ErrorPrefix.ERR, ERR_MAX_SIZE);
+        }
         return new MapValue().put(VALUE_TYPE, TYPE_STRING)
             .put(VALUE_DATA, makeStrVal(buf));
     }
@@ -507,8 +514,7 @@ public class StringCommands extends CommandsBase {
                 "offset is out of range");
         }
         if (off > MAX_STR_LEN) {
-            throw new RedisResponseException(ErrorPrefix.ERR,
-                "string exceeds maximum allowed size");
+            throw new RedisResponseException(ErrorPrefix.ERR, ERR_MAX_SIZE);
         }
         
         final ByteBuf rangeVal = cmd.args[2];
@@ -528,10 +534,7 @@ public class StringCommands extends CommandsBase {
                 }
                 int oldLen = val.readableBytes();
                 long newLen = (int)Math.max(off + rangeValLen, oldLen);
-                if (newLen > MAX_STR_LEN) {
-                    throw new RedisResponseException(ErrorPrefix.ERR,
-                        "string exceeds maximum allowed size");
-                }
+                // newLen will be checked against max len in makeStringValue()
                 if (val.capacity() < newLen) {
                     val.capacity((int)newLen);
                 }

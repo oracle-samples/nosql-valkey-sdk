@@ -25,33 +25,72 @@ import io.netty.handler.logging.LogLevel;
 import io.netty.handler.logging.LoggingHandler;
 import io.netty.util.concurrent.GlobalEventExecutor;
 import oracle.nosql.driver.NoSQLHandle;
-import oracle.nosql.driver.NoSQLHandleConfig;
 import oracle.nosql.driver.NoSQLHandleFactory;
-import oracle.nosql.driver.ops.TableLimits;
 import oracle.nosql.driver.ops.TableRequest;
 
+/**
+ * This class represents NoSQL Redis proxy. You can use it to run the proxy
+ * within your application's process. For example:
+ * <pre>
+ *     import oracle.nosql.driver.NoSQLHandleConfig;
+ *     import oracle.nosql.driver.iam.SignatureProvider;
+ *     ...
+ *     NoSQLHandleConfig nosqlConfig = new NoSQLHandleConfig(
+ *       Region.US_PHOENIX_1);
+ *     nosqlConfig.setDefaultCompartment(...);
+ *     nosqlConfig.setAuthorizationProvider(new SignatureProvider(...));
+ *     NoSQLRedisServer redisSvr = new NoSQLRedisServer(
+ *         new RedisServerConfig(nosqlConfig));
+ *     redisSvr.start();
+ *     ...
+ *     redisSvr.stop();
+ * </pre>
+ */
 public class NoSQLRedisServer {
     private static final int DEFAULT_SHUTDOWN_TIMEOUT_MILLIS = 5000;
 
+    /**
+     * @hidden
+     */
     public static final String MAIN_TABLE_NAME = "redis";
+
+    /**
+     * @hidden
+     */
     public static final String CREATE_MAIN_TABLE =
         "CREATE TABLE IF NOT EXISTS redis(slot INTEGER, id STRING, " +
         "key JSON, value JSON, PRIMARY KEY(SHARD(slot), id))";
+
+    /**
+     * @hidden
+     */
     public static final String CREATE_SCANID_IDX =
         "CREATE INDEX IF NOT EXISTS scanIdIdx ON redis(key.scanId AS LONG)";
+
+    /**
+     * @hidden
+     */
     public static final String CREATE_LIST_TABLE =
         "CREATE TABLE IF NOT EXISTS redis.lists(elemId NUMBER, " +
         "cid STRING AS UUID, value STRING, PRIMARY KEY(elemId))";
+
+    /**
+     * @hidden
+     */
     public static final String CREATE_LIST_PK2_IDX =
         "CREATE INDEX IF NOT EXISTS listPK2Idx ON " +
         "redis.lists(slot, id, elemId)";
-    public static final String CREATE_LISTID_IDX =
-        "CREATE INDEX IF NOT EXISTS listIdIdx ON redis.lists(cid)";
+
+    /**
+     * @hidden
+     */
     public static final String CREATE_HASH_TABLE =
         "CREATE TABLE IF NOT EXISTS redis.hashes(keyId STRING, " +
         "cid STRING AS UUID, key JSON, value STRING, PRIMARY KEY(keyId))";
-    public static final String CREATE_HASHID_IDX =
-        "CREATE INDEX IF NOT EXISTS hashIdIdx ON redis.hashes(cid)";
+
+    /**
+     * @hidden
+     */
     public static final String CREATE_HSCANID_IDX =
         "CREATE INDEX IF NOT EXISTS hScanIdIdx ON " +
         "redis.hashes(key.scanId AS LONG)";
@@ -66,12 +105,17 @@ public class NoSQLRedisServer {
     private final ExecutorService cmdWorkerPool =
         Executors.newCachedThreadPool();
     private Thread svrRun;
-    private Exception svrRunEx;
+    private Throwable svrRunEx;
 
+    /**
+     * Creates new instance of NoSQLRedisServer.
+     * @param config Configuration object that specifies the parameters used
+     * to start NoSQL Redis proxy.
+     */
     public NoSQLRedisServer(RedisServerConfig config) {
         this.config = config;
         this.nosqlHandle = NoSQLHandleFactory.createNoSQLHandle(
-            config.nosqlConfig);
+            config.getNosqlConfig());
         
         cmdHandlers = new CommandHandlers(nosqlHandle, config, clientChannels);
         cmdHandlers.init();
@@ -104,7 +148,7 @@ public class NoSQLRedisServer {
     private void initDB() {
         nosqlHandle.doTableRequest(new TableRequest()
                 .setStatement(CREATE_MAIN_TABLE)
-                .setTableLimits(config.tableLimits),
+                .setTableLimits(config.getTableLimits()),
             30000, 500);
         nosqlHandle.doTableRequest(new TableRequest()
             .setStatement(CREATE_SCANID_IDX), 30000, 500);
@@ -113,15 +157,11 @@ public class NoSQLRedisServer {
         nosqlHandle.doTableRequest(new TableRequest()
             .setStatement(CREATE_LIST_PK2_IDX), 30000, 500);
         nosqlHandle.doTableRequest(new TableRequest()
-            .setStatement(CREATE_LISTID_IDX), 30000, 500);
-        nosqlHandle.doTableRequest(new TableRequest()
             .setStatement(CREATE_HASH_TABLE), 30000, 500);
-        nosqlHandle.doTableRequest(new TableRequest()
-            .setStatement(CREATE_HASHID_IDX), 30000, 500);
         nosqlHandle.doTableRequest(new TableRequest()
             .setStatement(CREATE_HSCANID_IDX), 30000, 500);
 
-        if (config.cleanupElemsTablesOnStartup) {
+        if (config.getCleanupElemsTablesOnStartup()) {
             cmdHandlers.scheduleElemTablesCleanup(cmdWorkerPool);
         }
     }
@@ -129,7 +169,8 @@ public class NoSQLRedisServer {
     private void run() {
         try {
             // Start the server.
-            serverChannel = serverBootstrap.bind(config.host, config.port)
+            serverChannel = serverBootstrap.bind(config.getHost(),
+                    config.getPort())
                 .syncUninterruptibly().channel();
             // Wait until the server socket is closed.
             serverChannel.closeFuture().syncUninterruptibly();
@@ -159,14 +200,31 @@ public class NoSQLRedisServer {
         return true;
     }
 
+    /**
+     * Returns whether NoSQL Redis proxy is running.
+     * This value is {@code false} if the proxy hasn't been started or
+     * stopped running due to an exception. You can retrieve the exception by
+     * calling {@link #getException()} method.
+     * @return {@code true} if NoSQL Redis proxy is running, otherwise
+     * {@code false}
+     */
     public synchronized boolean isRunning() {
         return svrRun != null && svrRunEx == null;
     }
 
-    public synchronized Exception getException() {
+    /**
+     * Returns exception if any occurred during startup or running of NoSQL
+     * Redis proxy after calling {@link #start()} method.
+     * @return exception if any, otherwise {@code null}
+     */
+    public synchronized Throwable getException() {
         return svrRunEx;
     }
 
+    /**
+     * Starts NoSQL Redis proxy.
+     * @throws Exception if the proxy failed to start for any reason.
+     */
     public synchronized void start() {
         if (isRunning()) {
             throw new IllegalStateException(
@@ -177,7 +235,7 @@ public class NoSQLRedisServer {
         svrRun = new Thread(() -> {
             try {
                 run();
-            } catch (Exception ex) {
+            } catch (Throwable ex) {
                 svrRunEx = ex;
                 // log the error
             }
@@ -186,17 +244,25 @@ public class NoSQLRedisServer {
         svrRun.start();
     }
 
+    /**
+     * Stops NoSQL Redis proxy.
+     * @param timeoutMillis timeout in milliseconds to wait for the proxy to
+     * stop. Value {@code 0} means to wait forever.
+     * @return {@code true) if the proxy was stopped successfully or the proxy
+     * was not running, {@code false) if failed to stop the proxy within the
+     * specified timeout
+     * @throws InterruptedException if the current thread was interrupted
+     */
     public synchronized boolean stop(long timeoutMillis)
         throws InterruptedException {
         if (!isRunning()) {
-            throw new IllegalStateException(
-                "Redis proxy server is not running");
+            return true;
         }
 
         if (timeoutMillis == 0) {
             close(0);
             svrRun.join();
-            svrRunEx = null;
+            svrRun = null;
             return true;
         }
 
@@ -205,19 +271,24 @@ public class NoSQLRedisServer {
             return false;
         }
 
-        svrRun.join(timeoutMillis - (System.currentTimeMillis() - startTime));
-        if (svrRun.isAlive()) {
-            return false;
-        }
-
+        svrRun.join(timeoutMillis -
+            (System.currentTimeMillis() - startTime));
+        boolean res = !svrRun.isAlive();
         svrRun = null;
-        return true;
+        return res;
     }
 
+    /**
+     * Stops NoSQL Redis proxy. This method is equivalent to {@code stop(0)}.
+     * @throws InterruptedException if the current thread was interrupted
+     */
     public synchronized void stop() throws InterruptedException {
         stop(0);
     }
 
+    /**
+     * @hidden
+     */
     public static void main(String[] args) {
         try {
             RedisServerConfig config = null;

@@ -25,8 +25,7 @@ import oracle.nosql.redis.RedisServerConfig;
 import oracle.nosql.redis.util.PreparedStatementCache;
 import oracle.nosql.redis.util.Utils;
 
-import static oracle.nosql.redis.util.Utils.getMapField;
-import static oracle.nosql.redis.util.Utils.getStringField;
+import static oracle.nosql.redis.util.Utils.*;
 
 public class HashRead extends HashCommandsBase {
 
@@ -268,7 +267,8 @@ public class HashRead extends HashCommandsBase {
         // We will reuse keyIds for convenience.
         ArrayValue keyIds = new ArrayValue().addAll(
             Arrays.stream(cmd.args, 1, cmd.args.length)
-                .map(val -> new StringValue(makeRedisKeyInfo(val).id)));
+                .map(val -> lambdaUnchecked(
+                    () -> new StringValue(makeRedisKeyInfo(val).id))));
 
         List<MapValue> rows = doQuery(makeRedisKeyInfo(cmd.args[0]),
             SQL_HGET_KEYVALS, keyIds);

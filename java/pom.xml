@@ -1,8 +1,8 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
-  <groupId>com.oracle.nosql</groupId>
-  <artifactId>nosql-redis-java-sdk</artifactId>
-  <version>0.0.1-SNAPSHOT</version>
+  <groupId>com.oracle.nosql.redis</groupId>
+  <artifactId>nosql-redis</artifactId>
+  <version>0.1.0</version>
   <name>Oracle NoSQL Redis SDK</name>
   <description>Redis SDK for Oracle NoSQL Database</description>
   <dependencies>
@@ -81,7 +81,6 @@
         <plugin>
             <artifactId>maven-assembly-plugin</artifactId>
                 <configuration>
-                    <finalName>oracle-nosql-redis</finalName>
                     <!-- don't deploy at this time -->
                     <attach>true</attach>
                     <descriptorRefs>

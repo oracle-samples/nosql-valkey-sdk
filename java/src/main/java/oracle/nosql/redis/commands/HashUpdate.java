@@ -42,6 +42,16 @@ public class HashUpdate extends HashCommandsBase {
         }
     }
 
+    private static void chkEntrySize(ByteBuf hKeyBuf, ByteBuf hValBuf)
+        throws RedisResponseException {
+        if (hKeyBuf.readableBytes() + hValBuf.readableBytes() >
+            MAX_ENTRY_LEN) {
+            throw new RedisResponseException(
+                RedisResponseException.ErrorPrefix.ERR,
+                "hash entry exceeds maximum allowed size");
+        }
+    }
+
     private static void chkHeaderLength(HashHeader header)
         throws RedisResponseException{
         if (header.len <= 0) {
@@ -200,8 +210,11 @@ public class HashUpdate extends HashCommandsBase {
         boolean hasLargeEntry = false;
 
         for(int i = 1; i < cmd.args.length; i += 2) {
-            RedisKeyInfo hki = makeRedisKeyInfo(cmd.args[i]);
-            String val = makeStrVal(cmd.args[i + 1]);
+            ByteBuf hKeyBuf = cmd.args[i];
+            ByteBuf hValBuf = cmd.args[i + 1];
+            chkEntrySize(hKeyBuf, hValBuf);
+            RedisKeyInfo hki = makeRedisKeyInfo(hKeyBuf);
+            String val = makeStrVal(hValBuf);
 
             // For simplicity, we store the data in the same format in
             // smallVal as in multi-row format, having "key" and "value"
@@ -487,6 +500,7 @@ public class HashUpdate extends HashCommandsBase {
     public RedisMessage handleHSetNX(RedisClientContext client,
         RawCommand cmd) throws RedisResponseException {
         chkExactNumArgs(cmd, 3);
+        chkEntrySize(cmd.args[1], cmd.args[2]);
         return doUpdateVal(makeRedisKeyInfo(cmd.args[0]),
             makeRedisKeyInfo(cmd.args[1]),
             oldVal -> oldVal == null ? cmd.args[2] : null,

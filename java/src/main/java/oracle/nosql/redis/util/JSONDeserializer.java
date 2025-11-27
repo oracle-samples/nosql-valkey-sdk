@@ -17,12 +17,16 @@ import com.fasterxml.jackson.core.JsonLocation;
 import com.fasterxml.jackson.core.JsonFactory;
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.JsonToken;
+import com.fasterxml.jackson.core.json.JsonReadFeature;
 import oracle.nosql.driver.values.*;
 import oracle.nosql.redis.RedisResponseException;
 
 public class JSONDeserializer {
 
-    private static final JsonFactory factory = new JsonFactory();
+    private static final JsonFactory factory =
+        JsonFactory.builder()
+            .enable(JsonReadFeature.ALLOW_NON_NUMERIC_NUMBERS)
+            .build();
 
     private static RedisResponseException parseException(String msg,
         JsonParser jp, Throwable cause) {

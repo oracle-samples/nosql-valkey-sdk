@@ -65,6 +65,8 @@ public class HashCommandsBase extends CollectionCommandsBase {
         "Invalid entry in smallVal";
     protected static final String ERR_INVALID_HASH_HEADER =
         "Invalid hash header in query result";
+
+    protected static final int MAX_ENTRY_LEN = 256 * 1024;
     
     public static final String CMD_HSET = "HSET";
     public static final String CMD_HMSET = "HMSET";
