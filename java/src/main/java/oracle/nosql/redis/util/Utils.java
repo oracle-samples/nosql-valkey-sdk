@@ -18,6 +18,7 @@ import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import io.netty.util.CharsetUtil;
 import oracle.nosql.driver.TimeToLive;
+import oracle.nosql.driver.ops.TableLimits;
 import oracle.nosql.driver.values.ArrayValue;
 import oracle.nosql.driver.values.FieldValue;
 import oracle.nosql.driver.values.MapValue;
@@ -476,6 +477,15 @@ public class Utils {
         }
 
         return res.getValue() > 0 ? res : TimeToLive.ofHours(1);
+    }
+
+    public static boolean tableLimitsEqual(TableLimits limits1,
+        TableLimits limits2) {
+        assert limits1 != null && limits2 != null;
+        return limits1.getMode() == limits2.getMode() &&
+            limits1.getReadUnits() == limits2.getReadUnits() &&
+            limits1.getWriteUnits() == limits2.getWriteUnits() &&
+            limits1.getStorageGB() == limits2.getStorageGB();
     }
 
 }

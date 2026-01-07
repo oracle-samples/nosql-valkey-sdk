@@ -9,6 +9,8 @@ package oracle.nosql.redis;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.logging.Logger;
 
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.*;
@@ -26,7 +28,10 @@ import io.netty.handler.logging.LoggingHandler;
 import io.netty.util.concurrent.GlobalEventExecutor;
 import oracle.nosql.driver.NoSQLHandle;
 import oracle.nosql.driver.NoSQLHandleFactory;
+import oracle.nosql.driver.ops.TableLimits;
 import oracle.nosql.driver.ops.TableRequest;
+import oracle.nosql.driver.ops.TableResult;
+import oracle.nosql.redis.util.Utils;
 
 /**
  * This class represents NoSQL Redis proxy. You can use it to run the proxy
@@ -43,8 +48,12 @@ import oracle.nosql.driver.ops.TableRequest;
  *         new RedisServerConfig(nosqlConfig));
  *     redisSvr.start();
  *     ...
- *     redisSvr.stop();
+ *     redisSvr.stop(60000);
  * </pre>
+ * It is recommended to arrange the calls to {@link #start()} and
+ * {@link #stop(long)} with your application lifecycle. Note that you can
+ * start and stop {@link NoSQLRedisServer} instance only once. If a restart is
+ * needed, create a new instance.
  */
 public class NoSQLRedisServer {
     private static final int DEFAULT_SHUTDOWN_TIMEOUT_MILLIS = 5000;
@@ -94,18 +103,32 @@ public class NoSQLRedisServer {
     public static final String CREATE_HSCANID_IDX =
         "CREATE INDEX IF NOT EXISTS hScanIdIdx ON " +
         "redis.hashes(key.scanId AS LONG)";
+
+    private enum State {
+        NOT_STARTED,
+        STARTING,
+        RUNNING,
+        STOPPING,
+        STOPPED;
+
+        @Override
+        public String toString() {
+            return name().replaceAll("_", " ").toLowerCase();
+        }
+    }
     
     private final ServerBootstrap serverBootstrap = new ServerBootstrap();
-    private Channel serverChannel;
-    private ChannelGroup clientChannels =
+    private final ChannelGroup clientChannels =
         new DefaultChannelGroup(GlobalEventExecutor.INSTANCE);
     private final RedisServerConfig config;
     private final NoSQLHandle nosqlHandle;
     private final CommandHandlers cmdHandlers;
     private final ExecutorService cmdWorkerPool =
         Executors.newCachedThreadPool();
-    private Thread svrRun;
-    private Throwable svrRunEx;
+    // will use config in logging.properties if provided
+    private final Logger logger = Logger.getLogger(this.getClass().getName());
+    private volatile Channel serverChannel;
+    private volatile State state = State.NOT_STARTED;
 
     /**
      * Creates new instance of NoSQLRedisServer.
@@ -119,8 +142,6 @@ public class NoSQLRedisServer {
         
         cmdHandlers = new CommandHandlers(nosqlHandle, config, clientChannels);
         cmdHandlers.init();
-
-        initDB();
 
         EventLoopGroup bossGroup = new NioEventLoopGroup();
         EventLoopGroup workerGroup = new NioEventLoopGroup();
@@ -146,10 +167,25 @@ public class NoSQLRedisServer {
     }
 
     private void initDB() {
-        nosqlHandle.doTableRequest(new TableRequest()
-                .setStatement(CREATE_MAIN_TABLE)
-                .setTableLimits(config.getTableLimits()),
+        TableResult res = nosqlHandle.doTableRequest(new TableRequest()
+            .setStatement(CREATE_MAIN_TABLE)
+            .setTableLimits(config.getTableLimits()),
             30000, 500);
+        if (res.getTableState() != TableResult.State.ACTIVE) {
+            throw new IllegalStateException("Main table state is not ACTIVE");
+        }
+        // If table limits are provided in config that are different from the
+        // table limits of the existing table, we send another request to
+        // update the table limits. This is ignored for on-prem
+        // (when res.getTableLimits() is null).
+        if (res.getTableLimits() != null && config.getTableLimits() != null &&
+            !Utils.tableLimitsEqual(res.getTableLimits(),
+                config.getTableLimits())) {
+            nosqlHandle.doTableRequest(new TableRequest()
+                .setTableName(MAIN_TABLE_NAME)
+                .setTableLimits(config.getTableLimits()), 30000, 500);
+        }
+
         nosqlHandle.doTableRequest(new TableRequest()
             .setStatement(CREATE_SCANID_IDX), 30000, 500);
         nosqlHandle.doTableRequest(new TableRequest()
@@ -166,124 +202,149 @@ public class NoSQLRedisServer {
         }
     }
 
-    private void run() {
+    // Only used in main().
+    private void waitForStop() {
+        assert serverChannel != null;
+        serverChannel.closeFuture().syncUninterruptibly();
+    }
+
+    private void shutdownGroups() {
+        serverBootstrap.config().group().shutdownGracefully(0, 5,
+            TimeUnit.SECONDS).awaitUninterruptibly();
+        serverBootstrap.config().childGroup().shutdownGracefully(0, 5,
+            TimeUnit.SECONDS).awaitUninterruptibly();
+    }
+
+    // Only used in main().
+    private void doShutdown() {
         try {
-            // Start the server.
-            serverChannel = serverBootstrap.bind(config.getHost(),
-                    config.getPort())
-                .syncUninterruptibly().channel();
-            // Wait until the server socket is closed.
-            serverChannel.closeFuture().syncUninterruptibly();
-        } finally {
-            // Shut down all event loops to terminate all threads.
-            serverBootstrap.config().group().shutdownGracefully();
-            serverBootstrap.config().childGroup().shutdownGracefully();
+            stop(DEFAULT_SHUTDOWN_TIMEOUT_MILLIS);
+        } catch (InterruptedException ex) {
+            throw new IllegalStateException(
+                "Redis Proxy main thread was interrupted");
+        } catch (IllegalStateException ex) {
+            // Thrown in case we attempt to shut down before the proxy has
+            // been started, in which case we probably don't need to do
+            // anything. We can log this error.
+            logger.warning("Attempted to shutdown Redis Proxy before it has " +
+                "fully started: " + ex.getMessage());
         }
-    }
-
-    private boolean close(long timeoutMillis) {
-        ChannelFuture f = serverChannel.close();
-        if (timeoutMillis == 0) {
-            f.syncUninterruptibly();
-            return true;
-        }
-
-        if (!f.awaitUninterruptibly(timeoutMillis)) {
-            return false;
-        }
-
-        if (!f.isSuccess()) {
-            Throwable t = f.cause();
-            throw new RuntimeException(t);
-        }
-
-        return true;
-    }
-
-    /**
-     * Returns whether NoSQL Redis proxy is running.
-     * This value is {@code false} if the proxy hasn't been started or
-     * stopped running due to an exception. You can retrieve the exception by
-     * calling {@link #getException()} method.
-     * @return {@code true} if NoSQL Redis proxy is running, otherwise
-     * {@code false}
-     */
-    public synchronized boolean isRunning() {
-        return svrRun != null && svrRunEx == null;
-    }
-
-    /**
-     * Returns exception if any occurred during startup or running of NoSQL
-     * Redis proxy after calling {@link #start()} method.
-     * @return exception if any, otherwise {@code null}
-     */
-    public synchronized Throwable getException() {
-        return svrRunEx;
     }
 
     /**
      * Starts NoSQL Redis proxy.
-     * @throws Exception if the proxy failed to start for any reason.
+     * This method simply returns if the proxy is already running.
+     * @throws IllegalStateException if the proxy is in state "starting",
+     * "stopping" or "stopped" so that this call is invalid
+     * @throws RuntimeException if the proxy failed to start for any other
+     * reason
      */
-    public synchronized void start() {
-        if (isRunning()) {
-            throw new IllegalStateException(
-                "Redis proxy server is already running");
+    public void start() {
+        synchronized (this) {
+            if (state == State.RUNNING) {
+                return;
+            }
+            if (state != State.NOT_STARTED) {
+                throw new IllegalStateException(String.format(
+                    "Cannot start Redis Proxy because it is '%s'",
+                    state.toString()));
+            }
+            state = State.STARTING;
         }
 
-        svrRunEx = null;
-        svrRun = new Thread(() -> {
-            try {
-                run();
-            } catch (Throwable ex) {
-                svrRunEx = ex;
-                // log the error
-            }
-        });
+        logger.info("Initializing table schema...");
+        initDB();
+        logger.info("Table schema initialized");
 
-        svrRun.start();
+        try {
+            assert serverChannel == null;
+            serverChannel = serverBootstrap.bind(config.getHost(),
+                    config.getPort())
+                .syncUninterruptibly().channel();
+            state = State.RUNNING;
+        } catch (Throwable ex) {
+            shutdownGroups();
+            throw ex;
+        }
+
+        logger.info(String.format("Started Redis Proxy on %s:%d",
+            config.getHost(), config.getPort()));
     }
 
     /**
      * Stops NoSQL Redis proxy.
+     * This method simply returns if the proxy is already stopped. This method
+     * is idempotent and can be called again if previous call return
+     * {@code false} due to a timeout reached.
      * @param timeoutMillis timeout in milliseconds to wait for the proxy to
      * stop. Value {@code 0} means to wait forever.
      * @return {@code true) if the proxy was stopped successfully or the proxy
      * was not running, {@code false) if failed to stop the proxy within the
      * specified timeout
      * @throws InterruptedException if the current thread was interrupted
+     * @throws RuntimeException if the proxy failed to stop for any other
+     * reason
      */
-    public synchronized boolean stop(long timeoutMillis)
-        throws InterruptedException {
-        if (!isRunning()) {
-            return true;
+    public boolean stop(long timeoutMillis) throws InterruptedException {
+        synchronized (this) {
+            logger.info("Stopping Redis Proxy...");
+            if (state == State.STOPPED) {
+                return true;
+            }
+            if (state != State.RUNNING && state != State.STOPPING) {
+                throw new IllegalStateException(String.format(
+                    "Cannot stop Redis Proxy because it is '%s'",
+                    state.toString()));
+            }
+            state = State.STOPPING;
         }
 
-        if (timeoutMillis == 0) {
-            close(0);
-            svrRun.join();
-            svrRun = null;
-            return true;
-        }
-
-        long startTime = System.currentTimeMillis();
-        if (!close(timeoutMillis)) {
+        cmdWorkerPool.shutdown();
+        if (!cmdWorkerPool.awaitTermination(
+            timeoutMillis != 0 ? timeoutMillis : Long.MAX_VALUE,
+            TimeUnit.MILLISECONDS)) {
             return false;
         }
 
-        svrRun.join(timeoutMillis -
-            (System.currentTimeMillis() - startTime));
-        boolean res = !svrRun.isAlive();
-        svrRun = null;
-        return res;
+        // try-catch in case the handle has already been closed
+        try {
+            nosqlHandle.close();
+        } catch (IllegalStateException ex) {
+        } catch (IllegalArgumentException ex) {
+        }
+
+        assert serverChannel != null;
+        try {
+            serverChannel.close().sync();
+        } finally {
+            shutdownGroups();
+        }
+
+        state = State.STOPPED;
+        logger.info("Stopped Redis Proxy");
+        return true;
     }
 
     /**
      * Stops NoSQL Redis proxy. This method is equivalent to {@code stop(0)}.
      * @throws InterruptedException if the current thread was interrupted
+     * @throws RuntimeException if the proxy failed to stop for any other
+     * reason
      */
     public synchronized void stop() throws InterruptedException {
         stop(0);
+    }
+
+    /**
+     * Returns whether NoSQL Redis proxy is running.
+     * This value is {@code false} if the proxy is not started or has been
+     * stopped. It is also {@code false} if the proxy is in the process of
+     * starting or stopping.
+     * @return {@code true} if NoSQL Redis proxy is running, otherwise
+     * {@code false}
+     */
+    public boolean isRunning() {
+        return state == State.RUNNING;
     }
 
     /**
@@ -297,16 +358,18 @@ public class NoSQLRedisServer {
                 config = cmdLine.getRedisServerConfig();
             } catch (IllegalArgumentException ex) {
                 System.err.println(ex.getMessage());
+                //ex.printStackTrace(System.err);
                 System.err.println(CommandLine.usage());
                 System.exit(1);
             }
 
             NoSQLRedisServer svr = new NoSQLRedisServer(config);
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-                svr.close(DEFAULT_SHUTDOWN_TIMEOUT_MILLIS);
+                svr.doShutdown();
             }));
 
-            svr.run();
+            svr.start();
+            svr.waitForStop();
         } catch (Throwable ex) {
             System.err.println("Redis Proxy Server exited with error:");
             ex.printStackTrace(System.err);

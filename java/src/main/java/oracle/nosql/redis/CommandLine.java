@@ -12,8 +12,10 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Properties;
+import java.util.logging.LogManager;
 
 import oracle.nosql.driver.AuthorizationProvider;
+import oracle.nosql.driver.Consistency;
 import oracle.nosql.driver.NoSQLHandleConfig;
 import oracle.nosql.driver.Region;
 import oracle.nosql.driver.iam.SignatureProvider;
@@ -35,6 +37,7 @@ class CommandLine {
         "-service-acct-token-file";
     private static final String ARG_SERVER_CA_CERT_FILE =
         "-server-ca-cert-file";
+    private static final String ARG_LOGGER_CONFIG_FILE = "-logger-config-file";
 
     private static final String ARG_TABLE_LIMITS = "-table-limits";
     private static final String ARG_HOST = "-host";
@@ -44,7 +47,7 @@ class CommandLine {
         "-cleanup-on-startup";
 
     private static final String AUTH_USER = "user";
-    private static final String AUTH_SESS_TOKEN = "session-token";
+    private static final String AUTH_SESS_TOKEN = "session";
     private static final String AUTH_INSTANCE = "instance";
     private static final String AUTH_RESOURCE = "resource";
     private static final String AUTH_OKE = "oke";
@@ -106,6 +109,9 @@ class CommandLine {
 
     public CommandLine(String [] args) {
         for (int i = 0; i < args.length; i++) {
+            // If we introduce an arg with no value, will need to check
+            // separately for each arg that has value.
+            chkHasArgVal(args, i);
             switch (args[i]) {
                 case ARG_ENDPOINT:
                     endpoint = args[++i];
@@ -136,6 +142,9 @@ class CommandLine {
                     break;
                 case ARG_SERVER_CA_CERT_FILE:
                     serverCaCertFile = args[++i];
+                    break;
+                case ARG_LOGGER_CONFIG_FILE:
+                    readLoggerConfig(args[++i]);
                     break;
                 case ARG_TABLE_LIMITS:
                     tableLimits = parseTableLimits(args[++i]);
@@ -178,6 +187,14 @@ class CommandLine {
         }
 
         validate();
+    }
+
+    private static void chkHasArgVal(String[] args, int idx) {
+        assert idx < args.length;
+        if (idx == args.length - 1) {
+            throw new IllegalArgumentException("Missing value for argument " +
+                args[idx]);
+        }
     }
 
     private static int chkParsePosInt(String val, String name) {
@@ -247,6 +264,15 @@ class CommandLine {
         return new StoreAccessTokenProvider(username, password.toCharArray());
     }
 
+    private static void readLoggerConfig(String path) {
+        try (FileInputStream is = new FileInputStream(path)) {
+            LogManager.getLogManager().readConfiguration(is);
+        } catch (Exception ex) {
+            throw new IllegalArgumentException("Error loading logger config",
+                ex);
+        }
+    }
+
     // Must be in the form <read-units>,<write-units>,<storageGB> for
     // provisioned capacity (e.g. 100,100,5) or <storageGB> for on-demand
     // capacity (e.g. 5). Can use "," or ";" as delimiters.
@@ -270,15 +296,9 @@ class CommandLine {
     private void validate() {
         boolean isCloud = (authType != AuthType.KVSTORE &&
             authType != AuthType.CLOUDSIM);
-        if (region != null) {
-            if (endpoint != null) {
-                throw new IllegalArgumentException(
-                    "Cannot specify both endpoint and region");
-            }
-            if (!isCloud) {
-                throw new IllegalArgumentException(
-                    "Region may only be specified for Cloud Service");
-            }
+        if (region != null && !isCloud) {
+            throw new IllegalArgumentException(
+                "Region may only be specified for Cloud Service");
         }
         if (compartment != null && !isCloud) {
             throw new IllegalArgumentException(
@@ -288,16 +308,17 @@ class CommandLine {
             throw new IllegalArgumentException(
                 "Namespace may only be specified for on-prem service");
         }
-        if (authFile != null && (authType != AuthType.USER &&
-            authType != AuthType.KVSTORE)) {
+        if (authFile != null && authType != AuthType.USER &&
+            authType != AuthType.SESS_TOKEN && authType != AuthType.KVSTORE) {
             throw new IllegalArgumentException(String.format(
-                "%s may be specified only for %s or %s", ARG_AUTH_FILE,
-                AUTH_USER, AUTH_KVSTORE));
+                "%s may be specified only for %s, %s or %s", ARG_AUTH_FILE,
+                AUTH_USER, AUTH_SESS_TOKEN, AUTH_KVSTORE));
         }
-        if (authProfile != null && authType != AuthType.USER) {
+        if (authProfile != null && authType != AuthType.USER &&
+            authType != AuthType.SESS_TOKEN) {
             throw new IllegalArgumentException(String.format(
-                "%s may be specified only for %s", ARG_AUTH_PROFILE,
-                AUTH_USER));
+                "%s may be specified only for %s or %s", ARG_AUTH_PROFILE,
+                AUTH_USER, AUTH_SESS_TOKEN));
         }
         if (delegationTokenFile != null && authType != AuthType.INSTANCE) {
             throw new IllegalArgumentException(ARG_DELEGATION_TOKEN_FILE +
@@ -318,9 +339,8 @@ class CommandLine {
             case USER:
                 try {
                     return authFile != null ?
-                        (authProfile != null ?
-                            new SignatureProvider(authFile, authProfile) :
-                            new SignatureProvider(authFile, "DEFAULT")) :
+                        new SignatureProvider(authFile, authProfile != null ?
+                            authProfile : "DEFAULT") :
                         (authProfile != null ?
                             new SignatureProvider(authProfile) :
                             new SignatureProvider());
@@ -328,12 +348,19 @@ class CommandLine {
                     throw new IllegalArgumentException(
                         "Error loading profile from OCI config file", ex);
                 }
+            case SESS_TOKEN:
+                return authFile != null ?
+                    SignatureProvider.createWithSessionToken(authFile,
+                        authProfile != null ? authProfile : "DEFAULT") :
+                    (authProfile != null ?
+                        SignatureProvider.createWithSessionToken(authProfile) :
+                        SignatureProvider.createWithSessionToken());
             case INSTANCE:
                 return delegationTokenFile != null ?
                     SignatureProvider
-                        .createWithInstancePrincipalForDelegation(
-                            new File(delegationTokenFile)) :
-                    SignatureProvider.createWithInstancePrincipal();
+                        .createWithInstancePrincipalForDelegation(null, region,
+                            new File(delegationTokenFile), null) :
+                    SignatureProvider.createWithInstancePrincipal(region);
             case RESOURCE:
                 return SignatureProvider.createWithResourcePrincipal();
             case OKE:
@@ -355,10 +382,10 @@ class CommandLine {
     private NoSQLHandleConfig getNoSQLConfig() {
         AuthorizationProvider authProvider = getAuthProvider();
         NoSQLHandleConfig cfg;
-        if (region != null) {
-            cfg = new NoSQLHandleConfig(region, authProvider);
-        } else if (endpoint != null) {
+        if (endpoint != null) {
             cfg = new NoSQLHandleConfig(endpoint, authProvider);
+        } else if (region != null) {
+            cfg = new NoSQLHandleConfig(region, authProvider);
         } else {
             // If neither region nor endpoint is specified then, if using
             // Cloud Service, the region will be retrieved by the auth
@@ -416,6 +443,8 @@ class CommandLine {
             .append(" <service-acct-token-file>").append(endArg);
         sb.append(startArg).append(ARG_SERVER_CA_CERT_FILE)
             .append(" <server-ca-cert-file>").append(endArg);
+        sb.append(startArg).append(ARG_LOGGER_CONFIG_FILE)
+            .append(" <logger-config-file>").append(endArg);
         sb.append(startArg).append(ARG_HOST).append(" <host>").append(endArg);
         sb.append(startArg).append(ARG_PORT).append(" <port>").append(endArg);
         sb.append(startArg).append(ARG_MAX_RETRIES).append(" <max-retries>")

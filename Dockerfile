@@ -1,4 +1,4 @@
-FROM ocr-docker-remote.artifactory.oci.oraclecorp.com/java/openjdk:21.0.2-oraclelinux8
+FROM ghcr.io/graalvm/jdk-community:21
 RUN groupadd oracle && useradd redis -m -g oracle
 USER redis:oracle
 WORKDIR /redis
