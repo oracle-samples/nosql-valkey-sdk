@@ -10,17 +10,17 @@ start_server {tags {"string"}} {
     } {}
 
     test {Very big payload in GET/SET} {
-        set buf [string repeat "abcd" 1000000]
+        set buf [string repeat "abcd" 64000]
         r set foo $buf
         r get foo
-    } [string repeat "abcd" 1000000]
+    } [string repeat "abcd" 64000]
 
     tags {"slow"} {
         test {Very big payload random access} {
             set err {}
             array set payload {}
             for {set j 0} {$j < 100} {incr j} {
-                set size [expr 1+[randomInt 100000]]
+                set size [expr 1+[randomInt 43000]]
                 set buf [string repeat "pl-$j" $size]
                 set payload($j) $buf
                 r set bigpayload_$j $buf

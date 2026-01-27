@@ -1,10 +1,7 @@
 package oracle.nosql.redis.commands;
 
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.ArrayList;
-import java.util.Collections;
+import java.util.*;
+import java.util.stream.Stream;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.handler.codec.redis.ArrayRedisMessage;
@@ -34,12 +31,14 @@ public class HashRead extends HashCommandsBase {
     // handling smallVal format and multi-row format as well as the Scan code.
     private static final String FLD_HASH_VAL = "hashVal";
 
+    private static final String SEL_HASH_VAL =
+        "(CASE WHEN $h.keyId = '' THEN $r.value ELSE NULL END) AS hashVal";
+
     // We only need value from redis main table if the hash is in smallVal
     // format, we use CASE expr. to avoid returning it otherwise.
     private static final String SQL_READ_FMT = DECL_KEY_ID +
-        "%s SELECT (CASE WHEN $h.keyId IS NULL THEN $r.value ELSE NULL END) " +
-        "AS hashVal%s " + FROM_LOJ + "%s " + WHERE_KEY_ID_COND +
-        AND_NOT_EXPIRED;
+        "%s SELECT " + SEL_HASH_VAL + "%s " + FROM_JOIN_WHERE_H_PK + "%s " +
+        AND_NOT_EXPIRED + "ORDER BY " + PK_COLS;
 
     private static final String SEL_FLD_KEY = ", $h.key.data AS fldKey";
     private static final String SEL_FLD_VAL = ", $h.value";
@@ -65,21 +64,21 @@ public class HashRead extends HashCommandsBase {
         // because we have to condition on cid to avoid returning obsolete
         // records that happen to have the same slot and keyId (note that we
         // don't call doGet() below when cursor != 0, thus saving one request
-        // at each subsequent iteration). This has added bonus on checking
-        // expiration time of parent key inside the query.
+        // at each subsequent iteration). This also allows checking expiration
+        // time of parent key inside the query.
+        // Note that the empty record will be filtered out by the query
+        // predicate, since its key is NULL thus it does not have scanId.
         private static final String SQL_SCAN_FMT = DECL_KEY_ID +
-            " $scanId LONG; SELECT " +
-            "/*+ FORCE_INDEX(redis.hashes hScanIdIdx) */ $h.key%s FROM " +
-            "NESTED TABLES(redis.hashes $h ANCESTORS(redis $r)) " +
-            WHERE_KEY_ID_COND + AND_NOT_EXPIRED +
-            "AND $h.cid = $r.value.cid AND $h.key.scanId >= $scanId " +
-            "ORDER BY $h.key.scanId";
+            " $scanId LONG; SELECT $h.key%s, " + SEL_HASH_VAL + ' ' +
+            FROM_JOIN_WHERE_H_PK + AND_NOT_EXPIRED +
+            "AND $h.key.scanId >= $scanId ORDER BY $h.key.scanId";
         private static final String SQL_SCAN = String.format(SQL_SCAN_FMT,
             SEL_FLD_VAL);
         private static final String SQL_SCAN_NOVAL = String.format(
             SQL_SCAN_FMT, "");
 
         private final boolean incVals;
+        private boolean isSmallVal;
 
         HashScan(CommandsBase cmds, RedisKeyInfo keyInfo, long cursor,
             ByteBuf match, long count, boolean incVals)
@@ -94,41 +93,69 @@ public class HashRead extends HashCommandsBase {
         }
 
         @Override
-        boolean toGetAll() { return qir == null; }
+        boolean toGetAll() { return isSmallVal; }
 
         @Override
-        Iterable<MapValue> startScan() throws RedisResponseException {
+        Iterator<MapValue> startScan() throws RedisResponseException {
+            Iterator<MapValue> iter = super.startScan();
+            MapValue row0 = null;
             if (zeroCursor) { // cursor = 0
-                RedisValueInfo hashVal = doGet(keyInfo);
-                // Hash does not exist or expired.
-                if (!hashVal.isValid()) {
-                    return Collections.emptyList();
+                if (!iter.hasNext()) {
+                    // Check if key is wrong type.
+                    chkHashKey(this, keyInfo);
+                    // Hash does not exist or expired.
+                    return Collections.emptyIterator();
                 }
 
-                HashHeader header = new HashHeader(hashVal.val);
-                // The hash is in small value format. In this case we just
-                // return all entries. We still have to make sure each entry is
-                // a map.
-                if (header.smallVal != null) {
-                    ArrayList<MapValue> vals = new ArrayList<>(header.smallVal.size());
-                    for (FieldValue entVal : header.smallVal.values()) {
-                        if (!entVal.isMap()) {
-                            throw RedisResponseException.corrupt(
-                                ERR_INVALID_SMALLVAL_ENTRY);
-                        }
-                        vals.add(entVal.asMap());
+                row0 = iter.next();
+                MapValue hashVal = getMapField(row0, FLD_HASH_VAL, true);
+                if (hashVal != null) {
+                    // Empty record should be last in the query. If we get it
+                    // here, this means that this is the only record and the
+                    // hash is in smallVal format.
+                    if (iter.hasNext()) {
+                        throw RedisResponseException.corrupt(
+                            ERR_INVALID_HASH_ENTRY);
                     }
-                    return vals;
+                    HashHeader header = new HashHeader(hashVal);
+                    if (header.smallVal == null) {
+                        throw RedisResponseException.corrupt(
+                            ERR_INVALID_HASH_HEADER);
+                    }
+
+                    // For smallVal format we just return all entries. We still
+                    // have to make sure each entry is a map.
+                    isSmallVal = true;
+                    return iterableToStream(header.smallVal.values()).map(
+                        entVal -> {
+                            if (!entVal.isMap()) {
+                                throw RedisResponseException.unchecked(
+                                    RedisResponseException.corrupt(
+                                        ERR_INVALID_HASH_ENTRY));
+                            }
+                            return entVal.asMap();
+                        }).iterator();
                 }
             }
 
             // Since scan of smallVal will always return all the elements, we
             // can safely assume that if the cursor != 0, the hash is not in
             // smallVal format (of course if cursor != 0 is a user error, the
-            // query below will result in no records). In any case, at this
-            // point we know the hash is not in smallVal format, so we use
-            // JOIN to query the entry records.
-            return super.startScan();
+            // query will only fetch the empty record). But we have to exclude
+            // the empty record from the original iterator. Perhaps creating
+            // a wrapper iterator that discards last record (which must be the
+            // empty record) would be a little more efficient than the
+            // filtering of Stream below, but this should be adequate.
+            Stream<MapValue> itStream = iteratorToStream(iter);
+            return (row0 != null ?
+                Stream.concat(Stream.of(row0), itStream) : itStream)
+                .filter(row -> {
+                    try {
+                        return getMapField(row, FLD_HASH_VAL, true) == null;
+                    } catch (RedisResponseException ex) {
+                        throw RedisResponseException.unchecked(ex);
+                    }
+                }).iterator();
         }
         
         void addResults(List<RedisMessage> results, ByteBuf keyBuf,
@@ -136,7 +163,7 @@ public class HashRead extends HashCommandsBase {
             super.addResults(results, keyBuf, row);
             if (incVals) {
                 results.add(new FullBulkStringRedisMessage(
-                    getStrVal(rowToFldVal(row, false))));
+                    getStrVal(rowToFldVal(row))));
             }
         }
     }
@@ -153,22 +180,24 @@ public class HashRead extends HashCommandsBase {
             (incVals ? SQL_GET_ALL : SQL_GET_KEYS) : SQL_GET_VALS);
 
         if (rows.isEmpty()) {
-            // The hash does not exist.
+            // Check if key is wrong type.
+            chkHashKey(keyInfo);
+            // The hash does not exist or expired.
             return ArrayRedisMessage.EMPTY_INSTANCE;
         }
 
         ArrayList<RedisMessage> res = new ArrayList<>();
         MapValue row0 = rows.get(0);
-        MapValue val = getMapField(row0, FLD_HASH_VAL, true);
-        // If hashVal != null, the hash must be in smallVal format (otherwise,
-        // all returned rows would have hashVal = null).
-        if (val != null) {
+        // Empty record should be first in the sorting order.
+        MapValue val = getMapField(row0, FLD_HASH_VAL);
+        MapValue smallVal = valToSmallVal(val, true);
+        if (smallVal != null) {
+            // The hash is in smallVal format.
             chkSingleResult(rows);
-            MapValue smallVal = valToSmallVal(val, false);
             for(FieldValue fv : smallVal.values()) {
                 if (!fv.isMap()) {
                     throw RedisResponseException.corrupt(
-                        ERR_INVALID_SMALLVAL_ENTRY);
+                        ERR_INVALID_HASH_ENTRY);
                 }
                 MapValue mapVal = fv.asMap();
                 if (incKeys) {
@@ -181,8 +210,16 @@ public class HashRead extends HashCommandsBase {
                 }
             }
         } else {
-            // The hash is in multi-row format.
-            for(MapValue row : rows) {
+            // The hash is in multi-row format, so we skip the empty record.
+            int cnt = rows.size();
+            // In multi-row format, there must be at least 1 more record after
+            // the empty record.
+            if (cnt < 2) {
+                throw RedisResponseException.corrupt(ERR_INVALID_HASH_ENTRY);
+            }
+
+            for(int i = 1; i < cnt; i++) {
+                MapValue row = rows.get(i);
                 if (incKeys) {
                     res.add(new FullBulkStringRedisMessage(getStrVal(
                         getStringField(row, FLD_FLD_KEY))));
@@ -199,30 +236,39 @@ public class HashRead extends HashCommandsBase {
 
     private ByteBuf doHGet(ByteBuf keyBuf, ByteBuf fldBuf)
         throws RedisResponseException {
-        String keyId = makeRedisKeyInfo(fldBuf).id;
-        List<MapValue> rows = doQuery(makeRedisKeyInfo(keyBuf),
-            SQL_HGET_VAL, new StringValue(keyId));
-        if (rows.size() == 0) {
-            // Hash does not exist.
+        RedisKeyInfo keyInfo = makeRedisKeyInfo(keyBuf);
+        String hKeyId = makeRedisKeyInfo(fldBuf).id;
+        String fldVal;
+        List<MapValue> rows = doQuery(keyInfo, SQL_HGET_VAL,
+            new StringValue(hKeyId));
+        if (rows.isEmpty()) {
+            // Check if key is wrong type.
+            chkHashKey(keyInfo);
+            // Hash does not exist or expired.
             return null;
         }
-
-        chkSingleResult(rows);
 
         MapValue row0 = rows.get(0);
-        String val = rowToFldVal(row0, true);
-        if (val != null) {
-            return getStrVal(val);
+        // Empty record should be first in the sorting order.
+        MapValue val = getMapField(row0, FLD_HASH_VAL);
+
+        // Either the hash is in smallVal format or the field is not found.
+        if (rows.size() == 1) {
+            MapValue smallVal = valToSmallVal(val, true);
+            if (smallVal == null) {
+                // The hash must be in multi-row format and the field is not
+                // found.
+                return null;
+            }
+            // The hash is in smallVal format, we get the field from smallVal.
+            fldVal = getValFromSmallVal(smallVal, hKeyId);
+        } else {
+            // The hash must be in multi-row format and the field present.
+            chkMaxNumResults(rows, 2);
+            fldVal = rowToFldVal(rows.get(1));
         }
 
-        // At this point we know that either the hash is in smallVal format
-        // or it is in multi-row format and the field is not found.
-        MapValue smallVal = rowToSmallVal(rows.get(0), true);
-        if (smallVal == null) { // Multi-row format and field is not found.
-            return null;
-        }
-        val = getValFromSmallVal(smallVal, keyId);
-        return val != null ? getStrVal(val) : null;
+        return fldVal != null ? getStrVal(fldVal) : null;
     }
 
     public HashRead(NoSQLHandle nosqlHandle, RedisServerConfig config,
@@ -264,60 +310,64 @@ public class HashRead extends HashCommandsBase {
     public RedisMessage handleHMGet(RedisClientContext client,
         RawCommand cmd) throws RedisResponseException {
         chkMinNumArgs(cmd, 2);
-        // We will reuse keyIds for convenience.
-        ArrayValue keyIds = new ArrayValue().addAll(
+        RedisKeyInfo keyInfo = makeRedisKeyInfo(cmd.args[0]);
+        // We will reuse hKeyIds for convenience.
+        ArrayValue hKeyIds = new ArrayValue().addAll(
             Arrays.stream(cmd.args, 1, cmd.args.length)
                 .map(val -> lambdaUnchecked(
                     () -> new StringValue(makeRedisKeyInfo(val).id))));
 
-        List<MapValue> rows = doQuery(makeRedisKeyInfo(cmd.args[0]),
-            SQL_HGET_KEYVALS, keyIds);
-
+        List<MapValue> rows = doQuery(keyInfo, SQL_HGET_KEYVALS, hKeyIds);
         if (rows.isEmpty()) {
-            // Hash does not exist.
-            return new ArrayRedisMessage(Collections.nCopies(keyIds.size(),
+            // Check if key is wrong type.
+            chkHashKey(keyInfo);
+            // Hash does not exist or expired.
+            return new ArrayRedisMessage(Collections.nCopies(hKeyIds.size(),
                 FullBulkStringRedisMessage.NULL_INSTANCE));
         }
+
+        MapValue row0 = rows.get(0);
+        // Empty record should be first in the sorting order.
+        MapValue val = getMapField(row0, FLD_HASH_VAL);
 
         // map and smallVal are exclusive
         HashMap<String, String> map = null;
         MapValue smallVal = null;
 
-        MapValue row0 = rows.get(0);
-        String keyId0 = rowToKeyId(row0, true);
-
-        if (keyId0 == null) {
-            // Either hash is in smallVal format or it is in multi-row format
-            // and no input fields are found.
-            chkSingleResult(rows);
-            smallVal = rowToSmallVal(row0, true);
-            if (smallVal == null) { // Multi-row format and fields not found.
-                return new ArrayRedisMessage(Collections.nCopies(keyIds.size(),
+        // Either the hash is in smallVal format or none of the fields are
+        // found.
+        if (rows.size() == 1) {
+            smallVal = valToSmallVal(val, true);
+            if (smallVal == null) {
+                // The hash must be in multi-row format and none of the fields
+                // are found.
+                return new ArrayRedisMessage(Collections.nCopies(hKeyIds.size(),
                     FullBulkStringRedisMessage.NULL_INSTANCE));
             }
         } else {
-            // The hash is in multi-row format. We collect the field values
-            // into a map to retrieve them later when computing the result
-            // (which has to return a value or nil for each input field in
-            // the order of the input fields).
+            // The hash is in multi-row format and at least some fields
+            // present. We collect the field values into a map to retrieve
+            // them later when computing the result (which has to return a
+            // value or nil for each input field in the order of the input
+            // fields). The empty record (row0) is skipped.
+            chkMaxNumResults(rows, hKeyIds.size() + 1);
             int cnt = rows.size();
             map = new HashMap<>(cnt);
-            map.put(keyId0, rowToFldVal(row0, false));
             for(int i = 1; i < cnt; i++) {
                 MapValue row = rows.get(i);
-                map.put(rowToKeyId(row, false), rowToFldVal(row, false));
+                map.put(rowToKeyId(row), rowToFldVal(row));
             }
         }
 
         ArrayList<RedisMessage> res = new ArrayList<>();
-        int cnt = keyIds.size();
+        int cnt = hKeyIds.size();
         // For each field provided, we return the value if found, or null.
         for(int i = 0; i < cnt; i++) {
-            String keyId = keyIds.get(i).getString();
-            String val = smallVal != null ?
+            String keyId = hKeyIds.get(i).getString();
+            String fldVal = smallVal != null ?
                 getValFromSmallVal(smallVal, keyId) : map.get(keyId);
-            res.add(val != null ?
-                new FullBulkStringRedisMessage(getStrVal(val)) :
+            res.add(fldVal != null ?
+                new FullBulkStringRedisMessage(getStrVal(fldVal)) :
                 FullBulkStringRedisMessage.NULL_INSTANCE);
         }
 

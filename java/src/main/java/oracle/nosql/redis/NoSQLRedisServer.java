@@ -86,13 +86,6 @@ public class NoSQLRedisServer {
     /**
      * @hidden
      */
-    public static final String CREATE_LIST_PK2_IDX =
-        "CREATE INDEX IF NOT EXISTS listPK2Idx ON " +
-        "redis.lists(slot, id, elemId)";
-
-    /**
-     * @hidden
-     */
     public static final String CREATE_HASH_TABLE =
         "CREATE TABLE IF NOT EXISTS redis.hashes(keyId STRING, " +
         "cid STRING AS UUID, key JSON, value STRING, PRIMARY KEY(keyId))";
@@ -102,7 +95,7 @@ public class NoSQLRedisServer {
      */
     public static final String CREATE_HSCANID_IDX =
         "CREATE INDEX IF NOT EXISTS hScanIdIdx ON " +
-        "redis.hashes(key.scanId AS LONG)";
+        "redis.hashes(slot, id, key.scanId AS LONG)";
 
     private enum State {
         NOT_STARTED,
@@ -190,8 +183,6 @@ public class NoSQLRedisServer {
             .setStatement(CREATE_SCANID_IDX), 30000, 500);
         nosqlHandle.doTableRequest(new TableRequest()
             .setStatement(CREATE_LIST_TABLE), 30000, 500);
-        nosqlHandle.doTableRequest(new TableRequest()
-            .setStatement(CREATE_LIST_PK2_IDX), 30000, 500);
         nosqlHandle.doTableRequest(new TableRequest()
             .setStatement(CREATE_HASH_TABLE), 30000, 500);
         nosqlHandle.doTableRequest(new TableRequest()

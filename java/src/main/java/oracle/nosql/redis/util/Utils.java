@@ -10,8 +10,13 @@ package oracle.nosql.redis.util;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.security.MessageDigest;
+import java.util.Iterator;
+import java.util.Spliterator;
+import java.util.Spliterators;
 import java.util.concurrent.TimeUnit;
 import java.util.Base64;
+import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
@@ -486,6 +491,15 @@ public class Utils {
             limits1.getReadUnits() == limits2.getReadUnits() &&
             limits1.getWriteUnits() == limits2.getWriteUnits() &&
             limits1.getStorageGB() == limits2.getStorageGB();
+    }
+
+    public static <T> Stream<T> iterableToStream(Iterable<T> it) {
+        return StreamSupport.stream(it.spliterator(), false);
+    }
+
+    public static <T> Stream<T> iteratorToStream(Iterator<T> iter) {
+        return StreamSupport.stream(Spliterators.spliteratorUnknownSize(
+            iter, Spliterator.ORDERED), false);
     }
 
 }

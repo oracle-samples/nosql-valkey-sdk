@@ -18,7 +18,6 @@ import oracle.nosql.driver.ops.PutRequest;
 import oracle.nosql.driver.ops.QueryIterableResult;
 import oracle.nosql.driver.ops.QueryRequest;
 import oracle.nosql.driver.ops.QueryResult;
-import oracle.nosql.driver.ops.Request;
 import oracle.nosql.driver.ops.WriteMultipleRequest;
 import oracle.nosql.driver.ops.WriteMultipleResult;
 import oracle.nosql.driver.values.*;
@@ -27,9 +26,7 @@ import oracle.nosql.redis.RedisResponseException;
 import oracle.nosql.redis.RedisServerConfig;
 import oracle.nosql.redis.util.PreparedStatementCache;
 import oracle.nosql.redis.util.Utils;
-import oracle.nosql.redis.util.Utils.ThrowingBiFunction;
 import oracle.nosql.redis.util.Utils.ThrowingFunction;
-import oracle.nosql.redis.util.Utils.ThrowingTriFunction;
 
 abstract class CollectionCommandsBase extends CommandsBase {
 
@@ -105,7 +102,7 @@ abstract class CollectionCommandsBase extends CommandsBase {
     }
 
     // Combine RedisValueInfo for the collection header with any custom data
-    // to be returned in the first callback of doMultiUpdate().
+    // to be returned in order to do update.
     protected static class CollectionValueResult<V> {
         final RedisValueInfo val;
         final V data;
@@ -330,29 +327,27 @@ abstract class CollectionCommandsBase extends CommandsBase {
     abstract String getSQLSelElems();
     abstract String getSQLDelElems();
 
-    @Override
-    protected void doDelElems(RedisKeyInfo keyInfo, RedisValueInfo valInfo)
-        throws RedisResponseException{
+    private PreparedStatement getBoundStmt(String sql, RedisKeyInfo keyInfo,
+       RedisValueInfo valInfo) throws RedisResponseException {
         String cid = CollectionHeader.getCid(valInfo.val);
-        PreparedStatement pStmt = pstmtCache.getByRef(getSQLDelElems());
-        
+        PreparedStatement pStmt = pstmtCache.getByRef(sql);
         pStmt.setVariable(SQL_SLOT, new IntegerValue(keyInfo.slot));
         pStmt.setVariable(SQL_KEY_ID, new StringValue(keyInfo.id));
         pStmt.setVariable(SQL_CID, new StringValue(cid));
+        return pStmt;
+    }
 
-        processQuery(pStmt);
+    @Override
+    protected void doDelElems(RedisKeyInfo keyInfo, RedisValueInfo valInfo)
+        throws RedisResponseException{
+        processQuery(getBoundStmt(getSQLDelElems(), keyInfo, valInfo));
     }
 
     @Override
     protected void doSetElemsExp(RedisKeyInfo keyInfo, RedisValueInfo valInfo,
         TimeToLive ttl) throws RedisResponseException {
-        String cid = CollectionHeader.getCid(valInfo.val);
-        PreparedStatement pStmt = pstmtCache.getByRef(getSQLSelElems());
-
-        pStmt.setVariable(SQL_SLOT, new IntegerValue(keyInfo.slot));
-        pStmt.setVariable(SQL_KEY_ID, new StringValue(keyInfo.id));
-        pStmt.setVariable(SQL_CID, new StringValue(cid));
-
+        PreparedStatement pStmt = getBoundStmt(getSQLSelElems(), keyInfo,
+            valInfo);
         WriteMultipleRequest wmReq = new WriteMultipleRequest();
         String tblName = getElemsTblName();
 
@@ -380,13 +375,8 @@ abstract class CollectionCommandsBase extends CommandsBase {
     protected CopyElemsResult doCopyElems(RedisKeyInfo srcKeyInfo,
         RedisValueInfo srcValInfo, RedisKeyInfo dstKeyInfo)
         throws RedisResponseException {
-        String cid = CollectionHeader.getCid(srcValInfo.val);
-        PreparedStatement pStmt = pstmtCache.getByRef(getSQLSelElems());
-
-        pStmt.setVariable(SQL_SLOT, new IntegerValue(srcKeyInfo.slot));
-        pStmt.setVariable(SQL_KEY_ID, new StringValue(srcKeyInfo.id));
-        pStmt.setVariable(SQL_CID, new StringValue(cid));
-
+        PreparedStatement pStmt = getBoundStmt(getSQLSelElems(), srcKeyInfo,
+            srcValInfo);
         String newCid = UUID.randomUUID().toString();
 
         WriteMultipleRequest wmReq = new WriteMultipleRequest();

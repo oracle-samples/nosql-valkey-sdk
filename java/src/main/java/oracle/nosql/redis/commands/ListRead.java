@@ -31,8 +31,8 @@ import oracle.nosql.redis.util.Utils;
 public class ListRead extends ListCommandsBase {
 
     private static final String SQL_LRANGE_FMT = DECL_KEY_ID +
-        "$var2 INTEGER; $var3 LONG; SELECT" + LIST_IDX_HINT +
-        "$l.value AS elemVal " + FROM_JOIN_WHERE_KEY_ID + AND_NOT_EXPIRED +
+        "$var2 INTEGER; $var3 LONG; SELECT $l.value AS elemVal " +
+        FROM_JOIN_WHERE_L_PK + AND_NOT_EXPIRED +
         "ORDER BY %s LIMIT $var2 OFFSET $var3";
 
     private static final String SQL_LRANGE =
@@ -41,8 +41,8 @@ public class ListRead extends ListCommandsBase {
         String.format(SQL_LRANGE_FMT, PK_COLS_DESC);
 
     private static final String SQL_LPOS_FMT = DECL_KEY_ID +
-        "%sSELECT" + LIST_IDX_HINT + "$l.value AS elemVal%s " +
-        FROM_JOIN_WHERE_KEY_ID + AND_NOT_EXPIRED + "ORDER BY %s%s";
+        "%sSELECT $l.value AS elemVal%s " +
+        FROM_JOIN_WHERE_L_PK + AND_NOT_EXPIRED + "ORDER BY %s%s";
     private static final String SQL_LPOS = String.format(SQL_LPOS_FMT, "", "",
         PK_COLS, "");
     private static final String SQL_LPOS_MAXLEN = String.format(SQL_LPOS_FMT,

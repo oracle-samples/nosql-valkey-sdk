@@ -2,7 +2,11 @@ package oracle.nosql.redis.commands;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.UUID;
+
 import oracle.nosql.driver.NoSQLHandle;
+import oracle.nosql.driver.ops.DeleteRequest;
+import oracle.nosql.driver.ops.PutRequest;
 import oracle.nosql.driver.values.ArrayValue;
 import oracle.nosql.driver.values.FieldValue;
 import oracle.nosql.driver.values.MapValue;
@@ -16,9 +20,16 @@ import static oracle.nosql.redis.util.Utils.getStringField;
 
 public class HashCommandsBase extends CollectionCommandsBase {
 
+    // For the empty record key, we want to have max possible value for scanId
+    // so that our scan query (see HashScan in HashRead.java) always fetches
+    // it based on ">=" predicate it uses. This also ensures that the empty
+    // record will be the last result (the results are ordered by scanId).
+    private static final MapValue EMPTY_REC_KEY =
+        new MapValue(1).put(KEY_SCAN_ID, Long.MAX_VALUE);
+
     // We convert to multi-row format as soon as the size exceeds
     // MAX_SMALL_HASH_SIZE by 1. The value below is chosen such that
-    // convertToMultirow() is done atomically. In future, this value may be
+    // convertToMultirow() is done atomically. In the future, this value may be
     // configurable (in which case it is possible to exceed the size by more
     // than 1 if config changes), but must never be greater than the one
     // specified below.
@@ -39,16 +50,35 @@ public class HashCommandsBase extends CollectionCommandsBase {
     protected static final String HKEYID_COND = " AND $h.keyId ";
     protected static final String SEL_HKEYID = ", $h.keyId";
     protected static final String SEL_FLDVAL = ", $h.value AS fldVal";
-    protected static String HKEYID_IN_ARRAY_VAR2 = HKEYID_COND + "IN $var2[]";
-    protected static String HKEYID_EQ_VAL_VAR2 = HKEYID_COND + "= $var2";
 
-    protected static final String FROM_LOJ =
-        "FROM redis $r LEFT OUTER JOIN redis.hashes $h ON $r.slot = $h.slot " +
-        "AND $r.id = $h.id AND $r.value.cid = $h.cid ";
+    // Currently, a SQL join of tables redis to redis.hashes will not use
+    // child table primary index to perform the hKeyId look up and thus will
+    // not be O(1), which is not adequate for our purposes. Instead, we
+    // reverse the join (redis.hashes to redis) to allow using the child table
+    // primary key index. However, because we store small hashes inline as
+    // smallVal, we need to get a row from redis when there are no rows in
+    // redis.hashes. With this join, this is impossible, so instead we store an
+    // "empty" record (in addition to any other records for this hash). We
+    // use its hKeyId as empty string (which should not clash with valid
+    // hKeyIds) so that it is always in the lowest sorted order.
+    // To account for the empty record, we have to modify the queries
+    // accordingly.
+    protected static String HKEYID_IN_ARRAY_VAR2 =
+        HKEYID_COND + "IN seq_concat($var2[], '')";
+    protected static String HKEYID_EQ_VAL_VAR2 =
+        HKEYID_COND + "IN ($var2, '')";
+
+    protected static final String H_PK_COND =
+        "$h.slot = $slot AND $h.id = $id ";
+    protected static final String WHERE_H_PK_COND = SQL_WHERE + H_PK_COND;
+    protected static final String FROM_JOIN_WHERE_H_PK =
+        "FROM NESTED TABLES(redis.hashes $h ANCESTORS(redis $r)) " +
+            WHERE_H_PK_COND + "AND $h.cid = $r.value.cid ";
+    protected static final String PK_COLS = "$h.slot, $h.id, $h.keyId";
 
     protected static final String SQL_ENTRIES_FMT = DECL_KEY_ID +
-        "%s SELECT row_version($r) AS ver, $r.key, $r.value%s " + FROM_LOJ +
-        "%s " + WHERE_KEY_ID_COND;
+        "%s SELECT row_version($r) AS ver, $r.key, $r.value%s " +
+        FROM_JOIN_WHERE_H_PK + "%s ORDER BY " + PK_COLS;
     protected static final String SQL_ENTRY_IDS = String.format(
         SQL_ENTRIES_FMT, VAR2_STRING_ARRAY, SEL_HKEYID, HKEYID_IN_ARRAY_VAR2);
     protected static final String SQL_ENTRY_ID = String.format(
@@ -61,8 +91,8 @@ public class HashCommandsBase extends CollectionCommandsBase {
     protected static final String SQL_DEL_ELEMS = String.format(
         SQL_DEL_ELEMS_FMT, HASH_TABLE_NAME);
 
-    protected static final String ERR_INVALID_SMALLVAL_ENTRY =
-        "Invalid entry in smallVal";
+    protected static final String ERR_INVALID_HASH_ENTRY =
+        "Invalid hash entry";
     protected static final String ERR_INVALID_HASH_HEADER =
         "Invalid hash header in query result";
 
@@ -166,6 +196,7 @@ public class HashCommandsBase extends CollectionCommandsBase {
         final int existingCnt;
 
         HSetInfo(HashHeader header, int existingCnt) {
+            assert header != null;
             this.header = header;
             this.existingCnt = existingCnt;
         }
@@ -176,6 +207,7 @@ public class HashCommandsBase extends CollectionCommandsBase {
         final List<String> existingIds;
 
         HDelInfo(HashHeader header, List<String> keyIds) {
+            assert header != null;
             this.header = header;
             this.existingIds = keyIds;
         }
@@ -208,19 +240,62 @@ public class HashCommandsBase extends CollectionCommandsBase {
             return null;
         }
         if (!entry.isMap()) {
-            throw RedisResponseException.corrupt(ERR_INVALID_SMALLVAL_ENTRY);
+            throw RedisResponseException.corrupt(ERR_INVALID_HASH_ENTRY);
         }
         return getStringField(entry.asMap(), FLD_VALUE);
     }
 
-    protected static String rowToKeyId(MapValue row, boolean allowNull)
+    protected static String rowToKeyId(MapValue row)
         throws RedisResponseException {
-        return getStringField(row, FLD_KEY_ID, allowNull);
+        return getStringField(row, FLD_KEY_ID);
     }
 
-    protected static String rowToFldVal(MapValue row, boolean allowNull)
+    protected static String rowToFldVal(MapValue row)
         throws RedisResponseException {
-        return getStringField(row, FLD_VALUE, allowNull);
+        return getStringField(row, FLD_VALUE);
+    }
+
+    protected static PutRequest makePutEmptyReq(RedisKeyInfo keyInfo,
+        HashHeader header) {
+        return new PutRequest()
+            .setTableName(HASH_TABLE_NAME)
+            .setValue(new MapValue().put(FLD_SLOT, keyInfo.slot)
+                .put(FLD_ID, keyInfo.id).put(FLD_KEY_ID, "")
+                .put(FLD_CID, header.cid)
+                .put(FLD_KEY, EMPTY_REC_KEY));
+    }
+
+    protected static DeleteRequest makeDeleteEmptyReq(RedisKeyInfo keyInfo) {
+        return new DeleteRequest()
+            .setTableName(HASH_TABLE_NAME)
+            .setKey(new MapValue().put(FLD_SLOT, keyInfo.slot)
+                .put(FLD_ID, keyInfo.id).put(FLD_KEY_ID, ""));
+    }
+
+    // Static method is needed for HashScan.
+    // Checks if the hash exists at given key, if so, verifies it is a hash.
+    // Unfortunately, even keeping empty record in redis.hashes table will not
+    // guard against the case the key is of the wrong type (not hash), since
+    // SQL JOIN will return no records in this case. For read-only commands,
+    // we have no choice but to do this check if the query returns no records,
+    // so that we return correct return value or error to the user. For update
+    // commands, we can optimize this somewhat and do this check only in case
+    // of a retry (see doChkWM in HashUpdate.java).
+    protected static boolean chkHashKey(CommandsBase cmds,
+        RedisKeyInfo keyInfo) throws RedisResponseException {
+        RedisValueInfo valInfo = cmds.doGet(keyInfo);
+        if (!valInfo.isValid()) {
+            return false;
+        }
+        if (!getValueType(valInfo.val).equals(TYPE_HASH)) {
+            throw RedisResponseException.wrongType();
+        }
+        return true;
+    }
+
+    protected boolean chkHashKey(RedisKeyInfo keyInfo)
+        throws RedisResponseException {
+        return chkHashKey(this, keyInfo);
     }
 
     protected CollectionValueResult<HashHeader> doGetHash(
@@ -238,7 +313,10 @@ public class HashCommandsBase extends CollectionCommandsBase {
         // For HSET, we don't really need the actual field ids, only the
         // count of matching entries to find how many new fields are added.
         // However, currently there is no efficient way to retrieve the
-        // count together with the parent row data in a single query.
+        // count together with the parent row data in a single query (if using
+        // GROUP BY, we would have to include all needed parent table columns
+        // as grouping expressions, doing such grouping would be less
+        // efficient than just returning the ids).
         // For HDEL, it may be useful to have field ids so that we can create
         // delete requests only for existing fields (instead of all input
         // fields).
@@ -247,36 +325,38 @@ public class HashCommandsBase extends CollectionCommandsBase {
             fKeyIds.length == 1 ? new StringValue(fKeyIds[0]) :
                 new ArrayValue().addAll(Arrays.stream(fKeyIds)
                     .map(val -> new StringValue(val))));
-        chkMaxNumResults(rows, fKeyIds.length);
 
         if (rows.isEmpty()) {
             // Hash does not exist.
             return CollectionValueResult.none();
         }
-    
+
         MapValue row0 = rows.get(0);
+        // Empty record should be first in the sorting order.
+        if (!rowToKeyId(row0).isEmpty()) {
+            throw new RedisResponseException(ERR_INVALID_HASH_ENTRY);
+        }
+
         RedisValueInfo val = RedisValueInfo.create(rowToValue(row0),
             rowToVer(row0), getExpTime(rowToKey(row0)));
         if (!val.isValid()) {
             // Hash expired.
-            return CollectionValueResult.none();
+            return new CollectionValueResult<>(val, null);
         }
 
         HashHeader header = new HashHeader(val.val);
-    
-        String keyId0 = rowToKeyId(row0, true);
 
         T res;
-        if (keyId0 == null) {
-            // No matching entries or hash stored in smallVal format.
-            chkSingleResult(rows);
+        if (rows.size() == 1) {
+            // Hash is in smallVal format or none of the fields are found.
             res = getValInfo.apply(header, null);
         } else {
+            // Hash is in multi-row format and at least some fields are found.
+            chkMaxNumResults(rows, fKeyIds.length + 1);
             if (header.smallVal != null) {
                 throw RedisResponseException.corrupt(ERR_INVALID_HASH_HEADER);
             }
-
-            res = getValInfo.apply(header, rows);
+            res = getValInfo.apply(header, rows.subList(1, rows.size()));
         }
 
         return new CollectionValueResult<>(val, res);
@@ -291,18 +371,23 @@ public class HashCommandsBase extends CollectionCommandsBase {
         throws RedisResponseException {
         HashHeader header = new HashHeader(srcValInfo.val);
         if (header.smallVal != null) {
-            // The hash is in smallVal format, no copy of elements needed.
+            // The hash is in smallVal format, no copy of elements needed, but
+            // we still need to create the empty record at destination.
             assert header.len == 0;
-            // Using null as first arg will create new cid.
-            return new HashHeader(null, header.smallVal, 0).makeValue();
+            header.cid = UUID.randomUUID().toString(); // assign new cid
+            nosqlHandle.put(makePutEmptyReq(dstKeyInfo, header));
+        } else {
+            // For multi-row format, we copy the elements and return new
+            // header for destination.
+            assert header.len > 0;
+            CopyElemsResult copyRes = doCopyElems(srcKeyInfo, srcValInfo,
+                dstKeyInfo);
+
+            header.cid = copyRes.cid;
+            header.len = copyRes.cnt;
         }
 
-        // For multi-row format, we copy the elements and create the new
-        // header.
-        assert header.len > 0;
-        CopyElemsResult copyRes = doCopyElems(srcKeyInfo, srcValInfo,
-            dstKeyInfo);
-        return new HashHeader(copyRes.cid, null, copyRes.cnt).makeValue();
+        return header.makeValue();
     }
 
     public HashCommandsBase(NoSQLHandle nosqlHandle, RedisServerConfig config,

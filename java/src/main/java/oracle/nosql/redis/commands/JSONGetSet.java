@@ -40,7 +40,7 @@ public class JSONGetSet extends JSONCommandsBase {
         "%sSELECT [%s] AS res " + SQL_IS_JSON + " FROM redis $r WHERE " +
         SQL_EXISTS_COND;
     private static final String SQL_MGET_FMT = DECL_KEY_IDS +
-        "%sSELECT id, [%s] AS res FROM redis $r " + WHERE_KEY_IDS_COND +
+        "%sSELECT id, [%s] AS res FROM redis $r " + WHERE_R_PKS_COND +
         AND_NOT_EXPIRED + AND_IS_JSON;
 
     private static final String[] MAP_FILTER_ARR = new String[] { MAP_FILTER };
@@ -50,7 +50,7 @@ public class JSONGetSet extends JSONCommandsBase {
         SQL_IS_JSON;
     private static final String SQL_MSET_GET = DECL_KEY_IDS +
         "SELECT $r.id, row_version($r) AS ver, $r.key.exp AS exp, " +
-        "$r.value.json AS json FROM redis $r " + WHERE_KEY_IDS_COND;
+        "$r.value.json AS json FROM redis $r " + WHERE_R_PKS_COND;
 
     private static class MSetValInfo {
         final oracle.nosql.driver.Version ver;
@@ -257,7 +257,7 @@ public class JSONGetSet extends JSONCommandsBase {
         }
 
         chkIsJSON(row);
-        ArrayValue res = getArrRes(doSQLGet(pStmt));
+        ArrayValue res = getArrRes(row);
         return paths.size() == 1 ?
             chkLegacyRes(paths.get(0), untransformValues(res)) :
             makeMultiResult(paths, res);

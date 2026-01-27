@@ -65,7 +65,7 @@ abstract class JSONCommandsBase extends CommandsBase {
     protected static final String SQL_IS_JSON =
         ", (EXISTS $r.value.json) AS isJSON";
     protected static final String SQL_EXISTS_COND =
-        KEY_ID_COND + AND_NOT_EXPIRED;
+        R_PK_COND + AND_NOT_EXPIRED;
     protected static final String SQL_VAL = "$val";
     protected static final String DECL_KEY_ID_VAL =
         DECL_KEY_ID + SQL_VAL + " JSON; ";

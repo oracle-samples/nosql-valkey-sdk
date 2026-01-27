@@ -16,8 +16,6 @@ import io.netty.handler.codec.redis.IntegerRedisMessage;
 import io.netty.handler.codec.redis.RedisMessage;
 import oracle.nosql.driver.NoSQLHandle;
 import oracle.nosql.driver.ops.WriteMultipleRequest;
-import oracle.nosql.driver.ops.WriteMultipleResult;
-import oracle.nosql.driver.values.ArrayValue;
 import oracle.nosql.driver.values.FieldValue;
 import oracle.nosql.driver.values.LongValue;
 import oracle.nosql.driver.values.MapValue;
@@ -57,10 +55,9 @@ public class ListSetInsert extends ListCommandsBase {
     // between the case when list key does not exist and the case when list
     // exists but the pivot is not found.
     private static final String SQL_LINSERT_PIVOT = DECL_KEY_ID +
-        "$var2 STRING; SELECT" + LIST_IDX_HINT +
-        "row_version($r) AS ver, $r.key, $r.value, $l.elemId " +
-        FROM_JOIN_WHERE_KEY_ID + ELEM_VAL_VAR2 + "ORDER BY " + PK_COLS +
-        LIMIT_1;
+        "$var2 STRING; SELECT row_version($r) AS ver, $r.key, $r.value, " +
+        "$l.elemId " + FROM_JOIN_WHERE_L_PK + ELEM_VAL_VAR2 + "ORDER BY " +
+        PK_COLS + LIMIT_1;
 
     private static final String SQL_ELEM_IDS_RIGHT = String.format(
         SQL_ELEM_ID_FMT, ">=", PK_COLS, "");
@@ -95,15 +92,15 @@ public class ListSetInsert extends ListCommandsBase {
     // ELEM_ID_PREF_MAX_SCALE). To avoid frequent reindexing, we use much
     // smaller max scale (and bigger min distance) when reindexing than when
     // doing inserts, hoping that many inserts can take place in the same
-    // viscinity before we need to reindex again.
-    // To avoid reindexing the whole list, we try to only reindex by spreding
-    // the ids near the problematic area. In particular we need to spread the
+    // vicinity before we need to reindex again.
+    // To avoid reindexing the whole list, we try to only reindex by spreading
+    // the ids near the problematic area. In particular, we need to spread the
     // interval between the two ids that bounded the problematic id (that
     // failed to insert) and then all affected neighboring ids.
     // In simple case, without considering concurrency or durability, we could
     // just start shifting affected ids going in one direction achieving
     // preferred minimum distance between any adjacent ids, until the next id
-    // we encounter is already at preferred minumum distance (or above), at
+    // we encounter is already at preferred minimum distance (or above), at
     // which point we can stop. In the worst case, this process would proceed
     // until one of the ends of the list.
     // However, because reindexing would have to be done over multiple
@@ -112,14 +109,14 @@ public class ListSetInsert extends ListCommandsBase {
     // have to move along the list in the opposite directions of shifting the
     // ids. E.g. we can move from right to left while shifting each id from
     // left to right. For this we use 2 passes. The 1st pass will find the
-    // minumum interval to reindex. The 2nd pass will move in the opposite
+    // minimum interval to reindex. The 2nd pass will move in the opposite
     // direction of the 1st and shift the ids to the preferred min distance
     // from each other.
 
-    //private static final int ELEM_ID_MAX_SCALE = 10;
-    private static final int ELEM_ID_MAX_SCALE = 4;
-    //private static final int ELEM_ID_PREF_MAX_SCALE = 5;
-    private static final int ELEM_ID_PREF_MAX_SCALE = 2;
+    private static final int ELEM_ID_MAX_SCALE = 10;
+    // private static final int ELEM_ID_MAX_SCALE = 4;
+    private static final int ELEM_ID_PREF_MAX_SCALE = 5;
+    // private static final int ELEM_ID_PREF_MAX_SCALE = 2;
     private static final BigDecimal ELEM_ID_PREF_MIN_DIST =
         BigDecimal.ONE.movePointLeft(ELEM_ID_PREF_MAX_SCALE);
     private static final BigDecimal HALF = new BigDecimal(0.5);
@@ -318,6 +315,11 @@ public class ListSetInsert extends ListCommandsBase {
                     for(; delIdx < putIdx; delIdx++) {
                         wmReq.add(makeDeleteElemReq(keyInfo,
                             lvi.elemIds.get(delIdx), false), false);
+                    }
+
+                    // check if we should do partial reindex
+                    if (wmReq.getNumOperations() > 1) {
+                        doWM(wmReq, true);
                     }
 
                     return ReindexBatchResult.ABORT;

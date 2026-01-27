@@ -9,6 +9,7 @@ package oracle.nosql.redis.commands;
 
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 
 import io.netty.buffer.ByteBuf;
@@ -100,11 +101,11 @@ public abstract class CommandsBase {
         SQL_DECLARE + "$slot INTEGER; $id STRING; ";
     static final String DECL_KEY_IDS =
         SQL_DECLARE + "$slot INTEGER; $ids ARRAY(STRING); ";
-    static final String KEY_ID_COND = "$r.slot = $slot AND $r.id = $id ";
-    static final String WHERE_KEY_ID_COND = SQL_WHERE + KEY_ID_COND;
-    static final String KEY_IDS_COND =
+    static final String R_PK_COND = "$r.slot = $slot AND $r.id = $id ";
+    static final String WHERE_R_PK_COND = SQL_WHERE + R_PK_COND;
+    static final String R_PKS_COND =
         "$r.slot = $slot AND $r.id IN $ids[]";
-    static final String WHERE_KEY_IDS_COND = SQL_WHERE + KEY_IDS_COND;
+    static final String WHERE_R_PKS_COND = SQL_WHERE + R_PKS_COND;
 
     static final String NOT_EXPIRED =
         "(NOT EXISTS $r.key.exp OR $r.key.exp > current_time_millis()) ";
@@ -209,6 +210,10 @@ public abstract class CommandsBase {
             return new RedisValueInfo(null, ver, EXPIRED);
         }
 
+        boolean exists() {
+            return ver != null;
+        }
+        
         boolean isValid() {
             return val != null && exp != EXPIRED;
         }
@@ -237,7 +242,7 @@ public abstract class CommandsBase {
         // below return the same instance.
         @SuppressWarnings("resource")
         @Override
-        Iterable<MapValue> startScan() throws RedisResponseException {
+        Iterator<MapValue> startScan() throws RedisResponseException {
             PreparedStatement pStmt = pstmtCache.getByRef(getSQLScan());
             if (keyInfo != null) {
                 pStmt.setVariable(SQL_SLOT, new IntegerValue(keyInfo.slot));
@@ -249,7 +254,7 @@ public abstract class CommandsBase {
             qReq = new QueryRequest().setPreparedStatement(pStmt)
                 .setLimit(count + 1);
             qir = nosqlHandle.queryIterable(qReq);
-            return qir;
+            return qir.iterator();
         }
 
         public void close() {

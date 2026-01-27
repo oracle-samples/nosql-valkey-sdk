@@ -15,7 +15,6 @@ import java.util.Properties;
 import java.util.logging.LogManager;
 
 import oracle.nosql.driver.AuthorizationProvider;
-import oracle.nosql.driver.Consistency;
 import oracle.nosql.driver.NoSQLHandleConfig;
 import oracle.nosql.driver.Region;
 import oracle.nosql.driver.iam.SignatureProvider;

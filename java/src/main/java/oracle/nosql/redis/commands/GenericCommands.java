@@ -81,9 +81,9 @@ public class GenericCommands extends CommandsBase {
     }
 
     private static final String SQL_EXISTS_ONE = DECL_KEY_ID +
-        "SELECT 1 FROM redis $r " + WHERE_KEY_ID_COND + AND_NOT_EXPIRED;
+        "SELECT 1 FROM redis $r " + WHERE_R_PK_COND + AND_NOT_EXPIRED;
     private static final String SQL_EXISTS = DECL_KEY_IDS +
-        "SELECT count(*) AS res FROM redis $r " + WHERE_KEY_IDS_COND +
+        "SELECT count(*) AS res FROM redis $r " + WHERE_R_PKS_COND +
         AND_NOT_EXPIRED;
 
     private static final String ERR_NX_NOT_COMPAT =

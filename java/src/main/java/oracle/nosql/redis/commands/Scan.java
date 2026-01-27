@@ -8,6 +8,7 @@
 package oracle.nosql.redis.commands;
 
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import com.google.re2j.Pattern;
 import com.google.re2j.PatternSyntaxException;
@@ -203,10 +204,6 @@ abstract class Scan extends CommandsBase implements AutoCloseable {
         return Utils.getLongField(key, KEY_SCAN_ID);
     }
 
-    static long rowToScanIdUnchecked(MapValue row) {
-        return row.get(FLD_KEY).asMap().getLong(KEY_SCAN_ID);
-    }
-
     // This will need to be reconsidered.  String.hashCode() is not very
     // strong anyway.  Need to look for better 3rd party hash function.
     // Make sure the scan id != 0, because of special meaning of cursor = 0.
@@ -227,7 +224,7 @@ abstract class Scan extends CommandsBase implements AutoCloseable {
     // "key" and "value". The key is in the same format as stored in the parent
     // table (see CommandsBase.makeRedisKey()), scanId is required if
     // toGetAll() = false. The value is a binary string.
-    abstract Iterable<MapValue> startScan()
+    abstract Iterator<MapValue> startScan()
         throws RedisResponseException;
 
     // Override this for cases where we want to get all keys regardless of
@@ -247,13 +244,14 @@ abstract class Scan extends CommandsBase implements AutoCloseable {
     // pred is an optional additional predicate to test candidate row (in
     // addition to match), currently used only for "TYPE" parameter to SCAN.
     long scan(List<RedisMessage> results) throws RedisResponseException {
-        Iterable<MapValue> resIter = startScan();
+        Iterator<MapValue> resIter = startScan();
 
         long rowCnt = 0;
         long currScanId = 0;
         long scanId = 0;
 
-        for(MapValue row : resIter) {
+        while(resIter.hasNext()) {
+            MapValue row = resIter.next();
             rowCnt++;
             MapValue key = rowToKey(row);
 

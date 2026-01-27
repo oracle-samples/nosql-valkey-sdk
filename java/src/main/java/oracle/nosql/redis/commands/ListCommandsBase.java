@@ -41,11 +41,13 @@ abstract class ListCommandsBase extends CollectionCommandsBase {
     protected static final String ELEM_VAL = ", $l.value AS elemVal";
     protected static final String ELEM_VAL_VAR2 = " AND $l.value = $var2 ";
     protected static final String VAL_LEN = ", $r.value.len AS len";
-    protected static final String LIST_IDX_HINT =
-        " /*+ FORCE_INDEX(redis.lists listPK2Idx) */ ";
-    protected static final String FROM_JOIN_WHERE_KEY_ID =
+    protected static final String L_PK_COND =
+        "$l.slot = $slot AND $l.id = $id ";
+    protected static final String WHERE_L_PK_COND = SQL_WHERE + L_PK_COND;
+
+    protected static final String FROM_JOIN_WHERE_L_PK =
         "FROM NESTED TABLES(redis.lists $l ANCESTORS(redis $r)) " +
-            WHERE_KEY_ID_COND + "AND $l.cid = $r.value.cid ";
+            WHERE_L_PK_COND + "AND $l.cid = $r.value.cid ";
     protected static final String PK_COLS = "$l.slot, $l.id, $l.elemId";
     protected static final String PK_COLS_DESC =
         "$l.slot DESC, $l.id DESC, $l.elemId DESC";
@@ -56,9 +58,8 @@ abstract class ListCommandsBase extends CollectionCommandsBase {
         SQL_DEL_ELEMS_FMT, LIST_TABLE_NAME);
 
     protected static final String SQL_ELEMS_FMT = DECL_KEY_ID + 
-        "%sSELECT" + LIST_IDX_HINT +
-        "row_version($r) AS ver, $r.key, $r.value, $l.elemId%s " +
-        FROM_JOIN_WHERE_KEY_ID + "%sORDER BY %s%s%s";
+        "%sSELECT row_version($r) AS ver, $r.key, $r.value, $l.elemId%s " +
+        FROM_JOIN_WHERE_L_PK + "%sORDER BY %s%s%s";
 
     protected static final String SQL_LPUSH = String.format(SQL_ELEMS_FMT, "",
         "", "", PK_COLS, LIMIT_1, "");
@@ -73,8 +74,8 @@ abstract class ListCommandsBase extends CollectionCommandsBase {
     // Queries element ids less/greater than given element id in order of
     // element id. Currently only used in ListSetInsert.java.
     protected static final String SQL_ELEM_ID_FMT = DECL_KEY_ID +
-        "$var2 NUMBER; SELECT" + LIST_IDX_HINT + "$l.elemId " +
-        FROM_JOIN_WHERE_KEY_ID + "AND $l.elemId %s $var2 ORDER BY %s%s";
+        "$var2 NUMBER; SELECT $l.elemId " + FROM_JOIN_WHERE_L_PK +
+        "AND $l.elemId %s $var2 ORDER BY %s%s";
 
     protected static final BigDecimal VALUE_TWO = new BigDecimal(2);
     protected static final int MAX_ELEM_LEN = 256 * 1024;
@@ -263,7 +264,7 @@ abstract class ListCommandsBase extends CollectionCommandsBase {
     }
 
     // We don't worry about expired list key here, since it will be handled
-    // in doMultiUpdate().
+    // during update.
     protected CollectionValueResult<ListValueInfo> queryListElems(
         RedisKeyInfo keyInfo, String sql, boolean allowEmptyRes,
         boolean toGetElemVals, FieldValue... vars)
@@ -301,9 +302,10 @@ abstract class ListCommandsBase extends CollectionCommandsBase {
             // query returns no results (thus the condition
             // (!cvr.isValid() || cvr.data.elemIds.isEmpty()) is true), no
             // updates are performed, but returned cvr is only used to
-            // determine the command return value or error message. This is
-            // the case where allowEmptyResult is currently used (commands
-            // LINSERT, LSET and LREM).
+            // determine the command return value or error message (in which
+            // case the error is not 100% reliable). This is the case where
+            // allowEmptyResult is currently used (commands LINSERT, LSET and
+            // LREM).
             CollectionValueResult<ListValueInfo> cvr = doGetList(keyInfo);
             if (!allowEmptyRes && cvr.isValid()) {
                 throw new Utils.RedisRetryException();

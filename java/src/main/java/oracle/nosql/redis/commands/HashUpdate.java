@@ -11,6 +11,7 @@ import io.netty.buffer.ByteBuf;
 import io.netty.handler.codec.redis.FullBulkStringRedisMessage;
 import io.netty.handler.codec.redis.IntegerRedisMessage;
 import io.netty.handler.codec.redis.RedisMessage;
+import oracle.nosql.driver.NoSQLException;
 import oracle.nosql.driver.NoSQLHandle;
 import oracle.nosql.driver.ops.DeleteRequest;
 import oracle.nosql.driver.ops.PutRequest;
@@ -60,6 +61,34 @@ public class HashUpdate extends HashCommandsBase {
         }
     }
 
+    // We use this function instead of CollectionCommandsBase.doWM() to guard
+    // against the case when existing key is of wrong type (not hash). In this
+    // case our SQL JOIN (see getExistingVal, getExistingFldVal) will return
+    // no records. Instead of always calling chkHashKey() when the query
+    // returns no records, we optimize it somewhat by assuming first that the
+    // key does not exist (and thus we will use ifAbsent in WM), performing WM
+    // and only calling chkHashKey() if WM fails (after which we will perform
+    // retries). This way we avoid extra request done by chkHashKey() in
+    // then normal case when the key doesn't exist. Unfortunately there is no
+    // way to avoid this for read-only commands in order to return correct
+    // return value or an error.
+    private WriteMultipleResult doChkWM(WriteMultipleRequest wmReq,
+        RedisKeyInfo keyInfo, RedisValueInfo oldVal)
+        throws RedisResponseException {
+        try {
+            WriteMultipleResult wmRes = nosqlHandle.writeMultiple(wmReq);
+            if (wmRes.getSuccess()) {
+                return wmRes;
+            }
+            if (!oldVal.exists()) {
+                chkHashKey(keyInfo);
+            }
+            throw new Utils.RedisRetryException();
+        } catch(NoSQLException ex) {
+            throw RedisResponseException.nosql(ex);
+        }
+    }
+
     private void convertToMultiRow(RedisKeyInfo keyInfo,
         HashHeader header, WriteMultipleRequest wmReq, RedisValueInfo oldVal)
         throws RedisResponseException{
@@ -91,13 +120,8 @@ public class HashUpdate extends HashCommandsBase {
         String[] fKeyIds, HSetInfo hsi, WriteMultipleRequest wmReq,
         RedisValueInfo oldVal, boolean hasLargeEntry)
         throws RedisResponseException {
-        HashHeader header = hsi != null ? hsi.header : null;
-        boolean isNew = false;
-
-        if (header == null) {
-            header = new HashHeader();
-            isNew = true;
-        }
+        // If hsi = null, we are creating new hash.
+        HashHeader header = hsi != null ? hsi.header : new HashHeader();
 
         int addedCnt;
         int processedCnt;
@@ -110,7 +134,7 @@ public class HashUpdate extends HashCommandsBase {
                     break;
                 }
                 String keyId = fKeyIds[processedCnt];
-                if (isNew || !header.smallVal.contains(keyId)) {
+                if (hsi == null || !header.smallVal.contains(keyId)) {
                     addedCnt++;
                 }
                 header.smallVal.put(keyId, fvMap.get(keyId));
@@ -124,6 +148,11 @@ public class HashUpdate extends HashCommandsBase {
             } else {
                 // The hash is still in smallVal format.
                 wmReq.add(makePutKeyReq(keyInfo, header, oldVal), true);
+            }
+
+            if (hsi == null) {
+                // add the empty record
+                wmReq.add(makePutEmptyReq(keyInfo, header), false);
             }
 
             return res;
@@ -171,7 +200,7 @@ public class HashUpdate extends HashCommandsBase {
             HSetResult hsr = prepareHSet(keyInfo, fvMap, keyIds, cvr.data,
                 wmReq, cvr.val, hasLargeEntry);
 
-            WriteMultipleResult wmRes = doWM(wmReq, true);
+            WriteMultipleResult wmRes = doChkWM(wmReq, keyInfo, cvr.val);
 
             // We must have WM results either from keyIds or
             // convertToMultiRow().
@@ -203,7 +232,7 @@ public class HashUpdate extends HashCommandsBase {
         // We put the fields and values into a map at first even for multi-row
         // format. This is to account for potential duplicate fields in input.
         // Redis allows duplicate fields in SET commands and just uses the
-        // last value to set. We have to elimitate duplicates to calculate
+        // last value to set. We have to eliminate duplicates to calculate
         // correct added count and also because WriteMultipleRequest cannot
         // contain requests with duplicate primary keys.
         MapValue fvMap = new MapValue();
@@ -250,7 +279,10 @@ public class HashUpdate extends HashCommandsBase {
 
         if (header.smallVal != null) {
             int delCnt = 0;
-            assert header.smallVal.size() <= MAX_SMALL_HASH_SIZE;
+            if (header.smallVal.size() > MAX_SMALL_HASH_SIZE) {
+                throw RedisResponseException.corrupt(
+                    "Invalid size of smallVal entry in hash header");
+            }
 
             for(int i = 0; i < fKeyIds.length; i++) {
                 if (header.smallVal.remove(fKeyIds[i]) != null) {
@@ -262,6 +294,8 @@ public class HashUpdate extends HashCommandsBase {
                 wmReq.add(makePutKeyReq(keyInfo, header, oldVal), true);
             } else {
                 wmReq.add(makeDeleteKeyReq(keyInfo, oldVal), true);
+                // delete the empty record
+                wmReq.add(makeDeleteEmptyReq(keyInfo), false);
             }
 
             return delCnt;
@@ -279,6 +313,8 @@ public class HashUpdate extends HashCommandsBase {
             wmReq.add(makePutKeyReq(keyInfo, header, oldVal), true);
         } else if (header.len == 0) {
             wmReq.add(makeDeleteKeyReq(keyInfo, oldVal), true);
+            // delete the empty record
+            wmReq.add(makeDeleteEmptyReq(keyInfo), false);
         } else {
             throw RedisResponseException.corrupt(
                 "Invalid hash header len field");
@@ -298,7 +334,8 @@ public class HashUpdate extends HashCommandsBase {
 
     private int doHDel(RedisKeyInfo keyInfo, Set<String> fSet)
         throws RedisResponseException {
-        String[] keyIds = fSet.stream().limit(MAX_TXN_ELEM_CNT)
+        // Subtract 1 from MAX_TXN_ELEM_CNT to account for the empty record.
+        String[] keyIds = fSet.stream().limit(MAX_TXN_ELEM_CNT - 1)
             .toArray(String[]::new);
 
         return doWithRetries(() -> {
@@ -310,25 +347,40 @@ public class HashUpdate extends HashCommandsBase {
                 int cnt = rows.size();
                 ArrayList<String> ids = new ArrayList<>(cnt);
                 for(int i = 0; i < cnt; i++) {
-                    ids.add(rowToKeyId(rows.get(i), false));
+                    ids.add(rowToKeyId(rows.get(i)));
                 }
                 return new HDelInfo(header, ids);
             });
 
-            // We return -1 to indicate that the hash does not exist.
-            if (!cvr.isValid()) {
-                return -1;
+            int delCnt = 0;
+            WriteMultipleRequest wmReq = null;
+
+            if (cvr.isValid()) {
+                wmReq = new WriteMultipleRequest();
+                delCnt = prepareHDel(keyInfo, keyIds, cvr.data, wmReq,
+                    cvr.val);
             }
 
-            WriteMultipleRequest wmReq = new WriteMultipleRequest();
-            int delCnt = prepareHDel(keyInfo, keyIds, cvr.data, wmReq,
-                cvr.val);
-            // delCnt = 0 if we did not find any of the provided fields. We
-            // still need to remove each field from fSet below.
             if (delCnt != 0) {
                 doWM(wmReq, true);
+            } else {
+                // Either hash doesn't exist or expired or prepareHDel() didn't
+                // find any fields to delete.
+                if (!cvr.val.exists()) {
+                    // If the query returned no records, we still have to
+                    // guard against key of wrong type (see comments for
+                    // doChkWM()).
+                    chkHashKey(keyInfo);
+                }
+                // We return -1 to indicate that the hash does not exist or
+                // expired.
+                if (!cvr.isValid()) {
+                    return -1;
+                }
             }
 
+            // Even if prepareHDel() did not find any of the provided fields,
+            // we still have to remove each field from fSet below.
             // Unlike for HSET, here all elements of keyIds should be
             // processed on successful request.
             for(int i = 0; i < keyIds.length; i++) {
@@ -346,17 +398,42 @@ public class HashUpdate extends HashCommandsBase {
             // Hash does not exist.
             return CollectionValueResult.none();
         }
-        chkSingleResult(rows);
         MapValue row0 = rows.get(0);
+        // Empty record should be first in the sorting order.
+        if (getStringField(row0, FLD_FLD_VAL, true) != null) {
+            throw new RedisResponseException(ERR_INVALID_HASH_ENTRY);
+        }
         RedisValueInfo val = RedisValueInfo.create(rowToValue(row0),
             rowToVer(row0), getExpTime(rowToKey(row0)));
-        HashHeader header = new HashHeader(val.val);
-        String fldVal = getStringField(row0, FLD_FLD_VAL, true);
-        if (fldVal == null && header.smallVal != null) {
-            fldVal = getValFromSmallVal(header.smallVal, hki.id);
+        if (!val.isValid()) {
+            // Hash expired.
+            return new CollectionValueResult(val, null);
         }
-        return new CollectionValueResult<>(val,
-            new HValInfo(header, fldVal));
+
+        HashHeader header = new HashHeader(val.val);
+
+        String fldVal;
+        // The 1st record must be the empty record.
+        if (rows.size() == 1) {
+            // If there is only one row, then either the hash is in smallVal
+            // format or it is multi-row format and the hKey is not found.
+            fldVal = header.smallVal != null ?
+                getValFromSmallVal(header.smallVal, hki.id) : null;
+        } else {
+            // This query should not return more than 2 rows (1st is the empty
+            // record).
+            chkMaxNumResults(rows, 2);
+            // The hash must be in multi-row format and the hKey found.
+            if (header.smallVal != null) {
+                throw RedisResponseException.corrupt(ERR_INVALID_HASH_HEADER);
+            }
+            fldVal = getStringField(rows.get(1), FLD_FLD_VAL);
+            if (fldVal == null) {
+                throw RedisResponseException.corrupt(ERR_INVALID_HASH_ENTRY);
+            }
+        }
+
+        return new CollectionValueResult<>(val, new HValInfo(header, fldVal));
     }
 
     // Somewhat like prepareHSet but simpler, since we are only updating one
@@ -380,6 +457,12 @@ public class HashUpdate extends HashCommandsBase {
                 // The hash is still in smallVal format.
                 wmReq.add(makePutKeyReq(keyInfo, header, oldVal), true);
             }
+
+            if (hvi == null) { // hash is new
+                // add the empty record
+                wmReq.add(makePutEmptyReq(keyInfo, header), false);
+            }
+
             return;
         }
 
@@ -422,7 +505,11 @@ public class HashUpdate extends HashCommandsBase {
             if (newVal != null) {
                 WriteMultipleRequest wmReq = new WriteMultipleRequest();
                 prepareUpdVal(keyInfo, hKeyInfo, hvi, wmReq, cvr.val, newVal);
-                doWM(wmReq, true);
+                doChkWM(wmReq, keyInfo, cvr.val);
+            } else if (!cvr.val.exists()) {
+                // If the query returned no records, we still have to guard
+                // against key of wrong type (see comments for doChkWM()).
+                chkHashKey(keyInfo);
             }
             return getResult.apply(newVal);
         });
@@ -458,7 +545,7 @@ public class HashUpdate extends HashCommandsBase {
         chkMinNumArgs(cmd, 2);
         RedisKeyInfo keyInfo = makeRedisKeyInfo(cmd.args[0]);
 
-        // We have to elimitate duplicates from the input for the same reason
+        // We have to eliminate duplicates from the input for the same reason
         // as for HSET.
         HashSet<String> fSet = new HashSet<>();
 

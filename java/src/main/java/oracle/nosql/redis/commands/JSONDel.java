@@ -20,7 +20,7 @@ import oracle.nosql.redis.util.Utils;
 public class JSONDel extends JSONCommandsBase {
 
     private static final String SQL_DEL_KEY =
-        DECL_KEY_ID + "DELETE FROM redis $r WHERE " + KEY_ID_COND +
+        DECL_KEY_ID + "DELETE FROM redis $r WHERE " + R_PK_COND +
         AND_IS_JSON + SQL_RETURNING + NOT_EXPIRED + "AS res";
 
     // Note that since we store array elements wrapped in objects, removing
