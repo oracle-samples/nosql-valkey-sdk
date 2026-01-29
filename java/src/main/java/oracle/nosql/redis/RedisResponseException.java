@@ -11,7 +11,7 @@ import static oracle.nosql.redis.util.Utils.escapeSimpleString;
 
 public class RedisResponseException extends Exception {
 	 
-    public static enum ErrorPrefix {
+    public enum ErrorPrefix {
         ERR,
         WRONGTYPE,
         PROTOCOL,

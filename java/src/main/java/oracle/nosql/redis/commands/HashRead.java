@@ -38,7 +38,7 @@ public class HashRead extends HashCommandsBase {
     // format, we use CASE expr. to avoid returning it otherwise.
     private static final String SQL_READ_FMT = DECL_KEY_ID +
         "%s SELECT " + SEL_HASH_VAL + "%s " + FROM_JOIN_WHERE_H_PK + "%s " +
-        AND_NOT_EXPIRED + "ORDER BY " + PK_COLS;
+        AND_NOT_EXPIRED;
 
     private static final String SEL_FLD_KEY = ", $h.key.data AS fldKey";
     private static final String SEL_FLD_VAL = ", $h.value";

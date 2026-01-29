@@ -64,9 +64,9 @@ public class HashCommandsBase extends CollectionCommandsBase {
     // To account for the empty record, we have to modify the queries
     // accordingly.
     protected static String HKEYID_IN_ARRAY_VAR2 =
-        HKEYID_COND + "IN seq_concat($var2[], '')";
+        HKEYID_COND + "IN seq_concat('', $var2[])";
     protected static String HKEYID_EQ_VAL_VAR2 =
-        HKEYID_COND + "IN ($var2, '')";
+        HKEYID_COND + "IN ('', $var2)";
 
     protected static final String H_PK_COND =
         "$h.slot = $slot AND $h.id = $id ";
@@ -74,11 +74,10 @@ public class HashCommandsBase extends CollectionCommandsBase {
     protected static final String FROM_JOIN_WHERE_H_PK =
         "FROM NESTED TABLES(redis.hashes $h ANCESTORS(redis $r)) " +
             WHERE_H_PK_COND + "AND $h.cid = $r.value.cid ";
-    protected static final String PK_COLS = "$h.slot, $h.id, $h.keyId";
 
     protected static final String SQL_ENTRIES_FMT = DECL_KEY_ID +
         "%s SELECT row_version($r) AS ver, $r.key, $r.value%s " +
-        FROM_JOIN_WHERE_H_PK + "%s ORDER BY " + PK_COLS;
+        FROM_JOIN_WHERE_H_PK + "%s";
     protected static final String SQL_ENTRY_IDS = String.format(
         SQL_ENTRIES_FMT, VAR2_STRING_ARRAY, SEL_HKEYID, HKEYID_IN_ARRAY_VAR2);
     protected static final String SQL_ENTRY_ID = String.format(
@@ -334,7 +333,7 @@ public class HashCommandsBase extends CollectionCommandsBase {
         MapValue row0 = rows.get(0);
         // Empty record should be first in the sorting order.
         if (!rowToKeyId(row0).isEmpty()) {
-            throw new RedisResponseException(ERR_INVALID_HASH_ENTRY);
+            throw RedisResponseException.corrupt(ERR_INVALID_HASH_ENTRY);
         }
 
         RedisValueInfo val = RedisValueInfo.create(rowToValue(row0),

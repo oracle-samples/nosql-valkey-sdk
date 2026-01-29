@@ -401,7 +401,7 @@ public class HashUpdate extends HashCommandsBase {
         MapValue row0 = rows.get(0);
         // Empty record should be first in the sorting order.
         if (getStringField(row0, FLD_FLD_VAL, true) != null) {
-            throw new RedisResponseException(ERR_INVALID_HASH_ENTRY);
+            throw RedisResponseException.corrupt(ERR_INVALID_HASH_ENTRY);
         }
         RedisValueInfo val = RedisValueInfo.create(rowToValue(row0),
             rowToVer(row0), getExpTime(rowToKey(row0)));
