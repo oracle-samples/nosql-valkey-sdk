@@ -3,6 +3,7 @@ package oracle.nosql.redis.commands;
 import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 import oracle.nosql.driver.NoSQLHandle;
 import oracle.nosql.driver.ops.DeleteRequest;
@@ -14,6 +15,7 @@ import oracle.nosql.driver.values.StringValue;
 import oracle.nosql.redis.RedisResponseException;
 import oracle.nosql.redis.RedisServerConfig;
 import oracle.nosql.redis.util.PreparedStatementCache;
+import oracle.nosql.redis.util.Utils;
 import oracle.nosql.redis.util.Utils.ThrowingBiFunction;
 
 import static oracle.nosql.redis.util.Utils.getStringField;
@@ -63,6 +65,9 @@ public class HashCommandsBase extends CollectionCommandsBase {
     // hKeyIds) so that it is always in the lowest sorted order.
     // To account for the empty record, we have to modify the queries
     // accordingly.
+    // Update: for performance reasons, not using ORDER BY in the query
+    // anymore, so we will not rely on ordering of returned rows and the
+    // relative position of the empty record.
     protected static String HKEYID_IN_ARRAY_VAR2 =
         HKEYID_COND + "IN seq_concat('', $var2[])";
     protected static String HKEYID_EQ_VAL_VAR2 =
@@ -331,10 +336,6 @@ public class HashCommandsBase extends CollectionCommandsBase {
         }
 
         MapValue row0 = rows.get(0);
-        // Empty record should be first in the sorting order.
-        if (!rowToKeyId(row0).isEmpty()) {
-            throw RedisResponseException.corrupt(ERR_INVALID_HASH_ENTRY);
-        }
 
         RedisValueInfo val = RedisValueInfo.create(rowToValue(row0),
             rowToVer(row0), getExpTime(rowToKey(row0)));
@@ -348,6 +349,11 @@ public class HashCommandsBase extends CollectionCommandsBase {
         T res;
         if (rows.size() == 1) {
             // Hash is in smallVal format or none of the fields are found.
+            // In either case, the only returned row should be the empty
+            // record.
+            if (!rowToKeyId(row0).isEmpty()) {
+                throw RedisResponseException.corrupt(ERR_INVALID_HASH_ENTRY);
+            }
             res = getValInfo.apply(header, null);
         } else {
             // Hash is in multi-row format and at least some fields are found.
@@ -355,7 +361,9 @@ public class HashCommandsBase extends CollectionCommandsBase {
             if (header.smallVal != null) {
                 throw RedisResponseException.corrupt(ERR_INVALID_HASH_HEADER);
             }
-            res = getValInfo.apply(header, rows.subList(1, rows.size()));
+            res = getValInfo.apply(header, rows.stream().filter(
+                Utils.uncheckedPred(row -> !rowToKeyId(row).isEmpty()))
+                .collect(Collectors.toList()));
         }
 
         return new CollectionValueResult<>(val, res);

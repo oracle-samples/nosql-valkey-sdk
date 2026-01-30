@@ -15,6 +15,8 @@ import java.util.Spliterator;
 import java.util.Spliterators;
 import java.util.concurrent.TimeUnit;
 import java.util.Base64;
+import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
@@ -287,13 +289,26 @@ public class Utils {
         return doubleToByteBuf(res);
     }
 
-    public static <T> T lambdaUnchecked(
-        ThrowingNoArgFunction<T, RedisResponseException> f) {
-        try {
-            return f.apply();
-        } catch (RedisResponseException ex) {
-            throw RedisResponseException.unchecked(ex);
-        }
+    public static <T, R> Function<T,R> uncheckedFunc(
+        ThrowingFunction<T, R, RedisResponseException> f) {
+        return arg -> {
+            try {
+                return f.apply(arg);
+            } catch (RedisResponseException ex) {
+                throw RedisResponseException.unchecked(ex);
+            }
+        };
+    }
+
+    public static <T> Predicate<T> uncheckedPred(
+        ThrowingPredicate<T, RedisResponseException> f) {
+        return arg -> {
+            try {
+                return f.test(arg);
+            } catch (RedisResponseException ex) {
+                throw RedisResponseException.unchecked(ex);
+            }
+        };
     }
 
     // It looks like Redis rounds to the nearest second.

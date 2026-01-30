@@ -62,12 +62,8 @@ public class HashRead extends HashCommandsBase {
 
         // The reason we have to use JOIN and not just query of redis.hashes is
         // because we have to condition on cid to avoid returning obsolete
-        // records that happen to have the same slot and keyId (note that we
-        // don't call doGet() below when cursor != 0, thus saving one request
-        // at each subsequent iteration). This also allows checking expiration
-        // time of parent key inside the query.
-        // Note that the empty record will be filtered out by the query
-        // predicate, since its key is NULL thus it does not have scanId.
+        // records that happen to have the same slot and keyId. This also
+        // allows checking expiration time of parent key inside the query.
         private static final String SQL_SCAN_FMT = DECL_KEY_ID +
             " $scanId LONG; SELECT $h.key%s, " + SEL_HASH_VAL + ' ' +
             FROM_JOIN_WHERE_H_PK + AND_NOT_EXPIRED +
@@ -168,11 +164,6 @@ public class HashRead extends HashCommandsBase {
         }
     }
 
-    private static MapValue rowToSmallVal(MapValue row, boolean allowNull)
-        throws RedisResponseException {
-        return valToSmallVal(getMapField(row, FLD_HASH_VAL), allowNull);
-    }
-
     private RedisMessage doHGetAll(ByteBuf keyBuf, boolean incKeys,
         boolean incVals) throws RedisResponseException {
         RedisKeyInfo keyInfo = makeRedisKeyInfo(keyBuf);
@@ -187,13 +178,12 @@ public class HashRead extends HashCommandsBase {
         }
 
         ArrayList<RedisMessage> res = new ArrayList<>();
-        MapValue row0 = rows.get(0);
-        // Empty record should be first in the sorting order.
-        MapValue val = getMapField(row0, FLD_HASH_VAL);
-        MapValue smallVal = valToSmallVal(val, true);
-        if (smallVal != null) {
-            // The hash is in smallVal format.
-            chkSingleResult(rows);
+
+        if (rows.size() == 1) {
+            // The hash must be in smallVal format and the only returned row
+            // should be the empty record (with non-null hashVal column)
+            MapValue smallVal = valToSmallVal(
+                getMapField(rows.get(0), FLD_HASH_VAL), false);
             for(FieldValue fv : smallVal.values()) {
                 if (!fv.isMap()) {
                     throw RedisResponseException.corrupt(
@@ -210,16 +200,18 @@ public class HashRead extends HashCommandsBase {
                 }
             }
         } else {
-            // The hash is in multi-row format, so we skip the empty record.
+            // The hash must be in multi-row format.
             int cnt = rows.size();
-            // In multi-row format, there must be at least 1 more record after
-            // the empty record.
-            if (cnt < 2) {
-                throw RedisResponseException.corrupt(ERR_INVALID_HASH_ENTRY);
-            }
 
+            // We could also add verification that the empty record is
+            // present and that the number of rows corresponds to the "len"
+            // field in the header (cnt == header.len + 1).
             for(int i = 1; i < cnt; i++) {
                 MapValue row = rows.get(i);
+                // Skip the empty record.
+                if (getMapField(row, FLD_HASH_VAL, true) != null) {
+                    continue;
+                }
                 if (incKeys) {
                     res.add(new FullBulkStringRedisMessage(getStrVal(
                         getStringField(row, FLD_FLD_KEY))));
@@ -249,12 +241,16 @@ public class HashRead extends HashCommandsBase {
         }
 
         MapValue row0 = rows.get(0);
-        // Empty record should be first in the sorting order.
-        MapValue val = getMapField(row0, FLD_HASH_VAL);
+        MapValue hashVal = getMapField(row0, FLD_HASH_VAL, true);
 
-        // Either the hash is in smallVal format or the field is not found.
         if (rows.size() == 1) {
-            MapValue smallVal = valToSmallVal(val, true);
+            // Hash is in smallVal format or the field is not found.
+            // In either case, the only returned row should be the empty
+            // record (with non-null hashVal column).
+            if (hashVal == null) {
+                throw RedisResponseException.corrupt(ERR_INVALID_HASH_ENTRY);
+            }
+            MapValue smallVal = valToSmallVal(hashVal, true);
             if (smallVal == null) {
                 // The hash must be in multi-row format and the field is not
                 // found.
@@ -264,8 +260,9 @@ public class HashRead extends HashCommandsBase {
             fldVal = getValFromSmallVal(smallVal, hKeyId);
         } else {
             // The hash must be in multi-row format and the field present.
+            // Check which of the 2 rows has the field.
             chkMaxNumResults(rows, 2);
-            fldVal = rowToFldVal(rows.get(1));
+            fldVal = rowToFldVal(hashVal != null ? rows.get(1) : row0);
         }
 
         return fldVal != null ? getStrVal(fldVal) : null;
@@ -314,8 +311,8 @@ public class HashRead extends HashCommandsBase {
         // We will reuse hKeyIds for convenience.
         ArrayValue hKeyIds = new ArrayValue().addAll(
             Arrays.stream(cmd.args, 1, cmd.args.length)
-                .map(val -> lambdaUnchecked(
-                    () -> new StringValue(makeRedisKeyInfo(val).id))));
+                .map(uncheckedFunc(val ->
+                    new StringValue(makeRedisKeyInfo(val).id))));
 
         List<MapValue> rows = doQuery(keyInfo, SQL_HGET_KEYVALS, hKeyIds);
         if (rows.isEmpty()) {
@@ -326,10 +323,6 @@ public class HashRead extends HashCommandsBase {
                 FullBulkStringRedisMessage.NULL_INSTANCE));
         }
 
-        MapValue row0 = rows.get(0);
-        // Empty record should be first in the sorting order.
-        MapValue val = getMapField(row0, FLD_HASH_VAL);
-
         // map and smallVal are exclusive
         HashMap<String, String> map = null;
         MapValue smallVal = null;
@@ -337,11 +330,16 @@ public class HashRead extends HashCommandsBase {
         // Either the hash is in smallVal format or none of the fields are
         // found.
         if (rows.size() == 1) {
-            smallVal = valToSmallVal(val, true);
+            // Hash is in smallVal format or none of the fields are found.
+            // In either case, the only returned row should be the empty
+            // record (with non-null hashVal column).
+            smallVal = valToSmallVal(
+                getMapField(rows.get(0), FLD_HASH_VAL), true);
             if (smallVal == null) {
                 // The hash must be in multi-row format and none of the fields
                 // are found.
-                return new ArrayRedisMessage(Collections.nCopies(hKeyIds.size(),
+                return new ArrayRedisMessage(Collections.nCopies(
+                    hKeyIds.size(),
                     FullBulkStringRedisMessage.NULL_INSTANCE));
             }
         } else {
@@ -349,12 +347,18 @@ public class HashRead extends HashCommandsBase {
             // present. We collect the field values into a map to retrieve
             // them later when computing the result (which has to return a
             // value or nil for each input field in the order of the input
-            // fields). The empty record (row0) is skipped.
+            // fields). The empty record is skipped.
             chkMaxNumResults(rows, hKeyIds.size() + 1);
             int cnt = rows.size();
-            map = new HashMap<>(cnt);
+            map = new HashMap<>(cnt - 1);
+            // We could also add verification that there is one and only one
+            // empty record in the results.
             for(int i = 1; i < cnt; i++) {
                 MapValue row = rows.get(i);
+                // Skip the empty record.
+                if (getMapField(row, FLD_HASH_VAL, true) != null) {
+                    continue;
+                }
                 map.put(rowToKeyId(row), rowToFldVal(row));
             }
         }

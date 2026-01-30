@@ -399,10 +399,6 @@ public class HashUpdate extends HashCommandsBase {
             return CollectionValueResult.none();
         }
         MapValue row0 = rows.get(0);
-        // Empty record should be first in the sorting order.
-        if (getStringField(row0, FLD_FLD_VAL, true) != null) {
-            throw RedisResponseException.corrupt(ERR_INVALID_HASH_ENTRY);
-        }
         RedisValueInfo val = RedisValueInfo.create(rowToValue(row0),
             rowToVer(row0), getExpTime(rowToKey(row0)));
         if (!val.isValid()) {
@@ -417,19 +413,25 @@ public class HashUpdate extends HashCommandsBase {
         if (rows.size() == 1) {
             // If there is only one row, then either the hash is in smallVal
             // format or it is multi-row format and the hKey is not found.
+            // In either case, the only returned row should be the empty
+            // record.
+            if (getStringField(row0, FLD_FLD_VAL, true) != null) {
+                throw RedisResponseException.corrupt(ERR_INVALID_HASH_ENTRY);
+            }
             fldVal = header.smallVal != null ?
                 getValFromSmallVal(header.smallVal, hki.id) : null;
         } else {
-            // This query should not return more than 2 rows (1st is the empty
-            // record).
-            chkMaxNumResults(rows, 2);
             // The hash must be in multi-row format and the hKey found.
+            // There should be 2 rows: the empty record and the one with hKey.
+            chkMaxNumResults(rows, 2);
             if (header.smallVal != null) {
                 throw RedisResponseException.corrupt(ERR_INVALID_HASH_HEADER);
             }
-            fldVal = getStringField(rows.get(1), FLD_FLD_VAL);
+            // We are not sure of the sorting order although in most cases
+            // the row with hKey will follow the empty record.
+            fldVal = getStringField(rows.get(1), FLD_FLD_VAL, true);
             if (fldVal == null) {
-                throw RedisResponseException.corrupt(ERR_INVALID_HASH_ENTRY);
+                fldVal = getStringField(row0, FLD_FLD_VAL);
             }
         }
 

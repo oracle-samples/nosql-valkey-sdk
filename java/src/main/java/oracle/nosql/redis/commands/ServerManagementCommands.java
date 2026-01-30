@@ -6,8 +6,6 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.function.Predicate;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 import io.netty.channel.group.ChannelGroup;
 import io.netty.handler.codec.redis.ArrayRedisMessage;
@@ -133,8 +131,7 @@ public class ServerManagementCommands extends CommandsBase {
         String[] sects = INFO_ALL_SECTS;
         if (cmd.args != null && cmd.args.length != 0) {
             String[] arr = Arrays.stream(cmd.args).map(
-                arg -> lambdaUnchecked(() ->
-                    Utils.byteBufToString(arg).toLowerCase()))
+                uncheckedFunc(arg -> Utils.byteBufToString(arg).toLowerCase()))
                 .distinct().toArray(String[]::new);
             // We will change this once we start to differentiate these
             // values. Note that we don't have modules, so "all" and
