@@ -7,10 +7,11 @@
 
 package oracle.nosql.redis;
 
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.io.InputStream;
+import java.io.*;
+import java.nio.file.Path;
+import java.security.KeyStore;
+import java.security.cert.CertificateFactory;
+import java.security.cert.X509Certificate;
 import java.util.Properties;
 import java.util.logging.LogManager;
 
@@ -97,7 +98,12 @@ class CommandLine {
     private String delegationTokenFile;
     private String serviceAcctTokenFile;
     private String serverCaCertFile;
-    private TableLimits tableLimits = RedisServerConfig.DEFAULT_TABLE_LIMITS;
+    // Note that we leave tableLimits null by default. This means that the
+    // table will be created with RedisServerConfig.DEFAULT_TABLE_LIMITS or if
+    // the table already exists, its table limits will not be updated. If
+    // -table-limits is specified, the provided table limits will be used for
+    // table creation or to update the table limits of existing table.
+    private TableLimits tableLimits;
     private String host;
     private int port = -1;
     private int maxRetries = RedisServerConfig.DEFAULT_MAX_ATOMIC_RETRIES;
@@ -292,6 +298,42 @@ class CommandLine {
         }
     }
 
+    private static void setDefaultTrustStore(String caCertPath) {
+        X509Certificate cert;
+        try (InputStream is = new FileInputStream(caCertPath)) {
+            CertificateFactory cf = CertificateFactory.getInstance("X.509");
+            cert = (X509Certificate)cf.generateCertificate(is);
+        } catch (Exception ex) {
+            throw new IllegalArgumentException(
+                "Failed to load CA certificate from " + caCertPath, ex);
+        }
+
+        // It seems the only way to specify server CA certificate in the Java
+        // driver is by specifying custom truststore via
+        // "javax.net.ssl.trustStore" property. For this, we create the
+        // truststore as a temporary file deleted on exit.
+        try {
+            KeyStore ks = KeyStore.getInstance(KeyStore.getDefaultType());
+            ks.load(null, null);
+            ks.setCertificateEntry("proxy-ca", cert);
+
+            File tsFile = File.createTempFile("nosql-cacerts", ".jks");
+            String pwd = "oracle";
+            try (FileOutputStream os = new FileOutputStream(tsFile)) {
+                ks.store(os, pwd.toCharArray());
+            }
+
+            System.setProperty("javax.net.ssl.trustStore",
+                tsFile.getAbsolutePath());
+            System.setProperty("javax.net.ssl.trustStorePassword", pwd);
+
+            tsFile.deleteOnExit();
+        } catch(Exception ex) {
+            throw new IllegalArgumentException(
+                "Failed to initialize SSL context", ex);
+        }
+    }
+
     private void validate() {
         boolean isCloud = (authType != AuthType.KVSTORE &&
             authType != AuthType.CLOUDSIM);
@@ -403,6 +445,10 @@ class CommandLine {
             cfg.setDefaultCompartment(compartment);
         } else if (namespace != null) {
             cfg.setDefaultNamespace(namespace);
+        }
+
+        if (serverCaCertFile != null) {
+            setDefaultTrustStore(serverCaCertFile);
         }
 
         return cfg;

@@ -81,9 +81,10 @@ public class RedisServerConfig {
      * parameters.
      * @param nosqlConfig configuration used to create NoSQLHandle that
      * represents connection to Oracle NoSQL database.
-     * @param tableLimits table limits used to create main Redis table. Has
-     * effect only when connecting for the first time when the database schema
-     * is created.
+     * @param tableLimits table limits used to create main Redis table. If not
+     * specified, the defaults will be used. When the table already exists and
+     * this parameter is specified, it is used to update the table limits of
+     * the table.
      * @param host hostname or ip address on which the Redis proxy will listen
      * for client connections.
      * @param port port number on which the Redis proxy will listen for client
@@ -137,7 +138,7 @@ public class RedisServerConfig {
      * int, boolean)
      */
     public RedisServerConfig(NoSQLHandleConfig nosqlConfig) {
-        this(nosqlConfig, DEFAULT_TABLE_LIMITS);
+        this(nosqlConfig, null);
     }
 
     /**

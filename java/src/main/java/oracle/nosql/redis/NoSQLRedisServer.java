@@ -160,9 +160,11 @@ public class NoSQLRedisServer {
     }
 
     private void initDB() {
+        TableLimits tableLimits = config.getTableLimits();
         TableResult res = nosqlHandle.doTableRequest(new TableRequest()
             .setStatement(CREATE_MAIN_TABLE)
-            .setTableLimits(config.getTableLimits()),
+            .setTableLimits(tableLimits != null ?
+                tableLimits : RedisServerConfig.DEFAULT_TABLE_LIMITS),
             30000, 500);
         if (res.getTableState() != TableResult.State.ACTIVE) {
             throw new IllegalStateException("Main table state is not ACTIVE");
@@ -171,12 +173,11 @@ public class NoSQLRedisServer {
         // table limits of the existing table, we send another request to
         // update the table limits. This is ignored for on-prem
         // (when res.getTableLimits() is null).
-        if (res.getTableLimits() != null && config.getTableLimits() != null &&
-            !Utils.tableLimitsEqual(res.getTableLimits(),
-                config.getTableLimits())) {
+        if (res.getTableLimits() != null && tableLimits != null &&
+            !Utils.tableLimitsEqual(res.getTableLimits(), tableLimits)) {
             nosqlHandle.doTableRequest(new TableRequest()
                 .setTableName(MAIN_TABLE_NAME)
-                .setTableLimits(config.getTableLimits()), 30000, 500);
+                .setTableLimits(tableLimits), 30000, 500);
         }
 
         nosqlHandle.doTableRequest(new TableRequest()
