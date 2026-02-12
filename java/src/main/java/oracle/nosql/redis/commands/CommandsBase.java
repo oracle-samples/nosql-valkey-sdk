@@ -66,9 +66,11 @@ public abstract class CommandsBase {
     }
 
     static final int KEY_MAX_SIZE = 128 * 1024;
-    // From max of 64 bytes in primary key we also have to account for:
-    // 4 bytes for slot and 1 byte for prefix ('T', 'B' or 'H').
-    static final int SIMPLE_KEY_MAX = 59;
+    // Same length as SHA-256 hash in base64 which is used for long keys. Note
+    // that for child tables like redis.lists and redis.hashes, the primary key
+    // includes the parent key, so we have to leave some space there because of
+    // Cloud PK size limitation.
+    static final int SIMPLE_KEY_MAX = 44;
 
     static final char STR_KEY_PFX = 'T';
     static final char STR_VAL_PFX = STR_KEY_PFX;

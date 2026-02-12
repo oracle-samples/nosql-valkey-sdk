@@ -270,8 +270,8 @@ public class NoSQLRedisServer {
      * {@code false} due to a timeout reached.
      * @param timeoutMillis timeout in milliseconds to wait for the proxy to
      * stop. Value {@code 0} means to wait forever.
-     * @return {@code true) if the proxy was stopped successfully or the proxy
-     * was not running, {@code false) if failed to stop the proxy within the
+     * @return {@code true} if the proxy was stopped successfully or the proxy
+     * was not running, {@code false} if failed to stop the proxy within the
      * specified timeout
      * @throws InterruptedException if the current thread was interrupted
      * @throws RuntimeException if the proxy failed to stop for any other

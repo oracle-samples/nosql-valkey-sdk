@@ -403,7 +403,7 @@ public class HashUpdate extends HashCommandsBase {
             rowToVer(row0), getExpTime(rowToKey(row0)));
         if (!val.isValid()) {
             // Hash expired.
-            return new CollectionValueResult(val, null);
+            return new CollectionValueResult<>(val, null);
         }
 
         HashHeader header = new HashHeader(val.val);

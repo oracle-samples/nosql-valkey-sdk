@@ -7,8 +7,6 @@
 
 package oracle.nosql.redis.util;
 
-import static oracle.nosql.driver.util.CheckNull.requireNonNull;
-
 import java.io.IOException;
 import java.math.BigDecimal;
 
@@ -30,7 +28,7 @@ public class JSONDeserializer {
 
     private static RedisResponseException parseException(String msg,
         JsonParser jp, Throwable cause) {
-        JsonLocation loc = jp != null ? jp.getCurrentLocation() : null;
+        JsonLocation loc = jp != null ? jp.currentLocation() : null;
         if (loc == null || loc == JsonLocation.NA ||
             (loc.getLineNr() < 0 && loc.getColumnNr() < 0)) {
             return new RedisResponseException(msg, cause);
@@ -64,7 +62,7 @@ public class JSONDeserializer {
 
         JsonToken token;
         while ((token = jp.nextToken()) != JsonToken.END_OBJECT) {
-            String fieldName = jp.getCurrentName();
+            String fieldName = jp.currentName();
             if (token == null || fieldName == null) {
                 throw parseException("key must be a string", jp);
             }

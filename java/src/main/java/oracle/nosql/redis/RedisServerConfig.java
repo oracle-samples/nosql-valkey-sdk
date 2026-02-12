@@ -23,9 +23,9 @@ public class RedisServerConfig {
     private static final String ENV_IN_CONTAINER =
         "NOSQL_REDIS_PROXY_IN_CONTAINER";
 
-    public static final String DEFAULT_NOSQL_ENDPOINT = "localhost:8080";
+    static final String DEFAULT_NOSQL_ENDPOINT = "localhost:8080";
 
-    public static final String DEFAULT_NOSQL_ENDPOINT_IN_CONTAINER =
+    static final String DEFAULT_NOSQL_ENDPOINT_IN_CONTAINER =
         "host.docker.internal:8080";
 
     /**
@@ -198,7 +198,8 @@ public class RedisServerConfig {
      * Returns whether, on Redis proxy startup, to run a background cleanup
      * thread that will check for and purge any abandoned collection element
      * data that was left due to previous abnormal termination.
-     * @return
+     * @return {@code true} to run background cleanup thread on startup,
+     * otherwise {@code false}
      */
     public boolean getCleanupElemsTablesOnStartup() {
         return cleanupElemsTablesOnStartup;
