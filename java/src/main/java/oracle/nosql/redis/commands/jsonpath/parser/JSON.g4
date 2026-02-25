@@ -1,3 +1,13 @@
+/*-
+ * Copyright (c) 2026 Oracle and/or its affiliates. All rights reserved.
+ *
+ * Licensed under the Universal Permissive License v 1.0 as shown at
+ *  https://oss.oracle.com/licenses/upl/
+ */
+
+// This is taken from:
+// https://github.com/antlr/grammars-v4/blob/master/json/JSON.g4
+
 /** Taken from "The Definitive ANTLR 4 Reference" by Terence Parr */
 
 // Derived from https://json.org

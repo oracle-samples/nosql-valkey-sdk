@@ -1,5 +1,5 @@
 /*-
- * Copyright (c) 2011, 2022 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2026 Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Universal Permissive License v 1.0 as shown at
  *  https://oss.oracle.com/licenses/upl/
@@ -67,8 +67,6 @@ public class RedisResponseException extends Exception {
     }
 
     public static RedisResponseException unknownCommand(RawCommand cmd) {
-        // Todo: print "with arguments beginning with" followed by args as
-        // done by real Redis server.
         return new RedisResponseException(ErrorPrefix.ERR,
             String.format("Unknown command '%s'", cmd.name));
     }
