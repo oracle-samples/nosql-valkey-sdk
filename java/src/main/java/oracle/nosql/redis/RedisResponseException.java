@@ -45,7 +45,7 @@ public class RedisResponseException extends Exception {
     public static RedisResponseException corrupt(String msg) {
         return new RedisResponseException(ErrorPrefix.CORRUPT,
             "Encountered corrupted data" +
-                msg == null ? "" : ": " + msg);
+                (msg == null ? "" : ": " + msg));
     }
 
     public static RedisResponseException wrongType() {
@@ -70,7 +70,7 @@ public class RedisResponseException extends Exception {
         // Todo: print "with arguments beginning with" followed by args as
         // done by real Redis server.
         return new RedisResponseException(ErrorPrefix.ERR,
-            "Unknown command: " + cmd.name);
+            String.format("Unknown command '%s'", cmd.name));
     }
 
     public static RedisResponseException crossSlot() {

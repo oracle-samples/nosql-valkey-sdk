@@ -8,6 +8,7 @@
 package oracle.nosql.redis.commands;
 
 import java.util.*;
+import java.util.logging.Logger;
 
 import oracle.nosql.driver.NoSQLException;
 import oracle.nosql.driver.NoSQLHandle;
@@ -37,6 +38,9 @@ abstract class CollectionCommandsBase extends CommandsBase {
     protected static final String FLD_CID = "cid";
     protected static final String FLD_LEN = "len";
 
+    private static final Logger logger =
+        Logger.getLogger(CollectionCommandsBase.class.getName());
+
     protected static final String SQL_CID = "$cid";
     protected static final String SQL_SEL_ELEMS_FMT =
         "DECLARE $slot INTEGER; $id STRING; $cid STRING; SELECT * FROM %s " +
@@ -45,9 +49,11 @@ abstract class CollectionCommandsBase extends CommandsBase {
         "DECLARE $slot INTEGER; $id STRING; $cid STRING; DELETE FROM %s " +
         "WHERE slot = $slot AND id = $id AND cid = $cid";
     protected static final String SQL_SEL_ABANDONED_CIDS_FMT =
-        "SELECT $t.cid AS cid FROM %s $t LEFT OUTER JOIN redis $r ON " +
-        "$t.slot = $r.slot AND $t.id = $r.id AND $t.cid != $r.value.cid";
+        "SELECT DISTINCT $t.cid AS cid FROM %s $t LEFT OUTER JOIN redis $r " +
+        "ON $t.slot = $r.slot AND $t.id = $r.id WHERE " +
+        "$r IS NULL OR $t.cid != $r.value.cid";
     protected static final String SQL_DEL_BY_CIDS_FMT =
+        "DECLARE $cids ARRAY(STRING); " +
         "DELETE FROM %s $t WHERE $t.cid IN $cids[]";
 
     protected static class CollectionHeader {
@@ -219,7 +225,7 @@ abstract class CollectionCommandsBase extends CommandsBase {
     private void doCleanupElemsTable() throws RedisResponseException {
         PreparedStatement pSelStmt = pstmtCache.getByRef(
             String.format(SQL_SEL_ABANDONED_CIDS_FMT, getElemsTblName()));
-        HashSet<String> abandonedCIDs = new HashSet<>();
+        ArrayValue cids = new ArrayValue();
         try(QueryRequest qReq = new QueryRequest()) {
             qReq.setPreparedStatement(pSelStmt);
             boolean isDone = false;
@@ -233,21 +239,24 @@ abstract class CollectionCommandsBase extends CommandsBase {
                     QueryResult res = nosqlHandle.query(qReq);
                     List<MapValue> rows = res.getResults();
                     for (MapValue row : rows) {
-                        abandonedCIDs.add(Utils.getStringField(row, FLD_CID));
+                        FieldValue cid = row.get(FLD_CID);
+                        if (cid == null || !cid.isString()) {
+                            throw RedisResponseException.corrupt(
+                                "Missing or invalid cid");
+                        }
+                        cids.add(cid);
                     }
                     if (qReq.isDone()) {
                         isDone = true;
                         break;
                     }
 
-                } while (abandonedCIDs.size() < ABANDONED_CIDS_MAX_ELEMS);
+                } while (cids.size() < ABANDONED_CIDS_MAX_ELEMS);
 
-                if (abandonedCIDs.isEmpty()) {
+                if (cids.size() == 0) {
                     continue;
                 }
 
-                ArrayValue cids = new ArrayValue().addAll(
-                    abandonedCIDs.stream().map(val -> new StringValue(val)));
                 PreparedStatement pDelStmt = pstmtCache.getByRef(
                     String.format(SQL_DEL_BY_CIDS_FMT, getElemsTblName()));
                 pDelStmt.setVariable("$cids", cids);
@@ -421,8 +430,11 @@ abstract class CollectionCommandsBase extends CommandsBase {
         try {
             doCleanupElemsTable();
         } catch (Exception ex) {
+            logger.warning(String.format(
+                "Error cleaning up %s: %s", getElemsTblName(),
+                ex.getMessage()));
             // Todo: reschedule this task for NoSQL exceptions that can be
-            // retried, otherwise just log the exception.
+            // retried.
         }
     }
 }

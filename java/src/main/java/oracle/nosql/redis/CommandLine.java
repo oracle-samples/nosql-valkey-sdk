@@ -8,12 +8,13 @@
 package oracle.nosql.redis;
 
 import java.io.*;
-import java.nio.file.Path;
 import java.security.KeyStore;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.util.Properties;
+import java.util.logging.Level;
 import java.util.logging.LogManager;
+import java.util.logging.Logger;
 
 import oracle.nosql.driver.AuthorizationProvider;
 import oracle.nosql.driver.NoSQLHandleConfig;
@@ -53,6 +54,8 @@ class CommandLine {
     private static final String AUTH_OKE = "oke";
     private static final String AUTH_KVSTORE = "kvstore";
     private static final String AUTH_CLOUDSIM = "cloudsim";
+
+    private static final String ERR_INVALID_VAL_FMT = "Invalid %s value: %s";
 
     private enum AuthType {
         USER,
@@ -98,6 +101,7 @@ class CommandLine {
     private String delegationTokenFile;
     private String serviceAcctTokenFile;
     private String serverCaCertFile;
+    private String loggerConfigFile;
     // Note that we leave tableLimits null by default. This means that the
     // table will be created with RedisServerConfig.DEFAULT_TABLE_LIMITS or if
     // the table already exists, its table limits will not be updated. If
@@ -149,7 +153,7 @@ class CommandLine {
                     serverCaCertFile = args[++i];
                     break;
                 case ARG_LOGGER_CONFIG_FILE:
-                    readLoggerConfig(args[++i]);
+                    loggerConfigFile = args[++i];
                     break;
                 case ARG_TABLE_LIMITS:
                     tableLimits = parseTableLimits(args[++i]);
@@ -164,7 +168,8 @@ class CommandLine {
                     maxRetries = chkParsePosInt(args[++i], ARG_MAX_RETRIES);
                     break;
                 case ARG_CLEANUP_ON_STARTUP:
-                    cleanupOnStartup = Boolean.parseBoolean(args[++i]);
+                    cleanupOnStartup = chkParseBoolean(args[++i],
+                        ARG_CLEANUP_ON_STARTUP);
                     break;
                 default:
                     throw new IllegalArgumentException(
@@ -202,6 +207,17 @@ class CommandLine {
         }
     }
 
+    private static boolean chkParseBoolean(String val, String name) {
+        if (val.equalsIgnoreCase("true")) {
+            return true;
+        }
+        if (val.equalsIgnoreCase("false")) {
+            return false;
+        }
+        throw new IllegalArgumentException(
+            String.format(ERR_INVALID_VAL_FMT, name, val));
+    }
+
     private static int chkParsePosInt(String val, String name) {
         assert val != null;
         assert name != null && !name.isEmpty();
@@ -216,7 +232,7 @@ class CommandLine {
             return res;
         } catch (Exception ex) {
             throw new IllegalArgumentException(
-                "Invalid " + name + " value: " + val);
+                String.format(ERR_INVALID_VAL_FMT, name, val));
         }
     }
 
@@ -278,23 +294,34 @@ class CommandLine {
         }
     }
 
+    private static void setDefaultLoggerConfig() {
+        Logger.getLogger("oracle.nosql.redis").setLevel(Level.INFO);
+        Logger.getLogger("oracle.nosql.driver").setLevel(Level.WARNING);
+        Logger.getLogger("io.netty").setLevel(Level.WARNING);
+    }
+
     // Must be in the form <read-units>,<write-units>,<storageGB> for
     // provisioned capacity (e.g. 100,100,5) or <storageGB> for on-demand
     // capacity (e.g. 5). Can use "," or ";" as delimiters.
     private static TableLimits parseTableLimits(String val) {
         String[] limits = val.split("[,;]");
-        switch (limits.length) {
-            case 3:
-                return new TableLimits(
-                    chkParsePosInt(limits[0], "read units"),
-                    chkParsePosInt(limits[1], "write units"),
-                    chkParsePosInt(limits[2], "storage GB"));
-            case 1:
-                return new TableLimits(
-                    chkParsePosInt(limits[2], "storage GB"));
-            default:
-                throw new IllegalArgumentException(
-                    "Invalid table limits: " + val);
+        try {
+            switch (limits.length) {
+                case 3:
+                    return new TableLimits(
+                        chkParsePosInt(limits[0], "read units"),
+                        chkParsePosInt(limits[1], "write units"),
+                        chkParsePosInt(limits[2], "storage GB"));
+                case 1:
+                    return new TableLimits(
+                        chkParsePosInt(limits[0], "storage GB"));
+                default:
+                    throw new IllegalArgumentException(
+                        "Invalid format string");
+            }
+        } catch(IllegalArgumentException ex) {
+            throw new IllegalArgumentException(String.format(
+                "Invalid table limits \"%s\": %s", val, ex.getMessage()));
         }
     }
 
@@ -451,6 +478,12 @@ class CommandLine {
             setDefaultTrustStore(serverCaCertFile);
         }
 
+        if (loggerConfigFile != null) {
+            readLoggerConfig(loggerConfigFile);
+        } else {
+            setDefaultLoggerConfig();
+        }
+
         return cfg;
     }
 
@@ -488,6 +521,8 @@ class CommandLine {
             .append(" <service-acct-token-file>").append(endArg);
         sb.append(startArg).append(ARG_SERVER_CA_CERT_FILE)
             .append(" <server-ca-cert-file>").append(endArg);
+        sb.append(startArg).append(ARG_TABLE_LIMITS).append(
+            " <read-units>,<write-units>,<storageGB> | <storageGB>");
         sb.append(startArg).append(ARG_LOGGER_CONFIG_FILE)
             .append(" <logger-config-file>").append(endArg);
         sb.append(startArg).append(ARG_HOST).append(" <host>").append(endArg);
