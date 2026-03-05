@@ -17,11 +17,7 @@ import java.util.stream.Collectors;
 import oracle.nosql.driver.RowSizeLimitException;
 import oracle.nosql.redis.RedisServerConfig;
 import oracle.nosql.redis.util.JSONDeserializer;
-import org.antlr.v4.runtime.BaseErrorListener;
-import org.antlr.v4.runtime.CharStreams;
-import org.antlr.v4.runtime.CommonTokenStream;
-import org.antlr.v4.runtime.RecognitionException;
-import org.antlr.v4.runtime.Recognizer;
+import org.antlr.v4.runtime.*;
 import org.antlr.v4.runtime.tree.ParseTree;
 
 import io.netty.buffer.ByteBuf;
@@ -47,8 +43,6 @@ import oracle.nosql.redis.commands.jsonpath.parser.JSONPathLexer;
 import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser;
 import oracle.nosql.redis.util.PreparedStatementCache;
 import oracle.nosql.redis.util.Utils;
-
-import javax.sql.RowSet;
 
 import static oracle.nosql.redis.util.Utils.*;
 
@@ -353,18 +347,23 @@ abstract class JSONCommandsBase extends CommandsBase {
 
     protected static ParseTree parsePath(String path) {
         JSONPathLexer lexer = new JSONPathLexer(CharStreams.fromString(path));
-        CommonTokenStream tokenStream = new CommonTokenStream(lexer);
-        JSONPathParser parser = new JSONPathParser(tokenStream);
-
-        parser.removeErrorListeners();
-        parser.addErrorListener(new BaseErrorListener() {
+        BaseErrorListener errListener = new BaseErrorListener() {
             @Override
             public void syntaxError(Recognizer<?, ?> recognizer,
                 Object offendingSymbol, int line, int pos, String msg,
                 RecognitionException ex) {
                 throw Utils.parseException(path, pos, msg, ex);
             }
-        });
+        };
+
+        lexer.removeErrorListeners();
+        lexer.addErrorListener(errListener);
+
+        CommonTokenStream tokenStream = new CommonTokenStream(lexer);
+        JSONPathParser parser = new JSONPathParser(tokenStream);
+
+        parser.removeErrorListeners();
+        parser.addErrorListener(errListener);
 
         return parser.jsonpath();
     }
