@@ -10,11 +10,8 @@ package oracle.nosql.redis.util;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.security.MessageDigest;
-import java.util.Iterator;
-import java.util.Spliterator;
-import java.util.Spliterators;
+import java.util.*;
 import java.util.concurrent.TimeUnit;
-import java.util.Base64;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Stream;
@@ -122,6 +119,9 @@ public class Utils {
 
     private static final Base64.Encoder b64encoder = Base64.getEncoder();
     private static final Base64.Decoder b64decoder = Base64.getDecoder();
+
+    private static final int START_RETRY_DELAY_MS = 4;
+    private static final int MAX_RETRY_DELAY_MS = 2048;
 
     private static RedisResponseException missingOrInvalidField(String name,
         String type) {
@@ -356,21 +356,42 @@ public class Utils {
         String msg) {
         return parseException(input, pos, msg, null);
     }
-    
-    // TODO: need to integrate this with other functions that do retries in
-    // CommandsBase.java and CollectionCommandsBase.java.
-    // TODO: introduce parameters or other methods that do exponential backoff.
+
     public static <R> R doWithRetries(
         ThrowingNoArgFunction<R, RedisResponseException> func, int numRetries)
         throws RedisResponseException {
+        int delay = 0;
         for(int i = 0; i < numRetries; i++) {
             try {
                 return func.apply();
             } catch(RedisRetryException ex) {
+                // We do the first retry attempt without delay, since it will
+                // most likely succeed unless in a highly concurrent
+                // environment.
+                if (delay == 0) {
+                    delay = START_RETRY_DELAY_MS;
+                } else {
+                    // half-fixed/half-random delay
+                    int currDelay = (delay / 2) +
+                        (int)(Math.random() * (delay/ 2));
+                    try {
+                        Thread.sleep(currDelay);
+                    } catch(InterruptedException ie) {
+                        // The thread could get interrupted during hard stop
+                        // of the proxy, in this case we should exit the loop.
+                        // We restore the interrupt so that it is seen by
+                        // Netty when writing a response.
+                        Thread.currentThread().interrupt();
+                        throw RedisResponseException.nosql(
+                            "Atomic operation interrupted after " + (i + 1) +
+                            " tries");
+                    }
+                    delay = Math.min(MAX_RETRY_DELAY_MS, delay * 2);
+                }
                 // retry
             }
         }
-        throw new RedisResponseException(ErrorPrefix.NOSQL,
+        throw RedisResponseException.nosql(
             "Failed to perform atomic operation after " + numRetries +
             " tries");
     }
