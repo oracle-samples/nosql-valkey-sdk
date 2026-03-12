@@ -6,40 +6,48 @@
   <version>0.1.0</version>
   <name>Oracle NoSQL Redis SDK</name>
   <description>Redis SDK for Oracle NoSQL Database</description>
-  <dependencies>
-    <dependency>
-      <groupId>com.oracle.nosql.sdk</groupId>
-      <artifactId>nosqldriver</artifactId>
-      <version>5.4.19</version>
-    </dependency>
-    <dependency>
-      <groupId>io.netty</groupId>
-      <artifactId>netty-all</artifactId>
-      <version>4.1.129.Final</version>
-    </dependency>
-    <dependency>
-      <groupId>org.antlr</groupId>
-      <artifactId>antlr4-runtime</artifactId>
-      <version>4.13.2</version>
-    </dependency>
-    <dependency>
-      <groupId>com.google.re2j</groupId>
-      <artifactId>re2j</artifactId>
-      <version>1.8</version>
-    </dependency>
-    <dependency>
-      <groupId>com.fasterxml.jackson.core</groupId>
-      <artifactId>jackson-core</artifactId>
-      <version>2.18.2</version>
-    </dependency>
-  </dependencies>
+
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
     <maven.compiler.source>11</maven.compiler.source>
     <maven.compiler.target>11</maven.compiler.target>
     <copyright>Copyright (c) 2026 Oracle and/or its affiliates. All rights reserved.</copyright>
+
+    <!-- dependency versions -->
+    <netty.version>4.1.131.Final</netty.version>
+    <antlr.version>4.13.2</antlr.version>
+    <re2j.version>1.8</re2j.version>
+    <jackson.version>2.18.2</jackson.version>
+    <nosqldriver.version>5.4.19</nosqldriver.version>
   </properties>
+  <dependencies>
+    <dependency>
+      <groupId>com.oracle.nosql.sdk</groupId>
+      <artifactId>nosqldriver</artifactId>
+      <version>${nosqldriver.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.netty</groupId>
+      <artifactId>netty-all</artifactId>
+      <version>${netty.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.antlr</groupId>
+      <artifactId>antlr4-runtime</artifactId>
+      <version>${antlr.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.google.re2j</groupId>
+      <artifactId>re2j</artifactId>
+      <version>${re2j.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-core</artifactId>
+      <version>${jackson.version}</version>
+    </dependency>
+  </dependencies>
   <build>
     <plugins>
       <plugin>

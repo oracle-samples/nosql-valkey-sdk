@@ -1,0 +1,68 @@
+<settings>
+  <profiles>
+    <profile>
+      <id>internal</id>
+
+	  <properties>
+      <jackson.version>2.18.5</jackson.version>
+      <nosqldriver.version>5.4.20</nosqldriver.version>
+    </properties>
+
+      <repositories>
+        <repository>
+          <id>central</id>
+          <url>http://repo1.maven.org/maven2</url>
+          <releases>
+            <enabled>false</enabled>
+          </releases>
+          <snapshots>
+            <enabled>false</enabled>
+          </snapshots>
+        </repository>
+
+        <repository>
+          <id>oci-libs-release</id>
+          <name>oci-libs-release</name>
+          <url>https://artifactory.oci.oraclecorp.com/libs-release</url>
+        </repository>
+
+        <repository>
+          <id>iad-libs-release</id>
+          <name>iad-libs-release</name>
+          <url>https://artifacthub-iad.oci.oraclecorp.com/libs-release</url>
+        </repository>
+
+      </repositories>
+
+      <pluginRepositories>
+        <pluginRepository>
+          <id>central</id>
+          <url>http://repo1.maven.org/maven2</url>
+          <releases>
+            <enabled>false</enabled>
+          </releases>
+          <snapshots>
+            <enabled>false</enabled>
+          </snapshots>
+        </pluginRepository>
+
+        <pluginRepository>
+          <id>oci-libs-release</id>
+          <name>oci-libs-release</name>
+          <url>https://artifactory.oci.oraclecorp.com/libs-release</url>
+        </pluginRepository>
+
+        <pluginRepository>
+          <id>iad-libs-release</id>
+          <name>iad-libs-release</name>
+          <url>https://artifacthub-iad.oci.oraclecorp.com/libs-release</url>
+        </pluginRepository>
+      </pluginRepositories>
+
+    </profile>
+  </profiles>
+
+  <activeProfiles>
+    <activeProfile>internal</activeProfile>
+  </activeProfiles>
+</settings>
