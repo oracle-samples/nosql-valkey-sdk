@@ -1,59 +1,108 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
+
   <groupId>com.oracle.nosql.redis</groupId>
   <artifactId>nosql-redis</artifactId>
   <version>0.1.0</version>
+
   <name>Oracle NoSQL Redis SDK</name>
   <description>Redis SDK for Oracle NoSQL Database</description>
 
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
-    <maven.compiler.source>11</maven.compiler.source>
-    <maven.compiler.target>11</maven.compiler.target>
+    <maven.compiler.release>17</maven.compiler.release>
     <copyright>Copyright (c) 2026 Oracle and/or its affiliates. All rights reserved.</copyright>
 
     <!-- dependency versions -->
-    <netty.version>4.1.131.Final</netty.version>
+    <netty.version>4.1.132.Final</netty.version>
     <antlr.version>4.13.2</antlr.version>
     <re2j.version>1.8</re2j.version>
-    <jackson.version>2.18.2</jackson.version>
-    <nosqldriver.version>5.4.19</nosqldriver.version>
+    <jackson.version>2.18.6</jackson.version>
+    <nosqldriver.version>5.4.21</nosqldriver.version>
   </properties>
+
+  <dependencyManagement>
+    <dependencies>
+      <!-- Keep all Netty module versions consistent -->
+      <dependency>
+        <groupId>io.netty</groupId>
+        <artifactId>netty-bom</artifactId>
+        <version>${netty.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+
+      <!-- Keep all Jackson module versions consistent -->
+      <dependency>
+        <groupId>com.fasterxml.jackson</groupId>
+        <artifactId>jackson-bom</artifactId>
+        <version>${jackson.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
   <dependencies>
     <dependency>
       <groupId>com.oracle.nosql.sdk</groupId>
       <artifactId>nosqldriver</artifactId>
       <version>${nosqldriver.version}</version>
     </dependency>
+
+    <!-- Netty (explicit modules instead of netty-all) -->
     <dependency>
       <groupId>io.netty</groupId>
-      <artifactId>netty-all</artifactId>
-      <version>${netty.version}</version>
+      <artifactId>netty-common</artifactId>
     </dependency>
+    <dependency>
+      <groupId>io.netty</groupId>
+      <artifactId>netty-buffer</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.netty</groupId>
+      <artifactId>netty-transport</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.netty</groupId>
+      <artifactId>netty-handler</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.netty</groupId>
+      <artifactId>netty-codec</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.netty</groupId>
+      <artifactId>netty-codec-redis</artifactId>
+    </dependency>
+
     <dependency>
       <groupId>org.antlr</groupId>
       <artifactId>antlr4-runtime</artifactId>
       <version>${antlr.version}</version>
     </dependency>
+
     <dependency>
       <groupId>com.google.re2j</groupId>
       <artifactId>re2j</artifactId>
       <version>${re2j.version}</version>
     </dependency>
+
+    <!-- Version provided by jackson-bom -->
     <dependency>
       <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-core</artifactId>
-      <version>${jackson.version}</version>
     </dependency>
   </dependencies>
+
   <build>
     <plugins>
       <plugin>
         <groupId>org.antlr</groupId>
         <artifactId>antlr4-maven-plugin</artifactId>
-        <version>4.13.2</version>
+        <version>${antlr.version}</version>
         <configuration>
           <sourceDirectory>src/main/java/oracle/nosql/redis/commands/jsonpath/parser</sourceDirectory>
           <includes>
@@ -75,6 +124,7 @@
           </execution>
         </executions>
       </plugin>
+
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-jar-plugin</artifactId>
@@ -88,6 +138,7 @@
           </archive>
         </configuration>
       </plugin>
+
       <plugin>
         <artifactId>maven-assembly-plugin</artifactId>
         <configuration>
@@ -107,6 +158,7 @@
           </execution>
         </executions>
       </plugin>
+
       <!-- javadoc -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
@@ -126,7 +178,7 @@
           <header>
             <![CDATA[<b>Oracle NoSQL Redis Proxy</b><br><font size=\"-1\"> Version ${project.version} ${maven.build.timestamp}</font>]]>
           </header>
-          <bottom><![CDATA[<font size=1>${copyright}</font>]]> </bottom>
+          <bottom><![CDATA[<font size=1>${copyright}</font>]]></bottom>
         </configuration>
         <executions>
           <execution>
