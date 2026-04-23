@@ -337,9 +337,12 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 Netty Components
 
 netty-buffer
+netty-codec
 netty-codec-redis
 netty-common
 netty-transport
+netty-handler
+
 
 
 The Netty Project
