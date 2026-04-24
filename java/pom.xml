@@ -151,7 +151,7 @@
         <executions>
           <execution>
             <id>make-assembly</id>
-            <phase>install</phase>
+            <phase>package</phase>
             <goals>
               <goal>single</goal>
             </goals>
@@ -167,7 +167,7 @@
         <configuration>
           <quiet>true</quiet>
           <doclint>-missing</doclint>
-          <source>11</source>
+          <source>17</source>
           <doctitle>${project.name} ${project.version}</doctitle>
           <windowtitle>${project.name} ${project.version}</windowtitle>
           <sourceFileIncludes>
@@ -187,7 +187,7 @@
               <goal>jar</goal>
               <goal>javadoc</goal>
             </goals>
-            <phase>install</phase>
+            <phase>package</phase>
           </execution>
         </executions>
       </plugin>
