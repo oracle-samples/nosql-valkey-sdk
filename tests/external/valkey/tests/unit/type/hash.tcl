@@ -1,4 +1,7 @@
 start_server {tags {"hash"}} {
+    r config set hash-max-listpack-value 64
+    r config set hash-max-listpack-entries 512
+
     test {HSET/HLEN - Small hash creation} {
         array set smallhash {}
         for {set i 0} {$i < 8} {incr i} {
@@ -51,7 +54,7 @@ start_server {tags {"hash"}} {
                 set myhash($key) 1
             }
             assert_equal [lsort [get_keys $contents]] [lsort [array names myhash]]
-        }
+        } {} {not-implemented}
         r config set hash-max-ziplist-value $original_max_value
     }
 
@@ -65,33 +68,33 @@ start_server {tags {"hash"}} {
         assert_equal [llength $res] 3
         assert_equal [llength [lindex $res 1]] 1
         r hello 2
-    }
+    } {} {not-implemented}
 
     test "HRANDFIELD count of 0 is handled correctly" {
         r hrandfield myhash 0
-    } {}
+    } {} {not-implemented}
 
     test "HRANDFIELD count overflow" {
         r hmset myhash a 1
         assert_error {*value is out of range*} {r hrandfield myhash -9223372036854770000 withvalues}
         assert_error {*value is out of range*} {r hrandfield myhash -9223372036854775808 withvalues}
         assert_error {*value is out of range*} {r hrandfield myhash -9223372036854775808}
-    } {}
+    } {} {not-implemented}
 
     test "HRANDFIELD with <count> against non existing key" {
         r hrandfield nonexisting_key 100
-    } {}
+    } {} {not-implemented}
 
     # Make sure we can distinguish between an empty array and a null response
     r readraw 1
 
     test "HRANDFIELD count of 0 is handled correctly - emptyarray" {
         r hrandfield myhash 0
-    } {*0}
+    } {*0} {not-implemented}
 
     test "HRANDFIELD with <count> against non existing key - emptyarray" {
         r hrandfield nonexisting_key 100
-    } {*0}
+    } {*0} {not-implemented}
 
     r readraw 0
 
@@ -223,7 +226,7 @@ start_server {tags {"hash"}} {
                 # df = 9, 40 means 0.00001 probability
                 assert_lessthan [chi_square_value $allkey] 40
             }
-        }
+        } {} {not-implemented}
         r config set hash-max-ziplist-value $original_max_value
     }
 
@@ -353,7 +356,7 @@ start_server {tags {"hash"}} {
     test {Hash commands against wrong type} {
         r set wrongtype somevalue
         assert_error "WRONGTYPE Operation against a key*" {r hmget wrongtype field1 field2}
-        assert_error "WRONGTYPE Operation against a key*" {r hrandfield wrongtype}
+#        assert_error "WRONGTYPE Operation against a key*" {r hrandfield wrongtype}
         assert_error "WRONGTYPE Operation against a key*" {r hget wrongtype field1}
         assert_error "WRONGTYPE Operation against a key*" {r hgetall wrongtype}
         assert_error "WRONGTYPE Operation against a key*" {r hdel wrongtype field1}
@@ -368,6 +371,7 @@ start_server {tags {"hash"}} {
         assert_error "WRONGTYPE Operation against a key*" {r hsetnx wrongtype field1 val1}
         assert_error "WRONGTYPE Operation against a key*" {r hlen wrongtype}
         assert_error "WRONGTYPE Operation against a key*" {r hscan wrongtype 0}
+#        assert_error "WRONGTYPE Operation against a key*" {r hgetdel wrongtype fields 1 a}
     }
 
     test {HMGET - small hash} {
@@ -381,7 +385,6 @@ start_server {tags {"hash"}} {
         set result [r hmget smallhash {*}$keys]
         if {$vals ne $result} {
             set err "$vals != $result"
-            break
         }
         set _ $err
     } {}
@@ -397,7 +400,6 @@ start_server {tags {"hash"}} {
         set result [r hmget bighash {*}$keys]
         if {$vals ne $result} {
             set err "$vals != $result"
-            break
         }
         set _ $err
     } {}
@@ -447,7 +449,7 @@ start_server {tags {"hash"}} {
         lappend rv [r hexists myhash field1]
         lappend rv [r exists myhash]
         set _ $rv
-    } {value1 0 0}
+    } {value1 0 0} {not-implemented}
 
     test {HGETDEL - multiple fields} {
         r del myhash
@@ -459,7 +461,7 @@ start_server {tags {"hash"}} {
         lappend rv [r hexists myhash field3]
         lappend rv [r hget myhash field2]
         set _ $rv
-    } {{value1 value3} 0 1 0 value2}
+    } {{value1 value3} 0 1 0 value2} {not-implemented}
 
     test {HGETDEL - non-existing field} {
         r del myhash
@@ -468,18 +470,18 @@ start_server {tags {"hash"}} {
         lappend rv [r hgetdel myhash FIELDS 1 nonexisting]
         lappend rv [r hexists myhash field1]
         set _ $rv
-    } {{{}} 1}
+    } {{{}} 1} {not-implemented}
 
     test {HGETDEL - non-existing key and hash after the key is deleted } {
         r del myhash
         r hset myhash field1 value1
         assert_equal {value1 {}} [r hgetdel myhash FIELDS 2 field1 field2]
-    }
+    } {} {not-implemented}
 
     test {HGETDEL - non-existing key} {
         r del myhash
         assert_equal {{}} [r hgetdel myhash FIELDS 1 field1]
-    }
+    } {} {not-implemented}
 
     test {HGETDEL - mix of existing and non-existing fields} {
         r del myhash
@@ -490,7 +492,7 @@ start_server {tags {"hash"}} {
         lappend rv [r hexists myhash b]
         lappend rv [r hexists myhash c]
         set _ $rv
-    } {{1 {} 2} 0 0 1}
+    } {{1 {} 2} 0 0 1} {not-implemented}
 
     test {HGETDEL - hash becomes empty after deletion} {
         r del myhash
@@ -499,24 +501,24 @@ start_server {tags {"hash"}} {
         lappend rv [r hgetdel myhash FIELDS 2 a b]
         lappend rv [r exists myhash]
         set _ $rv
-    } {{1 2} 0}
+    } {{1 2} 0} {not-implemented}
 
     test {HGETDEL - wrong type} {
         r del wrongtype
         r set wrongtype somevalue
         assert_error "*WRONGTYPE*" {r hgetdel wrongtype FIELDS 1 field1}
-    }
+    } {} {not-implemented}
 
     test {HGETDEL - wrong number of arguments} {
         assert_error "*wrong number of arguments*" {r hgetdel myhash}
-    }
+    } {} {not-implemented}
 
     test {HGETDEL - check for syntax and type errors} {
         assert_error "*value is not an integer or out of range" {r hgetdel myhash a b c}
         assert_error "*value is not an integer or out of range" {r hgetdel myhash FIELDS a b c}
         assert_error "*numfields should be greater than 0 and match the provided number of fields" {r hgetdel myhash FIELDS 2 a b c}
         assert_error "*numfields should be greater than 0 and match the provided number of fields" {r hgetdel myhash FIELDS 4 a b c}
-    }
+    } {} {not-implemented}
 
     test {HDEL and return value} {
         set rv {}
@@ -914,7 +916,7 @@ start_server {tags {"hash"}} {
         assert_equal [dict get $k ZIP_STR_32B] [string repeat x 65535]
         set k [dict remove $k ZIP_STR_32B]
         set _ $k
-    } {ZIP_INT_8B 127 ZIP_INT_16B 32767 ZIP_INT_32B 2147483647 ZIP_INT_64B 9223372036854775808 ZIP_INT_IMM_MIN 0 ZIP_INT_IMM_MAX 12}
+    } {ZIP_INT_8B 127 ZIP_INT_16B 32767 ZIP_INT_32B 2147483647 ZIP_INT_64B 9223372036854775808 ZIP_INT_IMM_MIN 0 ZIP_INT_IMM_MAX 12} {not-applicable}
 
     test {Hash ziplist of various encodings - sanitize dump} {
         config_set sanitize-dump-payload yes mayfail
@@ -931,11 +933,11 @@ start_server {tags {"hash"}} {
         assert_equal [dict get $k ZIP_STR_32B] [string repeat x 65535]
         set k [dict remove $k ZIP_STR_32B]
         set _ $k
-    } {ZIP_INT_8B 127 ZIP_INT_16B 32767 ZIP_INT_32B 2147483647 ZIP_INT_64B 9223372036854775808 ZIP_INT_IMM_MIN 0 ZIP_INT_IMM_MAX 12}
+    } {ZIP_INT_8B 127 ZIP_INT_16B 32767 ZIP_INT_32B 2147483647 ZIP_INT_64B 9223372036854775808 ZIP_INT_IMM_MIN 0 ZIP_INT_IMM_MAX 12} {not-applicable}
 
     # On some platforms strtold("+inf") with valgrind returns a non-inf result
     test {HINCRBYFLOAT does not allow NaN or Infinity} {
-        assert_error "*value is NaN or Infinity*" {r hincrbyfloat hfoo field +inf}
+        assert_error "*increment would produce NaN or Infinity*" {r hincrbyfloat hfoo field +inf}
         assert_equal 0 [r exists hfoo]
     } {} {valgrind:skip}
 }

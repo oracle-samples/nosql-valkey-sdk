@@ -215,7 +215,7 @@ proc test_scan {type} {
 
             set keys [lsort -unique $keys]
             assert_equal $count [llength $keys]
-        }
+        } {} {not-implemented}
     }
 
     foreach enc {listpack hashtable} {
@@ -303,7 +303,7 @@ proc test_scan {type} {
             # Test NOSCORES 
             set res [r zscan zset 0 count 1000 noscores]
             assert_equal [lsort $keys2] [lsort [lindex $res 1]]
-        }
+        } {} {not-implemented}
     }
 
     test "{$type} SCAN guarantees check under write load" {
@@ -343,14 +343,14 @@ proc test_scan {type} {
         assert_equal [lsort -unique [lindex $res 1]] {a}
         set res [r sscan set 0 MATCH *1* COUNT 100]
         assert_equal [lsort -unique [lindex $res 1]] {1}
-    }
+    } {} {not-implemented}
 
     test "{$type} SSCAN with PATTERN" {
         r del mykey
         r sadd mykey foo fab fiz foobar 1 2 3 4
         set res [r sscan mykey 0 MATCH foo* COUNT 10000]
         lsort -unique [lindex $res 1]
-    } {foo foobar}
+    } {foo foobar} {not-implemented}
 
     test "{$type} HSCAN with PATTERN" {
         r del mykey
@@ -371,14 +371,14 @@ proc test_scan {type} {
         r zadd mykey 1 foo 2 fab 3 fiz 10 foobar
         set res [r zscan mykey 0 MATCH foo* COUNT 10000]
         lsort -unique [lindex $res 1]
-    }
+    } {} {not-implemented}
 
     test "{$type} ZSCAN with NOSCORES" {
         r del mykey
         r zadd mykey 1 foo 2 fab 3 fiz 10 foobar
         set res [r zscan mykey 0 NOSCORES]
         lsort -unique [lindex $res 1]
-    } {fab fiz foo foobar}
+    } {fab fiz foo foobar} {not-implemented}
 
     test "{$type} ZSCAN scores: regression test for issue #2175" {
         r del mykey
@@ -388,7 +388,7 @@ proc test_scan {type} {
         set res [lindex [r zscan mykey 0] 1]
         set first_score [lindex $res 1]
         assert {$first_score != 0}
-    }
+    } {} {not-implemented}
 
     test "{$type} SCAN regression test for issue #4906" {
         for {set k 0} {$k < 100} {incr k} {
@@ -434,7 +434,7 @@ proc test_scan {type} {
                 }
             }
         }
-    }
+    } {} {not-implemented}
 
     test "{$type} SCAN MATCH pattern implies cluster slot" {
         # Tests the code path for an optimization for patterns like "{foo}-*"

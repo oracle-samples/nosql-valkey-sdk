@@ -155,7 +155,7 @@ proc ::valkey::__dispatch__raw__ {id method argv} {
         set argv [lrange $argv 0 end-1]
     }
     if {[info command ::valkey::__method__$method] eq {}} {
-        catch {unset ::valkey::attributes($id)}
+        catch {unset -nocomplain ::valkey::attributes($id)}
         set cmd "*[expr {[llength $argv]+1}]\r\n"
         append cmd "$[string length $method]\r\n$method\r\n"
         foreach a $argv {
@@ -212,19 +212,19 @@ proc ::valkey::__method__flush {id fd} {
 
 proc ::valkey::__method__close {id fd} {
     catch {close $fd}
-    catch {unset ::valkey::fd($id)}
-    catch {unset ::valkey::addr($id)}
-    catch {unset ::valkey::blocking($id)}
-    catch {unset ::valkey::deferred($id)}
-    catch {unset ::valkey::readraw($id)}
-    catch {unset ::valkey::attributes($id)}
-    catch {unset ::valkey::reconnect($id)}
-    catch {unset ::valkey::tls($id)}
-    catch {unset ::valkey::state($id)}
-    catch {unset ::valkey::statestack($id)}
-    catch {unset ::valkey::callback($id)}
-    catch {unset ::valkey::curr_argv($id)}
-    catch {unset ::valkey::testing_resp3($id)}
+    catch {unset -nocomplain ::valkey::fd($id)}
+    catch {unset -nocomplain ::valkey::addr($id)}
+    catch {unset -nocomplain ::valkey::blocking($id)}
+    catch {unset -nocomplain ::valkey::deferred($id)}
+    catch {unset -nocomplain ::valkey::readraw($id)}
+    catch {unset -nocomplain ::valkey::attributes($id)}
+    catch {unset -nocomplain ::valkey::reconnect($id)}
+    catch {unset -nocomplain ::valkey::tls($id)}
+    catch {unset -nocomplain ::valkey::state($id)}
+    catch {unset -nocomplain ::valkey::statestack($id)}
+    catch {unset -nocomplain ::valkey::callback($id)}
+    catch {unset -nocomplain ::valkey::curr_argv($id)}
+    catch {unset -nocomplain ::valkey::testing_resp3($id)}
     catch {interp alias {} ::valkey::valkeyHandle$id {}}
 }
 

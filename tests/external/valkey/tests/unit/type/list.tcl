@@ -782,7 +782,7 @@ foreach {pop} {BLPOP BLMPOP_LEFT} {
         r lpush list b
         assert_equal {list b} [$rd read]
         $rd close
-    }
+    } {} {not-supported}
 
     test "$pop, LPUSH + DEL + SET should not awake blocked client" {
         set rd [valkey_deferring_client]
@@ -800,7 +800,7 @@ foreach {pop} {BLPOP BLMPOP_LEFT} {
         r lpush list b
         assert_equal {list b} [$rd read]
         $rd close
-    }
+    } {} {not-supported}
 }
 
     test "BLPOP with same key multiple times should work (issue #801)" {
@@ -842,7 +842,7 @@ foreach {pop} {BLPOP BLMPOP_LEFT} {
         r exec
         assert_equal {list c} [$rd read]
         $rd close
-    }
+    } {} {not-supported}
 
     test "$pop with variadic LPUSH" {
         set rd [valkey_deferring_client]
@@ -958,7 +958,9 @@ foreach {pop} {BLPOP BLMPOP_LEFT} {
         wait_for_blocked_clients_count 1
         $rd2 brpoplpush blist{t} target2{t} 0
         wait_for_blocked_clients_count 2
-        r lpush blist{t} foo
+		# Change: push 2 elements instead of 1, because currently we don't
+		# support specific order of unblocking.
+        r lpush blist{t} foo foo
 
         assert_error "WRONGTYPE*" {$rd1 read}
         assert_equal {foo} [$rd2 read]
@@ -998,7 +1000,7 @@ foreach {pop} {BLPOP BLMPOP_LEFT} {
         $rd2 close
         $rd3 close
         $rd4 close
-    }
+    } {} {not-supported}
 
     test "Linked LMOVEs" {
       set rd1 [valkey_deferring_client]
@@ -1012,6 +1014,8 @@ foreach {pop} {BLPOP BLMPOP_LEFT} {
       wait_for_blocked_clients_count 2
 
       r rpush list1{t} foo
+	  set _ [$rd1 read]
+	  set _ [$rd2 read]
 
       assert_equal {} [r lrange list1{t} 0 -1]
       assert_equal {} [r lrange list2{t} 0 -1]
@@ -1065,7 +1069,7 @@ foreach {pop} {BLPOP BLMPOP_LEFT} {
         r lrange xlist{t} 0 -1
         r lrange target{t} 0 -1
         r exec
-    } {foo bar {} {} {bar foo}}
+    } {foo bar {} {} {bar foo}} { not-supported }
 
     test "PUSH resulting from BRPOPLPUSH affect WATCH" {
         set blocked_client [valkey_deferring_client]
@@ -1086,7 +1090,7 @@ foreach {pop} {BLPOP BLMPOP_LEFT} {
         $blocked_client close
         $watching_client close
         set _ $res
-    } {}
+    } {} { not-supported }
 
     test "BRPOPLPUSH does not affect WATCH while still blocked" {
         set blocked_client [valkey_deferring_client]
@@ -1115,7 +1119,7 @@ foreach {pop} {BLPOP BLMPOP_LEFT} {
         $blocked_client close
         $watching_client close
         set _ $res
-    } {somevalue}
+    } {somevalue} {needs:client not-supported}
 
     test {BRPOPLPUSH timeout} {
       set rd [valkey_deferring_client]
@@ -1287,7 +1291,7 @@ foreach {pop} {BLPOP BLMPOP_LEFT} {
         set res [$rd read]
         $rd close
         set _ $res
-    } {foo{t} aguacate}
+    } {foo{t} aguacate} { not-implemented }
 }
 
     test "BLPOP: timeout value out of range" {
@@ -1398,7 +1402,7 @@ foreach {pop} {BLPOP BLMPOP_LEFT} {
         bpop_command r $pop xlist 0
         bpop_command r $pop xlist 0
         r exec
-    } {{xlist bar} {xlist foo} {}}
+    } {{xlist bar} {xlist foo} {}} { not-supported }
 }
 
     test {BLMPOP propagate as pop with count command to replica} {
@@ -1445,7 +1449,7 @@ foreach {pop} {BLPOP BLMPOP_LEFT} {
             {set foo{t} bar}
         }
         close_replication_stream $repl
-    } {} {needs:repl}
+    } {} {needs:repl not-applicable}
 
     test {LPUSHX, RPUSHX - generic} {
         r del xlist
@@ -1783,9 +1787,10 @@ foreach {type large} [array get largevalue] {
         assert_error "ERR wrong number of arguments for 'lmpop' command" {r lmpop 1}
         assert_error "ERR wrong number of arguments for 'lmpop' command" {r lmpop 1 mylist{t}}
 
-        assert_error "ERR numkeys*" {r lmpop 0 mylist{t} LEFT}
-        assert_error "ERR numkeys*" {r lmpop a mylist{t} LEFT}
-        assert_error "ERR numkeys*" {r lmpop -1 mylist{t} RIGHT}
+		# Changed: error message according to Redis Cloud
+        assert_error "ERR Number of keys*" {r lmpop 0 mylist{t} LEFT}
+        assert_error "ERR Number of keys*" {r lmpop a mylist{t} LEFT}
+        assert_error "ERR Number of keys*" {r lmpop -1 mylist{t} RIGHT}
 
         assert_error "ERR syntax error*" {r lmpop 1 mylist{t} bad_where}
         assert_error "ERR syntax error*" {r lmpop 1 mylist{t} LEFT bar_arg}
@@ -2053,7 +2058,7 @@ foreach {type large} [array get largevalue] {
         assert {$dirty2 == $dirty + 2}
 
         $rd close
-    }
+    } {} {needs:info}
 
 foreach {pop} {BLPOP BLMPOP_RIGHT} {
     test "client unblock tests" {
@@ -2096,7 +2101,7 @@ foreach {pop} {BLPOP BLMPOP_RIGHT} {
         r lpush l foo
         assert_equal {l foo} [$rd read]
         $rd close
-    }
+    } {} {needs:client not-implemented}
 }
 
     foreach {max_lp_size large} "3 $largevalue(listpack) -1 $largevalue(quicklist)" {
@@ -2252,7 +2257,7 @@ foreach {pop} {BLPOP BLMPOP_RIGHT} {
         assert_equal [lpop k] [string repeat x 8191]
         assert_equal [lpop k] [string repeat x 31]
         set _ $k
-    } {12 0 9223372036854775808 2147483647 32767 127}
+    } {12 0 9223372036854775808 2147483647 32767 127} {needs:dump-restore not-implemented}
 
     test "List of various encodings - sanitize dump" {
         config_set sanitize-dump-payload yes mayfail
@@ -2267,7 +2272,7 @@ foreach {pop} {BLPOP BLMPOP_RIGHT} {
         assert_equal [lpop k] [string repeat x 8191]
         assert_equal [lpop k] [string repeat x 31]
         set _ $k
-    } {12 0 9223372036854775808 2147483647 32767 127}
+    } {12 0 9223372036854775808 2147483647 32767 127} {needs:dump-restore not-implemented}
     
     test "Unblock fairness is kept while pipelining" {
         set rd1 [valkey_deferring_client]
@@ -2302,7 +2307,7 @@ foreach {pop} {BLPOP BLMPOP_RIGHT} {
         
         $rd1 close
         $rd2 close
-    }
+    } {} {not-supported}
     
     test "Unblock fairness is kept during nested unblock" {
         set rd1 [valkey_deferring_client]
@@ -2336,7 +2341,7 @@ foreach {pop} {BLPOP BLMPOP_RIGHT} {
         $rd1 close
         $rd2 close
         $rd3 close
-    }
+    } {} {not-supported}
     
     test "Blocking command accounted only once in commandstats" {
         # cleanup first
@@ -2359,7 +2364,7 @@ foreach {pop} {BLPOP BLMPOP_RIGHT} {
         assert_match {*calls=1,*,rejected_calls=0,failed_calls=0} [cmdrstat blpop r]
         
         $rd close
-    }
+    } {} {not-implemented}
     
     test "Blocking command accounted only once in commandstats after timeout" {
         # cleanup first
@@ -2383,7 +2388,7 @@ foreach {pop} {BLPOP BLMPOP_RIGHT} {
         assert_match {*calls=1,*,rejected_calls=0,failed_calls=0} [cmdrstat blpop r]
         
         $rd close
-    }
+    } {} {needs:client not-implemented}
 
     test {Command being unblocked cause another command to get unblocked execution order test} {
         r del src{t} dst{t} key1{t} key2{t} key3{t}
@@ -2453,7 +2458,7 @@ foreach {pop} {BLPOP BLMPOP_RIGHT} {
         wait_for_blocked_clients_count 0
         
         $rd close
-    }
+    } {} {needs:client not-implemented}
 
     test "CLIENT NO-TOUCH with BRPOP and RPUSH regression test" {
         # Test scenario:
@@ -2485,6 +2490,6 @@ foreach {pop} {BLPOP BLMPOP_RIGHT} {
 
         $rd1 close
         $rd2 close
-    }
+    } {} {not-implemented}
 
 } ;# stop servers

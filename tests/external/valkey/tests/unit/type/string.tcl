@@ -10,17 +10,17 @@ start_server {tags {"string"}} {
     } {}
 
     test {Very big payload in GET/SET} {
-        set buf [string repeat "abcd" 1000000]
+        set buf [string repeat "abcd" 64000]
         r set foo $buf
         r get foo
-    } [string repeat "abcd" 1000000]
+    } [string repeat "abcd" 64000]
 
     tags {"slow"} {
         test {Very big payload random access} {
             set err {}
             array set payload {}
             for {set j 0} {$j < 100} {incr j} {
-                set size [expr 1+[randomInt 100000]]
+                set size [expr 1+[randomInt 43000]]
                 set buf [string repeat "pl-$j" $size]
                 set payload($j) $buf
                 r set bigpayload_$j $buf
@@ -82,7 +82,7 @@ start_server {tags {"string"}} {
         set key [string repeat B 100000]
         r incr $key
         assert_lessthan_equal [string length $key] [r memory usage $key]
-    }
+    } {} {not-implemented}
 
     test "SETNX target key missing" {
         r del novar
@@ -234,9 +234,9 @@ start_server {tags {"string"}} {
     } {BAR {} FOO}
 
     test {MGET against non-string key} {
-        r sadd myset{t} ciao
-        r sadd myset{t} bau
-        r mget foo{t} baazz{t} bar{t} myset{t}
+        r lpush mylist{t} ciao
+        r rpush mylist{t} bau
+        r mget foo{t} baazz{t} bar{t} mylist{t}
     } {BAR {} FOO {}}
 
     test {GETSET (set new value)} {
@@ -323,7 +323,7 @@ start_server {tags {"string"}} {
         assert_error "ERR invalid numkeys value or out of range" {r msetex 2147483648 key1{t} value}
         assert_error "ERR syntax error" {r msetex 1073741822 key1{t} value}
         assert_error "ERR syntax error" {r msetex 1073741823 key1{t} value}
-    }
+    } {} {not-implemented}
 
     test {MSETEX with EX option - set the specified expire time, in seconds} {
         r del key1{t} key2{t}
@@ -331,7 +331,7 @@ start_server {tags {"string"}} {
         assert_equal {val1 val2} [r mget key1{t} key2{t}]
         assert_range [r ttl key1{t}] 5 10
         assert_range [r ttl key2{t}] 5 10
-    }
+    } {} {not-implemented}
 
     test {MSETEX with PX option - set the specified expire time, in milliseconds} {
         r del key1{t} key2{t}
@@ -339,7 +339,7 @@ start_server {tags {"string"}} {
         assert_equal {val1 val2} [r mget key1{t} key2{t}]
         assert_range [r pttl key1{t}] 5000 10000
         assert_range [r pttl key2{t}] 5000 10000
-    }
+    } {} {not-implemented}
 
     test {MSETEX with EXAT option- Set the specified Unix time at which the keys will expire, in seconds} {
         r del key1{t} key2{t}
@@ -347,7 +347,7 @@ start_server {tags {"string"}} {
         assert_equal {val1 val2} [r mget key1{t} key2{t}]
         assert_range [r ttl key1{t}] 5 10
         assert_range [r ttl key2{t}] 5 10
-    }
+    } {} {not-implemented}
 
     test {MSETEX with PXAT option - set the specified Unix time at which the keys will expire, in milliseconds} {
         r del key1{t} key2{t}
@@ -355,7 +355,7 @@ start_server {tags {"string"}} {
         assert_equal {val1 val2} [r mget key1{t} key2{t}]
         assert_range [r pttl key1{t}] 5000 10000
         assert_range [r pttl key2{t}] 5000 10000
-    }
+    } {} {not-implemented}
 
     test {MSETEX with past EXAT/PXAT - key stored but logically expired} {
         r debug set-active-expire 0
@@ -460,7 +460,7 @@ start_server {tags {"string"}} {
         assert_equal {val1 val2} [r mget key1{t} key2{t}]
         assert_equal -1 [r ttl key1{t}]
         assert_equal -1 [r ttl key2{t}]
-    }
+    } {} {not-implemented}
 
     test {MSETEX with NX option - only set the keys if all keys do not already exist} {
         # All keys don't exist
@@ -483,7 +483,7 @@ start_server {tags {"string"}} {
         assert_equal 0 [r msetex 2 key1{t} val1 key2{t} val2 nx]
         assert_equal "existing" [r get key1{t}]
         assert_equal "existing" [r get key2{t}]
-    }
+    } {} {not-implemented}
 
     test {MSETEX with XX option - only set the keys if all keys already exist} {
         # All keys exist
@@ -506,7 +506,7 @@ start_server {tags {"string"}} {
         assert_equal 0 [r msetex 2 key1{t} val1 key2{t} val2 xx]
         # key1 and key2 should still not exist
         assert_equal 0 [r exists key1{t} key2{t}]
-    }
+    } {} {not-implemented}
 
     test {MSETEX with NX and EX options combined} {
         r del key1{t} key2{t}
@@ -514,7 +514,7 @@ start_server {tags {"string"}} {
         assert_equal {val1 val2} [r mget key1{t} key2{t}]
         assert_range [r ttl key1{t}] 5 10
         assert_range [r ttl key2{t}] 5 10
-    }
+    } {} {not-implemented}
 
     test {MSETEX with XX and PX options combined} {
         r mset key1{t} old1 key2{t} old2
@@ -522,7 +522,7 @@ start_server {tags {"string"}} {
         assert_equal {val1 val2} [r mget key1{t} key2{t}]
         assert_range [r pttl key1{t}] 5000 10000
         assert_range [r pttl key2{t}] 5000 10000
-    }
+    } {} {not-implemented}
 
     test {MSETEX with expired keys using NX} {
         r debug set-active-expire 0
@@ -533,7 +533,7 @@ start_server {tags {"string"}} {
         assert_equal 1 [r msetex 1 key1{t} newval nx]
         assert_equal "newval" [r get key1{t}]
         assert_equal {OK} [r debug set-active-expire 1]
-    } {} {needs:debug}
+    } {} {needs:debug not-implemented}
 
     test {MSETEX with expired keys using XX} {
         r debug set-active-expire 0
@@ -544,19 +544,19 @@ start_server {tags {"string"}} {
         assert_equal 0 [r msetex 1 key1{t} newval xx]
         assert_error {ERR no such key} {r debug object key1{t}}
         assert_equal {OK} [r debug set-active-expire 1]
-    } {} {needs:debug}
+    } {} {needs:debug not-implemented}
 
     test {MSETEX with same key twice - last value wins} {
         r del key1{t}
         assert_equal 1 [r msetex 2 key1{t} val1 key1{t} val2]
         assert_equal "val2" [r get key1{t}]
-    }
+    } {} {not-implemented}
 
     test {MSETEX overwrites existing keys without options} {
         r mset key1{t} old1 key2{t} old2
         assert_equal 1 [r msetex 2 key1{t} new1 key2{t} new2]
         assert_equal {new1 new2} [r mget key1{t} key2{t}]
-    }
+    } {} {not-implemented}
 
     test {MSETEX removes TTL when setting without expiration options} {
         r del key1{t} key2{t}
@@ -566,7 +566,7 @@ start_server {tags {"string"}} {
         assert_equal {new1 new2} [r mget key1{t} key2{t}]
         assert_equal -1 [r ttl key1{t}]
         assert_equal -1 [r ttl key2{t}]
-    }
+    } {} {not-implemented}
 
     test {MSETEX propagate as MSETEX with PXAT to replica} {
         r del key1{t} key2{t} key3{t} key4{t} key5{t} key6{t} key7{t} key8{t}
@@ -586,7 +586,7 @@ start_server {tags {"string"}} {
             {msetex 2 key7{t} val7 key8{t} val8 pxat *}
         }
         close_replication_stream $repl
-    } {} {needs:repl}
+    } {} {needs:repl not-implemented}
 
     test {MSETEX keyspace notifications} {
         r config set notify-keyspace-events KEA
@@ -612,7 +612,7 @@ start_server {tags {"string"}} {
 
         $rd close
         r config set notify-keyspace-events ""
-    }
+    } {} {not-implemented}
 
     test "STRLEN against non-existing key" {
         assert_equal 0 [r strlen notakey]
@@ -632,7 +632,7 @@ start_server {tags {"string"}} {
         r del mykey
         assert_equal 0 [r setbit mykey 1 1]
         assert_equal [binary format B* 01000000] [r get mykey]
-    }
+    } {} {not-implemented}
 
     test "SETBIT against string-encoded key" {
         # Ascii "@" is integer 64 = 01 00 00 00
@@ -642,7 +642,7 @@ start_server {tags {"string"}} {
         assert_equal [binary format B* 01100000] [r get mykey]
         assert_equal 1 [r setbit mykey 1 0]
         assert_equal [binary format B* 00100000] [r get mykey]
-    }
+    } {} {not-implemented}
 
     test "SETBIT against integer-encoded key" {
         # Ascii "1" is integer 49 = 00 11 00 01
@@ -653,19 +653,19 @@ start_server {tags {"string"}} {
         assert_equal [binary format B* 00110011] [r get mykey]
         assert_equal 1 [r setbit mykey 2 0]
         assert_equal [binary format B* 00010011] [r get mykey]
-    }
+    } {} {not-implemented}
 
     test "SETBIT against key with wrong type" {
         r del mykey
         r lpush mykey "foo"
         assert_error "WRONGTYPE*" {r setbit mykey 0 1}
-    }
+    } {} {not-implemented}
 
     test "SETBIT with out of range bit offset" {
         r del mykey
         assert_error "*out of range*" {r setbit mykey [expr 4*1024*1024*1024] 1}
         assert_error "*out of range*" {r setbit mykey -1 1}
-    }
+    } {} {not-implemented}
 
     test "SETBIT with non-bit argument" {
         r del mykey
@@ -673,7 +673,7 @@ start_server {tags {"string"}} {
         assert_error "*out of range*" {r setbit mykey 0  2}
         assert_error "*out of range*" {r setbit mykey 0 10}
         assert_error "*out of range*" {r setbit mykey 0 20}
-    }
+    } {} {not-implemented}
 
     test "SETBIT fuzzing" {
         set str ""
@@ -691,12 +691,12 @@ start_server {tags {"string"}} {
             r setbit mykey $bitnum $bitval
             assert_equal [binary format B* $str] [r get mykey]
         }
-    }
+    } {} {not-implemented}
 
     test "GETBIT against non-existing key" {
         r del mykey
         assert_equal 0 [r getbit mykey 0]
-    }
+    } {} {not-implemented}
 
     test "GETBIT against string-encoded key" {
         # Single byte with 2nd and 3rd bit set
@@ -712,7 +712,7 @@ start_server {tags {"string"}} {
         assert_equal 0 [r getbit mykey 8]
         assert_equal 0 [r getbit mykey 100]
         assert_equal 0 [r getbit mykey 10000]
-    }
+    } {} {not-implemented}
 
     test "GETBIT against integer-encoded key" {
         r set mykey 1
@@ -728,7 +728,7 @@ start_server {tags {"string"}} {
         assert_equal 0 [r getbit mykey 8]
         assert_equal 0 [r getbit mykey 100]
         assert_equal 0 [r getbit mykey 10000]
-    }
+    } {} {not-implemented}
 
     test "SETRANGE against non-existing key" {
         r del mykey
@@ -822,6 +822,12 @@ start_server {tags {"string"}} {
         assert_equal "" [r getrange mykey 5 3]
         assert_equal " World" [r getrange mykey 5 5000]
         assert_equal "Hello World" [r getrange mykey -5000 10000]
+        assert_equal "H" [r getrange mykey 0 -100]
+        assert_equal "" [r getrange mykey 1 -100]
+        assert_equal "" [r getrange mykey -1 -100]
+        assert_equal "H" [r getrange mykey -100 -99]
+        assert_equal "H" [r getrange mykey -100 -100]
+        assert_equal "" [r getrange mykey -100 -101]
     }
 
     test "GETRANGE against integer-encoded value" {
@@ -832,6 +838,12 @@ start_server {tags {"string"}} {
         assert_equal "" [r getrange mykey 5 3]
         assert_equal "4" [r getrange mykey 3 5000]
         assert_equal "1234" [r getrange mykey -5000 10000]
+        assert_equal "1" [r getrange mykey 0 -100]
+        assert_equal "" [r getrange mykey 1 -100]
+        assert_equal "" [r getrange mykey -1 -100]
+        assert_equal "1" [r getrange mykey -100 -99]
+        assert_equal "1" [r getrange mykey -100 -100]
+        assert_equal "" [r getrange mykey -100 -101]
     }
 
     test "GETRANGE fuzzing" {
@@ -950,14 +962,14 @@ if {[string match {*jemalloc*} [s mem_allocator]]} {
 
         assert_equal {} [r set foo "should_not_set" ifeq "wrong_value"]
         assert_equal "new_value" [r get foo]
-    }
+    } {} {not-implemented}
 
     test "SET with IFEQ conditional - non-string current value" {
         r del foo
 
         r sadd foo "some_set_value"
         assert_error {WRONGTYPE Operation against a key holding the wrong kind of value} {r set foo "new_value" ifeq "some_set_value"}
-    }
+    } {} {not-implemented}
 
 
     test "SET with IFEQ conditional - with get" {
@@ -970,7 +982,7 @@ if {[string match {*jemalloc*} [s mem_allocator]]} {
 
         assert_equal "initial_value" [r set foo "new_value" ifeq "initial_value" get]
         assert_equal "new_value" [r get foo]
-    }
+    } {} {not-implemented}
 
     test "SET with IFEQ conditional - non string current value with get" {
         r del foo
@@ -978,17 +990,17 @@ if {[string match {*jemalloc*} [s mem_allocator]]} {
         r sadd foo "some_set_value"
 
         assert_error {WRONGTYPE Operation against a key holding the wrong kind of value} {r set foo "new_value" ifeq "initial_value" get}
-    }
+    } {} {not-implemented}
 
     test "SET with IFEQ conditional - with xx" {
         r del foo
         assert_error {ERR syntax error} {r set foo "new_value" ifeq "initial_value" xx}
-    }
+    } {} {not-implemented}
 
     test "SET with IFEQ conditional - with nx" {
         r del foo
         assert_error {ERR syntax error} {r set foo "new_value" ifeq "initial_value" nx}
-    }
+    } {} {not-implemented}
 
     test {Extended SET EX option} {
         r del foo
@@ -1069,25 +1081,25 @@ if {[string match {*jemalloc*} [s mem_allocator]]} {
         r set virus1{t} $rna1
         r set virus2{t} $rna2
         r LCS virus1{t} virus2{t}
-    } $rnalcs
+    } $rnalcs {not-implemented}
 
     test {LCS len} {
         r set virus1{t} $rna1
         r set virus2{t} $rna2
         r LCS virus1{t} virus2{t} LEN
-    } [string length $rnalcs]
+    } [string length $rnalcs] {not-implemented}
 
     test {LCS indexes} {
         dict get [r LCS virus1{t} virus2{t} IDX] matches
-    } {{{238 238} {239 239}} {{236 236} {238 238}} {{229 230} {236 237}} {{224 224} {235 235}} {{1 222} {13 234}}}
+    } {{{238 238} {239 239}} {{236 236} {238 238}} {{229 230} {236 237}} {{224 224} {235 235}} {{1 222} {13 234}}} {not-implemented}
 
     test {LCS indexes with match len} {
         dict get [r LCS virus1{t} virus2{t} IDX WITHMATCHLEN] matches
-    } {{{238 238} {239 239} 1} {{236 236} {238 238} 1} {{229 230} {236 237} 2} {{224 224} {235 235} 1} {{1 222} {13 234} 222}}
+    } {{{238 238} {239 239} 1} {{236 236} {238 238} 1} {{229 230} {236 237} 2} {{224 224} {235 235} 1} {{1 222} {13 234} 222}} {not-implemented}
 
     test {LCS indexes with match len and minimum match len} {
         dict get [r LCS virus1{t} virus2{t} IDX WITHMATCHLEN MINMATCHLEN 5] matches
-    } {{{1 222} {13 234} 222}}
+    } {{{1 222} {13 234} 222}} {not-implemented}
 
     test {SETRANGE with huge offset} {
         foreach value {9223372036854775807 2147483647} {
@@ -1117,23 +1129,23 @@ if {[string match {*jemalloc*} [s mem_allocator]]} {
     test {DELIFEQ non-existing key} {
         r del foo
         assert_equal 0 [r delifeq foo "test"]
-    }
+    } {} {not-implemented}
 
     test {DELIFEQ existing key, matching value} {
         r set foo "test"
         assert_equal 1 [r delifeq foo "test"]
-    }
+    } {} {not-implemented}
 
     test {DELIFEQ existing key, non-matching value} {
         r set foo "nope"
         assert_equal 0 [r delifeq foo "test"]
-    }
+    } {} {not-implemented}
 
     test {DELIFEQ existing key, non-string value} {
         r del foo
         r sadd foo "test"
         assert_error "WRONGTYPE*" {r delifeq foo "test"}
-    }
+    } {} {not-implemented}
 
     test {DELIFEQ propagate as DEL command to replica} {
         set repl [attach_to_replication_stream]
@@ -1145,7 +1157,7 @@ if {[string match {*jemalloc*} [s mem_allocator]]} {
             {del foo}
         }
         close_replication_stream $repl
-    } {} {needs:repl}
+    } {} {needs:repl not-implemented}
 
 if {[string match {*jemalloc*} [s mem_allocator]]} {
     test {Memory usage of embedded string value} {

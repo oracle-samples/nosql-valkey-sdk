@@ -84,7 +84,7 @@ start_server {tags {"keyspace"}} {
         append res [r read]
         append res [string match PONG* [r read]]
         format $res
-    } {1xyzk1}
+    } {1xyzk1} {not-implemented}
 
     test {Non existing command} {
         catch {r foobaredcommand} err
@@ -295,7 +295,7 @@ foreach {type large} [array get largevalue] {
             assert_refcount 1 newset1{t}
             r del set1{t}
             assert_equal $digest [debug_digest_value newset1{t}]
-        }
+        } {} {not-implemented}
     }
 
     test {COPY basic usage for listpack sorted set} {
@@ -309,7 +309,7 @@ foreach {type large} [array get largevalue] {
         assert_refcount 1 newzset1{t}
         r del zset1{t}
         assert_equal $digest [debug_digest_value newzset1{t}]
-    }
+    } {} {not-implemented}
 
      test {COPY basic usage for skiplist sorted set} {
         r del zset2{t} newzset2{t}
@@ -327,7 +327,7 @@ foreach {type large} [array get largevalue] {
         r del zset2{t}
         assert_equal $digest [debug_digest_value newzset2{t}]
         r config set zset-max-ziplist-entries $original_max
-    }
+    } {} {not-implemented}
 
     test {COPY basic usage for listpack hash} {
         r del hash1{t} newhash1{t}
@@ -372,7 +372,7 @@ foreach {type large} [array get largevalue] {
         assert_refcount 1 mynewstream{t}
         r del mystream{t}
         assert_equal $digest [debug_digest_value mynewstream{t}]
-    }
+    } {} {not-implemented}
 
     test {COPY basic usage for stream-cgroups} {
         r del x{t}
@@ -400,7 +400,7 @@ foreach {type large} [array get largevalue] {
         r del x{t}
         assert_equal $info [r xinfo stream newx{t} full]
         r flushdb
-    }
+    } {} {not-implemented}
 
     test {MOVE basic usage} {
         r set mykey foobar
@@ -573,19 +573,19 @@ foreach {type large} [array get largevalue] {
             }
         }
         list $foo_seen $bar_seen
-    } {1 1}
+    } {1 1} {not-implemented}
 
     test {RANDOMKEY against empty DB} {
         r flushdb
         r randomkey
-    } {}
+    } {} {not-implemented}
 
     test {RANDOMKEY regression 1} {
         r flushdb
         r set x 10
         r del x
         r randomkey
-    } {}
+    } {} {not-implemented}
 
     test {KEYS * two times with long key, Github issue #1208} {
         r flushdb

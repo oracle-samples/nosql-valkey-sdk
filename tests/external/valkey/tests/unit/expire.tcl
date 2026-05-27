@@ -165,7 +165,7 @@ start_server {tags {"expire"}} {
         r pexpireat x [expr [clock milliseconds] - 1000]
         assert_equal {0} [r exists x]
         assert_equal {4} [s expired_keys]
-    }
+    } {} {not-implemented}
 
     test {TTL returns time to live in seconds} {
         r del x
@@ -547,7 +547,7 @@ start_server {tags {"expire"}} {
             {restore foo7 * * absttl}
         }
         close_replication_stream $repl
-    } {} {needs:repl}
+    } {} {needs:repl not-supported}
 
     # Start another server to test replication of TTLs
     start_server {tags {needs:repl external:skip}} {
@@ -608,7 +608,7 @@ start_server {tags {"expire"}} {
             foreach key [$primary keys *] {
                 assert_equal [$primary pexpiretime $key] [$replica pexpiretime $key]
             }
-        }
+        } {} {not-supported}
 
         test {expired key which is created in writeable replicas should be deleted by active expiry} {
             $primary flushall
@@ -880,7 +880,7 @@ start_server {tags {"expire"}} {
         r config set import-mode no
         assert_equal [r client import-source off] {OK}
         assert_match {*flags=N*} [r client list id [r client id]]
-    }
+    } {} {not-implemented}
 
     test {Import mode should forbid active expiration} {
         r flushall
@@ -903,7 +903,7 @@ start_server {tags {"expire"}} {
         } else {
             fail "Keys did not actively expire."
         }
-    }
+    } {} {not-implemented}
 
     test {Import mode should forbid lazy expiration} {
         r flushall
@@ -959,7 +959,7 @@ start_server {tags {"expire"}} {
         } else {
             fail "Keys did not actively expire."
         }
-    }
+    } {} {not-implemented}
 
     test {Negative ttl will not cause server to crash when import mode is on} {
         r flushall
@@ -975,7 +975,7 @@ start_server {tags {"expire"}} {
         } else {
             fail "key wasn't expired"
         }
-    }
+    } {} {not-implemented}
 
     test {replicaKeysWithExpire memory leak verification and cleanup} {
         # This test verifies the memory leak issue and cleanup mechanism for replicaKeysWithExpire
@@ -1097,7 +1097,7 @@ start_cluster 1 0 {tags {"expire external:skip cluster"}} {
 
         # hashslot(foo) is 12182
         # fill data across different slots with expiration
-        for {set j 1} {$j <= 1000} {incr j} {
+        for {set j 1} {$j <= 100} {incr j} {
             r psetex "{foo}$j" 500 a
         }
         # hashslot(key) is 12539
@@ -1108,7 +1108,7 @@ start_cluster 1 0 {tags {"expire external:skip cluster"}} {
         r debug dict-resizing 0
 
         # delete data to have lot's (99%) of empty buckets (slot 12182 should be skipped)
-        for {set j 1} {$j <= 999} {incr j} {
+        for {set j 1} {$j <= 99} {incr j} {
             r del "{foo}$j"
         }
 

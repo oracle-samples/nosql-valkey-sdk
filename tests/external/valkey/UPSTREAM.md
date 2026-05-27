@@ -20,6 +20,10 @@ testing against an already-running external server.
 - `tests/unit/type/list-2.tcl`
 - `tests/unit/type/list-3.tcl`
 - `tests/unit/type/hash.tcl`
+- `tests/unit/type/set.tcl`
+- `tests/unit/type/stream.tcl`
+- `tests/unit/type/stream-cgroups.tcl`
+- `tests/unit/type/zset.tcl`
 - `tests/unit/expire.tcl`
 - `tests/unit/scan.tcl`
 - `tests/unit/keyspace.tcl`
@@ -32,15 +36,23 @@ testing against an already-running external server.
 - Tags for unsupported external-server behavior are denied by default.
 - Encoding checks are ignored by default, matching the previous Redis external
   harness behavior and avoiding `OBJECT ENCODING` requirements.
-- External test setup only flushes data and best-effort clears scripts/functions;
-  it does not require Valkey/Redis server binaries or broad `CONFIG` support.
+- External test setup flushes data only. Script/function cleanup and
+  `CONFIG RESETSTAT` are disabled so setup does not require `SCRIPT`,
+  `FUNCTION`, or broad `CONFIG` support.
+- Replication stream helpers are disabled for this external target, avoiding
+  `SYNC` while keeping propagation-focused tests callable.
+- `memory_usage` returns a fixed positive value so tests do not require the
+  `MEMORY USAGE` command.
+- Local compatibility tags such as `not-implemented`, `not-supported`, and
+  `not-applicable` are applied directly to imported tests and denied by
+  default.
 - `tests/unit/type/string.tcl` uses a list key, instead of a set key, for the
   `MGET against non-string key` fixture so the test does not require `SADD`.
 - `tests/unit/type/string.tcl` uses the smaller Redis payload sizes for the
   `Very big payload` tests so they stay below this external target's maximum
   string size.
-- `unsupported.txt` lists local compatibility skips for commands/features not
-  implemented by this external target. Skipfile patterns are exact test names
-  unless they start with `/`, in which case they are regular expressions.
-  Prefer adding unsupported feature patterns there instead of editing upstream
-  test cases.
+- Error-message expectations are aligned with this external target where they
+  differ from upstream Valkey wording, including `LMPOP`/`SINTERCARD` numkeys
+  and `HINCRBYFLOAT` NaN/Infinity errors.
+- `tests/unit/scan.tcl` includes a local syntax fix for the `ZSCAN with
+  PATTERN` test wrapper.

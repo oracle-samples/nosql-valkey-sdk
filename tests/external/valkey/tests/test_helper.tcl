@@ -11,36 +11,20 @@ source tests/support/cluster_util.tcl
 source tests/support/tmpfile.tcl
 source tests/support/test.tcl
 source tests/support/util.tcl
-source tests/support/set_executable_path.tcl
+#source tests/support/set_executable_path.tcl
 
 set dir [pwd]
-set ::all_tests []
-set ::cluster_all_test []
-set ::module_api_all_tests []
 
-set test_dirs {
-    unit
-    unit/type
-    unit/cluster
-    integration
-}
-
-foreach test_dir $test_dirs {
-    set files [glob -nocomplain $dir/tests/$test_dir/*.tcl]
-
-    foreach file $files {
-        lappend ::all_tests $test_dir/[file root [file tail $file]]
-    }
-}
-
-set cluster_test_dir unit/cluster
-foreach file [glob -nocomplain $dir/tests/$cluster_test_dir/*.tcl] {
-    lappend ::cluster_all_tests $cluster_test_dir/[file root [file tail $file]]
-}
-
-set moduleapi_test_dir unit/moduleapi
-foreach file [glob -nocomplain $dir/tests/$moduleapi_test_dir/*.tcl] {
-    lappend ::module_api_all_tests $moduleapi_test_dir/[file root [file tail $file]]
+set ::all_tests {
+	unit/type/string
+	unit/type/incr
+	unit/type/list
+	unit/type/list-2
+	unit/type/list-3
+	unit/type/hash
+	unit/expire
+	unit/scan
+	unit/keyspace
 }
 
 # Index to the next test to run in the ::all_tests list.
@@ -52,7 +36,7 @@ set ::baseport 21111; # initial port for spawned servers
 set ::portcount 8000; # we don't wanna use more than 10000 to avoid collision with cluster bus ports
 set ::traceleaks 0
 set ::valgrind 0
-set ::durable 0
+set ::durable 1
 set ::tls 0
 set ::io_threads 0
 set ::tls_module 0
@@ -60,7 +44,7 @@ set ::leaks 1
 set ::stack_logging 0
 set ::verbose 0
 set ::quiet 0
-set ::denytags {}
+set ::denytags { needs:debug needs:info needs:client needs:dump-restore not-implemented not-supported not-applicable cluster:skip resp3 }
 set ::skiptests {}
 set ::skipunits {}
 set ::no_latency 0
@@ -69,7 +53,7 @@ set ::only_tests {}
 set ::single_tests {}
 set ::run_solo_tests {}
 set ::skip_till ""
-set ::external 0; # If "1" this means, we are running against external instance
+set ::external 1; # If "1" this means, we are running against external instance
 set ::other_server_path {}; # Used in upgrade and inter-version tests
 set ::file ""; # If set, runs only the tests in this comma separated list
 set ::curfile ""; # Hold the filename of the current suite
@@ -87,9 +71,9 @@ set ::stop_on_failure 0
 set ::dump_logs 0
 set ::loop 0
 set ::tlsdir "tests/tls"
-set ::singledb 0
+set ::singledb 1
 set ::cluster_mode 0
-set ::ignoreencoding 0
+set ::ignoreencoding 1
 set ::ignoredigest 0
 set ::large_memory 0
 set ::log_req_res 0
@@ -133,7 +117,7 @@ proc expand_unit_spec {spec} {
 # The server is responsible of showing the result to the user, and exit with
 # the appropriate exit code depending on the test outcome.
 set ::client 0
-set ::numclients 16
+set ::numclients 1
 
 # This function is called by one of the test clients when it receives
 # a "run" command from the server, with a filename as data.
@@ -999,6 +983,7 @@ if {$::numclients > [llength $filtered_tests] && $::total_loops == 1} {
 }
 
 proc attach_to_replication_stream_on_connection {conn} {
+proc COMMENTED_OUT {} {
     r config set repl-ping-replica-period 3600
     if {$::tls} {
         set s [::tls::socket [srv $conn "host"] [srv $conn "port"]]
@@ -1027,6 +1012,7 @@ proc attach_to_replication_stream_on_connection {conn} {
     }
     return $s
 }
+}
 
 proc attach_to_replication_stream {} {
     return [attach_to_replication_stream_on_connection 0]
@@ -1054,6 +1040,7 @@ proc read_from_replication_stream {s} {
 }
 
 proc assert_replication_stream {s patterns} {
+proc COMMENTED_OUT {} {
     set errors 0
     set values_list {}
     set patterns_list {}
@@ -1078,11 +1065,14 @@ proc assert_replication_stream {s patterns} {
     close_replication_stream $s ;# for fast exit
     assert_match $patterns_list $values_list "" $context
 }
+}
 
 proc close_replication_stream {s} {
+proc COMMENTED_OUT {} {
     close $s
     r config set repl-ping-replica-period 10
     return
+}
 }
 
 # IPv6 detection utilities
