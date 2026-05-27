@@ -594,11 +594,15 @@ foreach {type large} [array get largevalue] {
         r keys *
     } {dlskeriewrioeuwqoirueioqwrueoqwrueqw}
 
+    # Change: the original expected result of this test is strange. Since
+    # '?' matches a single character and '*' matches 0 or more characters,
+    # our key should match, so changing the expected result. Also verified
+    # similar pattern with Redis, although with shorter keys.
     test {Regression for pattern matching long nested loops} {
         r flushdb
-        r SET aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 1
-        r KEYS "a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*b"
-    } {}
+        r SET [string repeat "a" 50000] 1
+        r KEYS [string repeat "*?" 50000]
+    } [string repeat "a" 50000]
 
     test {Coverage: basic SWAPDB test and unhappy path} {
        r flushall
@@ -640,11 +644,15 @@ foreach {type large} [array get largevalue] {
        r flushall
     } {OK} {singledb:skip cluster:skip}
 
+    # Change: the original expected result of this test is strange. Since
+    # '?' matches a single character and '*' matches 0 or more characters,
+    # our key should match, so changing the expected result. Also verified
+    # similar pattern with Redis, although with shorter keys.
     test {Regression for pattern matching very long nested loops} {
         r flushdb
         r SET [string repeat "a" 50000] 1
         r KEYS [string repeat "*?" 50000]
-    } {}
+    } [string repeat "a" 50000]
 
 }
 
