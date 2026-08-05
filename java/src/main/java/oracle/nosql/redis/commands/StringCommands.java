@@ -44,10 +44,10 @@ public class StringCommands extends CommandsBase {
     private static final String AND_IS_STRING =
         "AND $r.value.type = '" + TYPE_STRING + "'";
     private static final String SQL_GET_DEL = DECL_KEY_ID +
-        "DELETE FROM redis $r WHERE " + R_PK_COND + AND_NOT_EXPIRED +
+        "DELETE FROM valkey $r WHERE " + R_PK_COND + AND_NOT_EXPIRED +
         AND_IS_STRING + SQL_RETURNING + "$r.value.data AS value";
     private static final String SQL_MGET = DECL_KEY_IDS +
-        "SELECT $r.id, $r.value.data AS data FROM redis $r " +
+        "SELECT $r.id, $r.value.data AS data FROM valkey $r " +
         WHERE_R_PKS_COND + AND_NOT_EXPIRED + AND_IS_STRING;
     // This query is used for MSETNX to check if there are existing keys. If
     // there are any existing non-expired keys, MSETNX will not proceed. Note
@@ -57,7 +57,7 @@ public class StringCommands extends CommandsBase {
     // keys will use if-absent instead).
     private static final String SQL_MSET_GET = DECL_KEY_IDS +
         "SELECT $r.id, row_version($r) AS ver, $r.key.exp  AS exp FROM " +
-        "redis $r " + WHERE_R_PKS_COND;
+        "valkey $r " + WHERE_R_PKS_COND;
 
     private static final String ERR_MAX_SIZE =
         "string exceeds maximum allowed size";
