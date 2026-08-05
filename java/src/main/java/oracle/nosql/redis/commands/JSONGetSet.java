@@ -34,13 +34,13 @@ import org.antlr.v4.runtime.tree.ParseTree;
 public class JSONGetSet extends JSONCommandsBase {
 
     private static final String SQL_UPDATE_SET_FMT =
-        "UPDATE redis $r SET $r.value.pad = (EXISTS %s), %s = $val WHERE " +
+        "UPDATE valkey $r SET $r.value.pad = (EXISTS %s), %s = $val WHERE " +
         SQL_EXISTS_COND + SQL_RETURNING_PAD + SQL_IS_JSON;
     private static final String SQL_UPDATE_PUT_FMT =
-        "UPDATE redis $r PUT %s %s WHERE " + SQL_EXISTS_COND + SQL_RETURNING +
+        "UPDATE valkey $r PUT %s %s WHERE " + SQL_EXISTS_COND + SQL_RETURNING +
         "EXISTS %s AS res" + SQL_IS_JSON;
     private static final String SQL_UPDATE_PUT_NX_FMT =
-        "UPDATE redis $r SET $r.value.pad = (NOT EXISTS %s), " +
+        "UPDATE valkey $r SET $r.value.pad = (NOT EXISTS %s), " +
         "PUT %s[NOT EXISTS %s] %s WHERE " + SQL_EXISTS_COND + SQL_RETURNING +
         "$r.value.pad AND EXISTS %s AS res" + SQL_IS_JSON;
     private static final String SQL_GET_FMT = DECL_KEY_ID +
@@ -52,7 +52,7 @@ public class JSONGetSet extends JSONCommandsBase {
 
     private static final String[] MAP_FILTER_ARR = new String[] { MAP_FILTER };
     private static final String SQL_MERGE_FMT = DECL_KEY_ID_VAL +
-        "%sUPDATE redis $r JSON MERGE %s WITH PATCH %s WHERE " +
+        "%sUPDATE valkey $r JSON MERGE %s WITH PATCH %s WHERE " +
         SQL_EXISTS_COND + SQL_RETURNING +  "(EXISTS %s) AS res" +
         SQL_IS_JSON;
     private static final String SQL_MSET_GET = DECL_KEY_IDS +
