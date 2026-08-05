@@ -38,20 +38,20 @@ public class JSONValueOps extends JSONCommandsBase {
     private static final String BOOL_FILTER = String.format(VAL_FILTER_FMT,
         "Boolean");
     private static final String SQL_NUM_INCR_MULT_FMT = DECL_KEY_ID_VAL +
-        "%sUPDATE redis $r SET %s = $ %c $val WHERE " + SQL_EXISTS_COND +
+        "%sUPDATE valkey $r SET %s = $ %c $val WHERE " + SQL_EXISTS_COND +
         SQL_RETURNING + "[seq_transform(%s, CASE WHEN $ IS OF TYPE " +
         "(Number) THEN $ ELSE NULL END)] AS res" + SQL_IS_JSON;
     protected static final String SQL_STR_LENS_FMT =
         "[seq_transform(%s, CASE WHEN $ IS OF TYPE (String) " +
         "THEN length($) ELSE NULL END)] AS res";
     private static final String SQL_STR_APPEND_FMT = DECL_KEY_ID_VAL +
-        "%sUPDATE redis $r SET %s = ($ || $val) WHERE " + SQL_EXISTS_COND +
+        "%sUPDATE valkey $r SET %s = ($ || $val) WHERE " + SQL_EXISTS_COND +
         SQL_RETURNING + SQL_STR_LENS_FMT + SQL_IS_JSON;
     private static final String SQL_SEL_STR_LENS_FMT = DECL_KEY_ID +
         "%sSELECT " + SQL_STR_LENS_FMT + SQL_IS_JSON +
         " FROM valkey $r WHERE " + SQL_EXISTS_COND;
     private static final String SQL_BOOL_TOGGLE_FMT = DECL_KEY_ID +
-        "%sUPDATE redis $r SET %s = NOT $ WHERE " + SQL_EXISTS_COND +
+        "%sUPDATE valkey $r SET %s = NOT $ WHERE " + SQL_EXISTS_COND +
         SQL_RETURNING + "[seq_transform(%s, CASE WHEN $ IS OF TYPE " +
         "(Boolean) THEN (CASE WHEN $ THEN 1 ELSE 0 END) ELSE NULL END)] " +
         "AS res" + SQL_IS_JSON;
