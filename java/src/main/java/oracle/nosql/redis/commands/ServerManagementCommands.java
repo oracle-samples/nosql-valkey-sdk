@@ -36,9 +36,9 @@ public class ServerManagementCommands extends CommandsBase {
         "SELECT count(*) AS res FROM redis $r WHERE " + NOT_EXPIRED;
     private static final String SQL_DEL_ALL_KEYS = "DELETE FROM redis";
     private static final String SQL_DEL_ALL_LIST_ELEMS =
-        "DELETE FROM redis.lists";
+        "DELETE FROM valkey.lists";
     private static final String SQL_DEL_ALL_HASH_ELEMS =
-        "DELETE FROM redis.hashes";
+        "DELETE FROM valkey.hashes";
 
     private static final String INFO_SERVER = "server";
     private static final String INFO_PERSISTENCE = "persistence";
