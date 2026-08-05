@@ -25,7 +25,7 @@ container
 
     Java Runtime 11 or later to install as Java archive.
 
-2. [Redis CLI](https://redis.io/docs/latest/develop/tools/cli/) or [Valkey API](https://valkey.io/topics/cli/)
+2. [Redis CLI](https://redis.io/docs/latest/develop/tools/cli/) or [Valkey CLI](https://valkey.io/topics/cli/)
 
     or one of
     [Redis Client API Libraries](https://redis.io/docs/latest/develop/clients/) or  [Valkey Clients API Libraries](https://valkey.io/clients/)
