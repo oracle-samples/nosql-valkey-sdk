@@ -62,7 +62,7 @@ public class GenericCommands extends CommandsBase {
 
         private static final String SQL_SCAN =
             "DECLARE $scanId LONG; SELECT $r.key, $r.value.type AS type " +
-            "FROM redis $r WHERE $r.key.scanId >= $scanId " + AND_NOT_EXPIRED +
+            "FROM valkey $r WHERE $r.key.scanId >= $scanId " + AND_NOT_EXPIRED +
             "ORDER BY $r.key.scanId";
 
         KeyScan(CommandsBase cmds, long cursor, ByteBuf match, long count,
@@ -81,9 +81,9 @@ public class GenericCommands extends CommandsBase {
     }
 
     private static final String SQL_EXISTS_ONE = DECL_KEY_ID +
-        "SELECT 1 FROM redis $r " + WHERE_R_PK_COND + AND_NOT_EXPIRED;
+        "SELECT 1 FROM valkey $r " + WHERE_R_PK_COND + AND_NOT_EXPIRED;
     private static final String SQL_EXISTS = DECL_KEY_IDS +
-        "SELECT count(*) AS res FROM redis $r " + WHERE_R_PKS_COND +
+        "SELECT count(*) AS res FROM valkey $r " + WHERE_R_PKS_COND +
         AND_NOT_EXPIRED;
 
     private static final String ERR_NX_NOT_COMPAT =
