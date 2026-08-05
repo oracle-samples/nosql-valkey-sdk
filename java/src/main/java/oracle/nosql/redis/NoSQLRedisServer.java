@@ -62,7 +62,7 @@ public class NoSQLRedisServer {
     /**
      * @hidden
      */
-    public static final String MAIN_TABLE_NAME = "redis";
+    public static final String MAIN_TABLE_NAME = "valkey";
 
     /**
      * @hidden
