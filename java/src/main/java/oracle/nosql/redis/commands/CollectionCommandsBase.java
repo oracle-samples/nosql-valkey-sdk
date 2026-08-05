@@ -49,7 +49,7 @@ abstract class CollectionCommandsBase extends CommandsBase {
         "DECLARE $slot INTEGER; $id STRING; $cid STRING; DELETE FROM %s " +
         "WHERE slot = $slot AND id = $id AND cid = $cid";
     protected static final String SQL_SEL_ABANDONED_CIDS_FMT =
-        "SELECT DISTINCT $t.cid AS cid FROM %s $t LEFT OUTER JOIN redis $r " +
+        "SELECT DISTINCT $t.cid AS cid FROM %s $t LEFT OUTER JOIN valkey $r " +
         "ON $t.slot = $r.slot AND $t.id = $r.id WHERE " +
         "$r IS NULL OR $t.cid != $r.value.cid";
     protected static final String SQL_DEL_BY_CIDS_FMT =
