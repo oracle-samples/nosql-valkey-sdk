@@ -68,27 +68,27 @@ public class NoSQLRedisServer {
      * @hidden
      */
     public static final String CREATE_MAIN_TABLE =
-        "CREATE TABLE IF NOT EXISTS redis(slot INTEGER, id STRING, " +
+        "CREATE TABLE IF NOT EXISTS valkey(slot INTEGER, id STRING, " +
         "key JSON, value JSON, PRIMARY KEY(SHARD(slot), id))";
 
     /**
      * @hidden
      */
     public static final String CREATE_SCANID_IDX =
-        "CREATE INDEX IF NOT EXISTS scanIdIdx ON redis(key.scanId AS LONG)";
+        "CREATE INDEX IF NOT EXISTS scanIdIdx ON valkey(key.scanId AS LONG)";
 
     /**
      * @hidden
      */
     public static final String CREATE_LIST_TABLE =
-        "CREATE TABLE IF NOT EXISTS redis.lists(elemId NUMBER, " +
+        "CREATE TABLE IF NOT EXISTS valkey.lists(elemId NUMBER, " +
         "cid STRING AS UUID, value STRING, PRIMARY KEY(elemId))";
 
     /**
      * @hidden
      */
     public static final String CREATE_HASH_TABLE =
-        "CREATE TABLE IF NOT EXISTS redis.hashes(keyId STRING, " +
+        "CREATE TABLE IF NOT EXISTS valkey.hashes(keyId STRING, " +
         "cid STRING AS UUID, key JSON, value STRING, PRIMARY KEY(keyId))";
 
     /**
@@ -96,7 +96,7 @@ public class NoSQLRedisServer {
      */
     public static final String CREATE_HSCANID_IDX =
         "CREATE INDEX IF NOT EXISTS hScanIdIdx ON " +
-        "redis.hashes(slot, id, key.scanId AS LONG)";
+        "valkey.hashes(slot, id, key.scanId AS LONG)";
 
     // will use config in logging.properties if provided
     private static final Logger logger =
