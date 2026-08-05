@@ -36,7 +36,7 @@ public class JSONDel extends JSONCommandsBase {
     // path and only if the parent path points to an array, to remove empty
     // object wrappers from the array.
     private static final String SQL_UPDATE_DEL_FMT = DECL_KEY_ID +
-        "%sUPDATE redis $r SET $r.value.pad = size([%s]), REMOVE %s, " +
+        "%sUPDATE valkey $r SET $r.value.pad = size([%s]), REMOVE %s, " +
         "REMOVE %s[size($element) = 0] WHERE " + SQL_EXISTS_COND +
         SQL_RETURNING_PAD + SQL_IS_JSON;
 
@@ -49,7 +49,7 @@ public class JSONDel extends JSONCommandsBase {
         " AND $value != 0";
 
     private static final String SQL_CLEAR_FMT = DECL_KEY_ID +
-        "%sUPDATE redis $r SET $r.value.pad = size([%s]) + size([%s]) + " +
+        "%sUPDATE valkey $r SET $r.value.pad = size([%s]) + size([%s]) + " +
         "size([%s]), SET %s = {}, SET %s = [], SET %s = 0 WHERE " +
         SQL_EXISTS_COND + SQL_RETURNING_PAD + SQL_IS_JSON;
     
