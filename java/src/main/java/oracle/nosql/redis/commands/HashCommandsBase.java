@@ -63,10 +63,10 @@ public class HashCommandsBase extends CollectionCommandsBase {
     // Currently, a SQL join of tables redis to valkey.hashes will not use
     // child table primary index to perform the hKeyId look up and thus will
     // not be O(1), which is not adequate for our purposes. Instead, we
-    // reverse the join (redis.hashes to redis) to allow using the child table
+    // reverse the join (valkey.hashes to redis) to allow using the child table
     // primary key index. However, because we store small hashes inline as
     // smallVal, we need to get a row from redis when there are no rows in
-    // redis.hashes. With this join, this is impossible, so instead we store an
+    // valkey.hashes. With this join, this is impossible, so instead we store an
     // "empty" record (in addition to any other records for this hash). We
     // use its hKeyId as empty string (which should not clash with valid
     // hKeyIds) so that it is always in the lowest sorted order.
@@ -84,7 +84,7 @@ public class HashCommandsBase extends CollectionCommandsBase {
         "$h.slot = $slot AND $h.id = $id ";
     protected static final String WHERE_H_PK_COND = SQL_WHERE + H_PK_COND;
     protected static final String FROM_JOIN_WHERE_H_PK =
-        "FROM NESTED TABLES(redis.hashes $h ANCESTORS(redis $r)) " +
+        "FROM NESTED TABLES(valkey.hashes $h ANCESTORS(redis $r)) " +
             WHERE_H_PK_COND + "AND $h.cid = $r.value.cid ";
 
     protected static final String SQL_ENTRIES_FMT = DECL_KEY_ID +
@@ -129,7 +129,7 @@ public class HashCommandsBase extends CollectionCommandsBase {
     // a hash reaches certain size, we store it as single MapValue inside the
     // "smallVal" subfield of "value" field in the main redis table. Once
     // has reaches certain size, we convert it to multi-row format where each
-    // entry is stored in a separate row in "redis.hashes" table and the
+    // entry is stored in a separate row in "valkey.hashes" table and the
     // "value" field in main redis table stores only hash size under "len"
     // subfield. Note that subfields "smallVal" and "len" are exclusive.
     // In the header we use len = 0 to indicate absence of "len" field.
@@ -285,7 +285,7 @@ public class HashCommandsBase extends CollectionCommandsBase {
 
     // Static method is needed for HashScan.
     // Checks if the hash exists at given key, if so, verifies it is a hash.
-    // Unfortunately, even keeping empty record in redis.hashes table will not
+    // Unfortunately, even keeping empty record in valkey.hashes table will not
     // guard against the case the key is of the wrong type (not hash), since
     // SQL JOIN will return no records in this case. For read-only commands,
     // we have no choice but to do this check if the query returns no records,
