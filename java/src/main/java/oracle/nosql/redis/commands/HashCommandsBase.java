@@ -48,7 +48,7 @@ public class HashCommandsBase extends CollectionCommandsBase {
     //protected static final int MAX_SMALL_HASH_SIZE = 5;
     //protected static final int MAX_SMALL_HASH_ENT_SIZE = 10;
 
-    protected static final String HASH_TABLE_NAME = "redis.hashes";
+    protected static final String HASH_TABLE_NAME = "valkey.hashes";
     protected static final String FLD_KEY_ID = "keyId";
     protected static final String FLD_SMALL_VAL = "smallVal";
     protected static final String FLD_FLD_KEY = "fldKey";
@@ -60,7 +60,7 @@ public class HashCommandsBase extends CollectionCommandsBase {
     protected static final String SEL_HKEYID = ", $h.keyId";
     protected static final String SEL_FLDVAL = ", $h.value AS fldVal";
 
-    // Currently, a SQL join of tables redis to redis.hashes will not use
+    // Currently, a SQL join of tables redis to valkey.hashes will not use
     // child table primary index to perform the hKeyId look up and thus will
     // not be O(1), which is not adequate for our purposes. Instead, we
     // reverse the join (redis.hashes to redis) to allow using the child table
