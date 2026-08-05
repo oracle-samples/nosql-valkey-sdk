@@ -1,19 +1,19 @@
-# Oracle NoSQL Redis Proxy and SDK
-
+# Oracle NoSQL Valkey/Redis API Adapter
 ## About
 
-Oracle NoSQL Redis Proxy provides a way for applications to use Oracle NoSQL
+Oracle NoSQL Valkey/Redis API Adapter (API Proxy) provides a way for applications to use Oracle NoSQL
 database as a [Redis](https://redis.io/about/) store. It allows you to store
-Redis types and data structures persistenly in Oracle NoSQL database tables
-and access them using any of supported
+Valkey/Redis types and data structures persistenly in Oracle NoSQL database tables
+and access them using any of supported [Valkey Clients](https://valkey.io/clients/),
 [Redis Clients](https://redis.io/docs/latest/develop/clients/) or a command
 line interface.
 
-The Redis proxy runs as a TCP listener and uses
+The API proxy runs as a TCP listener and uses the
 [Redis Serialization Protocol](https://redis.io/docs/latest/develop/reference/protocol-spec/)
-(RESP) to interact with clients. You can install and run the Redis proxy as a
+(RESP) to interact with clients -- Valkey information located here [Valkey protocol](https://valkey.io/topics/protocol/). 
+You can install and run the API proxy as a
 Docker container. You can also invoke it on the command line using Java. For
-Java developers, there are also APIs to start and run the Redis proxy within
+Java developers, there are also APIs to start and run the API proxy within
 the application process.
 
 ## Prerequisites
@@ -25,14 +25,13 @@ container
 
     Java Runtime 11 or later to install as Java archive.
 
-2. [Redis CLI](https://redis.io/docs/latest/develop/tools/cli/)
+2. [Redis CLI](https://redis.io/docs/latest/develop/tools/cli/) or [Valkey API](https://valkey.io/topics/cli/)
 
-    and/or
+    or one of
+    [Redis Client API Libraries](https://redis.io/docs/latest/develop/clients/) or  [Valkey Clients API Libraries](https://valkey.io/clients/)
 
-    one of
-    [Redis Client API Libraries](https://redis.io/docs/latest/develop/clients/).
 
-3. Access to Oracle NoSQL Database.
+4. Access to Oracle NoSQL Database.
 
     For use with the Oracle NoSQL Database Cloud Service:
     * An Oracle Cloud Infrastructure account
@@ -48,7 +47,7 @@ container
     For use with the Oracle NoSQL Database On Premise:
     * [Oracle NoSQL Database](https://www.oracle.com/database/technologies/related/nosql.html).
 
-    Note: the Redis proxy only supports Oracle NoSQL Database Server version
+    Note: the API proxy only supports Oracle NoSQL Database Server version
     25.3 and later.
 
     See
@@ -61,14 +60,14 @@ on how to install, configure and run Oracle NoSQL Database Service.
 
 ## Installation
 
-You can install the Redis proxy as either:
+You can install the API proxy as either:
 
 * Docker container from the GitHub Container Registry:
 
-    ```bash
-    docker pull ghcr.io/oracle/nosql-redis-proxy:<tag>
-    docker tag ghcr.io/oracle/nosql-redis-proxy:<tag> oracle/nosql-redis-proxy
-    ```
+  ```bash
+     docker pull ghcr.io/oracle/nosql-valkey-api:<tag>
+     docker tag ghcr.io/oracle/nosql-valkey-api:<tag> oracle/nosql-valkey-api
+  ```
 
     where <tag> is the tag for the image (use *latest* for the latest build).
 
@@ -78,21 +77,21 @@ You can install the Redis proxy as either:
 
     ```bash
     mvn dependency:copy \
-      -Dartifact=com.oracle.nosql.redis:nosql-redis:<version>:jar:jar-with-dependencies \
+      -Dartifact=com.oracle.nosql.valkey:nosql-valkey:<version>:jar:jar-with-dependencies \
       -DoutputDirectory=<download-directory>
     ```
 
-    This should download *nosql-redis-<version>-jar-with-dependencies.jar*
+    This should download *nosql-valkey-<version>-jar-with-dependencies.jar*
 (where <version> is the version, e.g. 1.0.0). Alternatively, you can download
 it manually from [Maven Central](link to the project artifacts).
 
-    To start the Redis proxy within your Java application, add it as
+    To start the API proxy within your Java application, add it as
 dependency of your project in *pom.xml*:
 
     ```xml
     <dependency>
-      <groupId>com.oracle.nosql.redis</groupId>
-      <artifactId>nosql-redis</artifactId>
+      <groupId>com.oracle.nosql.valkey</groupId>
+      <artifactId>nosql-valkey</artifactId>
       <version>0.1.0</version>
     </dependency>
     ```
@@ -105,7 +104,7 @@ dependency of your project in *pom.xml*:
 [Oracle NoSQL Database](https://www.oracle.com/database/technologies/nosql-database-server-downloads.html)
 Enterprise Edition.
 
-2. Download and install
+2. Download and install (Equivalent Valkey components can be used)
 [Redis CLI](https://redis.io/docs/latest/develop/tools/cli/) as indicated.
 
     Alternatively you may install *redis-tools* package (for Debian or Ubuntu
@@ -116,7 +115,7 @@ Linux) which includes *redis-cli*:
     sudo apt install redis-tools
     ```
 
-3. Install the Redis proxy as a Docker container as described in
+3. Install the API proxy as a Docker container as described in
 [Installation](#installation) section.
 
 4. Run KVLite. E.g.:
@@ -136,17 +135,17 @@ Linux) which includes *redis-cli*:
     $ cd <kv-install-dir>/kv-25.3.21/lib
     $ java -jar httpproxy.jar -httpPort 8080 -storeName kvstore \
       -helperHosts localhost:5000 -verbose true
-    Starting Proxy
+    Starting HTTP Proxy
     Proxy started:
     ...
     ```
 
-6. On another terminal, run Redis proxy:
+6. On another terminal, run API proxy:
 (Note that NoSQL endpoint defaults to *host.docker.internal:8080*, see
 [Command Line Parameters](#command-line-parameters)).
 
     ```bash
-    $ docker run --rm -p 6379:6379 oracle/nosql-redis-proxy -auth kvstore
+    $ docker run --rm -p 6379:6379 oracle/nosql-valkey-api -auth kvstore
     Nov 25, 2025 3:25:55 AM io.netty.handler.logging.LoggingHandler channelRegistered
     INFO: [id: 0xae728060] REGISTERED
     Nov 25, 2025 3:25:55 AM io.netty.handler.logging.LoggingHandler bind
@@ -155,12 +154,12 @@ Linux) which includes *redis-cli*:
     INFO: [id: 0xae728060, L:/[0:0:0:0:0:0:0:0]:6379] ACTIVE
     ```
 
-6. On another terminal start *redis-cli*. No arguments are necessary since
-it uses the same default host and port. Then execute some Redis commands. For
+6. On another terminal start *redis-cli* or *valkey-cli*. No arguments are necessary since
+it uses the same default host and port. Then execute some commands. For
 example:
 
     ```bash
-    $ redis-cli
+    $ valkey-cli
     127.0.0.1:6379> set key1 value1
     OK
     127.0.0.1:6379> expire key1 1000
@@ -227,45 +226,45 @@ example:
       2) "key2"
     ```
 
-## Running Oracle NoSQL Redis Proxy
+## Running Oracle NoSQL API Proxy
 
 ### NoSQL Database Environments
 
-You can use the Redis proxy to store and access Redis data using one of these
+You can use the API proxy to store and access data using one of these
 Oracle NoSQL Database services:
 
 * Oracle NoSQL Database Cloud Service
 * On-Premise Oracle NoSQL Database
 * Oracle NoSQL Database Cloud Simulator
 
-The Redis proxy supports the same connection and authentication parameters as
+The API proxy supports the same connection and authentication parameters as
 supported by
 [Oracle NoSQL Database language SDKs](https://docs.oracle.com/en/database/other-databases/nosql-database/25.3/nsdev/oracle-nosql-database-sdk-drivers.html),
 e.g. [Oracle NoSQL Java SDK](https://github.com/oracle/nosql-java-sdk).
 
-You can connect the Redis proxy to Oracle NoSQL Cloud Service using User
+You can connect the API proxy to Oracle NoSQL Cloud Service using User
 Credentials, session token, instance principal, resource principal or OKE
 workload identity.
-The Redis proxy can also connect to On-Premise Oracle NoSQL Database (using
+The API proxy can also connect to On-Premise Oracle NoSQL Database (using
 secure or non-secure mode) and Oracle NoSQL Database Cloud Simulator.
 
-The connection configuration is specified when starting the Redis proxy and
+The connection configuration is specified when starting the API proxy and
 will be described in the [Command Line Parameters](#command-line-parameters)
-section. The Redis proxy will use a group of tables (described in
+section. The API proxy will use a group of tables (described in
 [Schema and Data Format](#nosql-database-schema-and-data-format) section) to
-store Redis data. To avoid naming conflicts it is recommended to use separate
+store Redis/Valkey data. To avoid naming conflicts it is recommended to use separate
 [compartment](https://docs.oracle.com/en/cloud/foundation/cloud_architecture/governance/compartments.html)
 when connecting to Oracle NoSQL Cloud Service or
 [namespace](https://docs.oracle.com/en/database/other-databases/nosql-database/25.3/sqlreferencefornosql/namespace-management.html)
 when connection to On-Premise Oracle NoSQL Database. These can be specified as
-configuration parameters when starting the Redis proxy.
+configuration parameters when starting the API proxy.
 
 ### Run As Docker container
 
 ```bash
-docker run [-d] [--rm] -p [<redis_proxy_host>:]<redis_proxy_port>:6379 \
+docker run [-d] [--rm] -p [<api_proxy_host>:]<api_proxy_port>:6379 \
   [-v host_path1:container_path1 -v host_path2:container_path2 ...] \
-  oracle/nosql-redis-proxy [-param1 value1 -param2 value2 ...]
+  oracle/nosql-valkey-api [-param1 value1 -param2 value2 ...]
 ```
 
 In the above:
@@ -273,27 +272,27 @@ In the above:
 * Use *-d* to optionally run container in the background.
 * Use *--rm* to optionally remove container when it exits.
 * Use *-p* to map container port 6379 to your chosen hostname (or ip address)
-and the port on the host. The Redis proxy listens on port 6379 in the
+and the port on the host. The API proxy listens on port 6379 in the
 container. This port needs to be mapped to the port on your host in order for
-Redis clients to connect to it.
+Redis/Valkey clients to connect to it.
 * Use *-v* to optionally map files and directories from the host to the
 container. Note that any file paths you use as part of command line parameters
 or configuration files are the paths inside the container. You need to map
-corresponding paths from the host to the container in order for the Redis
+corresponding paths from the host to the container in order for the API
 proxy to find them.
 * The docker image name is optionally followed by command line parameters for
-the Redis proxy, which are described in
+the API proxy, which are described in
 [Command Line Parameters](#command-line-parameters) section.
 
 For example:
 
 ```bash
 docker run -rm -p 6379:6379 -v ~/.oci/config:~/.oci/config \
-  -v ~/oracle/redis-proxy/oci_api_key.pem:~/oracle/redis-proxy/oci_api_key.pem \
-  nosql-redis-proxy -auth user -region us-phoenix-1 -compartment users/john
+  -v ~/oracle/api-proxy/oci_api_key.pem:~/oracle/api-proxy/oci_api_key.pem \
+  nosql-valkey-api -auth user -region us-phoenix-1 -compartment users/john
 ```
 
-In the above example, we are connecting the Redis proxy to Oracle NoSQL
+In the above example, we are connecting the API proxy to Oracle NoSQL
 Database Cloud Service in region *us-phoenix-1* using user's credentials. By
 default, the credentials are stored in OCI config file *~/.oci/config*
 (where ~ is user's home directory), hence the mapping of this file from the
@@ -303,12 +302,12 @@ host to the container. This config file may contain lines such as:
 [DEFAULT]
 user=ocid1.user.oc1..<user_id>
 fingerprint=<fingerprint>
-key_file=~/oracle/redis-proxy/oci_api_key.pem
+key_file=~/oracle/api-proxy/oci_api_key.pem
 tenancy=ocid1.tenancy.oc1..<tenant_id>
 ```
 
 In order to connect, we also need user's private key file, located at
-*~/oracle/redis-proxy/oci_api_key.pem* in this example, hence we also have to
+*~/oracle/api-proxy/oci_api_key.pem* in this example, hence we also have to
 map this file from the host to the container at the same location (since we
 are using credentials from the host's OCI config file).
 
@@ -326,11 +325,11 @@ region=us-phoenix-1
 ```
 
 ```bash
-docker run -rm -p 6379:6379 -v ~/.oci:~/.oci nosql-redis-proxy -auth user \
+docker run -rm -p 6379:6379 -v ~/.oci:~/.oci nosql-valkey-api -auth user \
   -compartment users/john
 ```
 
-Note: when the Redis proxy is running in container and you use *endpoint*
+Note: when the API proxy is running in container and you use *endpoint*
 parameter (see [Command Line Parameters](#command-line-parameters) section) to
 connect to Oracle NoSQL Database running on your localhost (e.g. Cloud
 Simulator or local KVLite), the hostname within the endpoint should not be
@@ -340,28 +339,28 @@ e.g. *host.docker.internal:8080*.
 
 ### Run As Java Program
 
-The Redis proxy requires minimum Java 11. You can run the Redis proxy as
+The API proxy requires minimum Java 11. You can run the API proxy as
 follows:
 
 ```bash
-java -cp path/to/nosql-redis-<version>-jar-with-dependencies.jar \
+java -cp path/to/nosql-valkey-<version>-jar-with-dependencies.jar \
   oracle.nosql.redis.NoSQLRedisServer [-param1 value1 -param2 value2 ...]
 ```
 
 The main class name (oracle.nosql.redis.NoSQLRedisServer) is optionally
-followed by command line parameters for the Redis proxy, which are described
+followed by command line parameters for the API proxy, which are described
 in [Command Line Parameters](#command-line-parameters) section.
 
 From the last example in the previous section:
 
 ```bash
-java -cp path/to/nosql-redis-<version>-jar-with-dependencies.jar \
+java -cp path/to/nosql-valkey-<version>-jar-with-dependencies.jar \
   oracle.nosql.redis.NoSQLRedisServer -auth user -compartment users/john
 ```
 
 ### Run within Java Application
 
-You may also start the Redis proxy programmatically within your Java
+You may also start the API proxy programmatically within your Java
 application. The following configuration is equivalent to the previous
 example:
 
@@ -379,16 +378,16 @@ example:
   redisSvr.stop(5000);
 ```
 
-Note that it is advised to stop the Redis proxy (see *redisSvr.stop*
+Note that it is advised to stop the API proxy (see *redisSvr.stop*
 above) before you exit your application.
 
-For more information, see [NoSQL Redis Proxy Javadoc](link needed) as well as
+For more information, see [NoSQL API proxy Javadoc](link needed) as well as
 [Javadoc for Oracle NoSQL Java SDK](https://oracle.github.io/nosql-java-sdk/).
 
 ### Command Line Parameters
 
 The parameters are used to specify Oracle NoSQL Database environment to which
-the Redis proxy would connect, as well as some Redis proxy-specific
+the API proxy would connect, as well as some API proxy-specific
 configuration settings.
 
 The connection and authentication parameters are based on connection
@@ -404,7 +403,7 @@ For more details, see the following:
 * For Cloud Simulator, see
 [Developing in Oracle NoSQL Database Cloud Simulator](https://docs.oracle.com/en/cloud/paas/nosql-cloud/donsq/index.html)
 
-The Redis proxy accepts the following parameters:
+The API proxy accepts the following parameters:
 
 * -region <region> (Cloud only) Region to use to connect to Oracle NoSQL
 Database Cloud Service. If not specified, the region will be inferred from
@@ -452,7 +451,7 @@ defaults to *cloudsim*, otherwise defaults to *user*.
 * -auth-file If authentication type is *user* or *session-token*, this
 specifies the path to the OCI config file. If authentication type is
 *kvstore*, specifies the path to the on-prem auth file containing user
-credentials, in which case it is assumed Redis proxy is connecting to
+credentials, in which case it is assumed API proxy is connecting to
 secure on-prem KVStore. On-prem auth file must be in the following format:
 
     ```ini
@@ -465,7 +464,7 @@ For any other auth type, specifying this parameter is an error.
 If not specified, the default is as follows: if auth type is *user* or
 *session-token*, the default path to OCI config file is *~/.oci/config*, where
 *~* is user's OS home directory. If auth type is *kvstore* and *-auth-file* is
-not specified, it is assumed Redis proxy is connecting to non-secure KVStore.
+not specified, it is assumed API proxy is connecting to non-secure KVStore.
 
 * -auth-profile (Cloud only) If auth type is *user* or *session-token*,
 specifies the profile within the OCI congfile that is used to store user's
@@ -489,7 +488,7 @@ signed with non-public CA. The CA certificate must be in PEM format. For any
 other auth type, specifying this parameter is an error.
 
 * -table-limits (Cloud only) Specifies table limits for the table used to
-store Redis data. See
+store Redis/Valkey data. See
 [Schema and Data Format](#nosql-database-schema-and-data-format) section for
 information on the database schema used. Table limits must be in the format
 _\<read-units\>,\<write-units\>,\<storageGB_\> if using provisional capacity,
@@ -504,17 +503,17 @@ or just *<storageGB>* for on-demand capacity.
     If not specified, the default limits are as follows: 100 read units, 100 write
 units, 5 GB of storage.
 
-    Note that this parameter only has effect when starting the Redis proxy for the
+    Note that this parameter only has effect when starting the API proxy for the
 first time when the database schema is created, otherwise it is ignored.
 
-* -host Host on which Redis proxy will listen for connections. If not
+* -host Host on which API proxy will listen for connections. If not
 specified, defaults to *localhost*. This parameter is not valid if running
-the Redis proxy as Docker container. In this case, use port mapping to map to
+the API proxy as Docker container. In this case, use port mapping to map to
 your chosen hostname/ip on the host.
 
-* -port Port on which Redis proxy will listen for connections. If not
+* -port Port on which API proxy will listen for connections. If not
 specified, defaults to *6379*. This parameter is not valid if running
-the Redis proxy as Docker container. In this case, use port mapping to map to
+the API proxy as Docker container. In this case, use port mapping to map to
 your port on the host.
 
 * -max-retries The limit on the number of retries of certain operations if
@@ -522,40 +521,40 @@ version mismatch is detected due to concurrent operation on the same key.
 See [Concurrency Control](#concurrency-control) section. The default is *100*.
 After the limit is reached, an error will be returned to the application.
 
-* -cleanup-on-startup Whether, on Redis proxy startup, to run a background
+* -cleanup-on-startup Whether, on API proxy startup, to run a background
 cleanup thread that will check for and purge any abandoned collection element
 data that was left due to previous abnormal termination. The values are
 *true*/*false*. The default is *true*. For more information, see restriction 3
 in [Generic Commands](#generic-commands) section.
 
-Examples (based on running the Redis proxy as a Docker container):
+Examples (based on running the API proxy as a Docker container):
 
 1. Connect to Cloud Service with Instance principal, change max-retries value:
 
     ```bash
-    docker run -rm -p 6379:6379 oracle/nosql-redis-proxy -auth instance \
+    docker run -rm -p 6379:6379 oracle/nosql-valkey-api -auth instance \
       -region us-phoenix-1 -compartment users/john -max-retries 20
     ```
 
 2. Connect to On-prem database on running on localhost, non-secure:
 
     ```bash
-    docker run -rm -p 6379:6379 oracle/nosql-redis-proxy \
+    docker run -rm -p 6379:6379 oracle/nosql-valkey-api \
       -endpoint http://localhost:8080 -auth kvstore
     ```
 
 3. Connect to On-prem database on running on localhost, secure:
 
     ```bash
-    docker run -rm -p 6379:6379 -v ~/redis_proxy/kvauth:~/kvauth \
-      nosql-redis-proxy -endpoint https://localhost:8081 -auth kvstore \
+    docker run -rm -p 6379:6379 -v ~/valkey_api/kvauth:~/kvauth \
+      nosql-valkey-api -endpoint https://localhost:8081 -auth kvstore \
       -auth-file ~/kvauth
     ```
 
 4. Connect to Cloud Simulator running on localhost:
 
     ```bash
-    docker run -rm -p 6379:6379 nosql-redis-proxy -endpoint http://localhost:8080 \
+    docker run -rm -p 6379:6379 nosql-valkey-api -endpoint http://localhost:8080 \
       -auth cloudsim
     ```
 
@@ -563,27 +562,27 @@ Examples (based on running the Redis proxy as a Docker container):
 
 ### Concurrency
 
-Each running proxy can serve many Redis clients. Any client that uses TCP and
-speaks Redis
+Each running proxy can serve many Redis/Valkey clients. Any client that uses TCP and
+speaks the
 [RESP](https://redis.io/docs/latest/develop/reference/protocol-spec/) protocol
-may connect and use the Redis proxy. The current protocol supported is RESP2.
+may connect and use the API proxy. The current protocol supported is RESP2.
 
 In addtion, multiple proxies can be run that connect to the same Oracle NoSQL
 Service and destination (including region/endpoint and compartment/namespace)
-and thus will share the same Redis keyspace and Redis data.
+and thus will share the same keyspace and data.
 
-Multiple Redis clients connected to the same proxy or different proxies may
-issue concurrent reads and updates of data stored by the same redis key,
+Multiple Redis/Valkey clients connected to the same proxy or different proxies may
+issue concurrent reads and updates of data stored by the same key,
 including creation or deletion of a key. E.g. multiple clients may be updating
 the same string, or inserting and deleting elements from the same list.
 
-The Redis proxy will guarantee the data consistency and atomicity of each
-Redis command during concurrent updates, although certain limitations may
+The API proxy will guarantee the data consistency and atomicity of each
+Redis/Valkey command during concurrent updates, although certain limitations may
 apply to the atomicity of some commands:
 
 * Multikey update commands such as
 [MSET](https://redis.io/docs/latest/commands/mset/) or
-[DEL](https://redis.io/docs/latest/commands/del/) when used with multiple
+[DEL](https://redis.io/docs/latest/commands/del/) or Valkey equivalents when used with multiple
 keys, have limitation that the command can be performed atomically with at
 most 50 keys. E.g. MSET disallows update of more than 50 keys and DEL, when
 provided with more than 50 keys, will split them in groups of 50 or less and
@@ -592,7 +591,7 @@ overall atomic.
 * Commands on collections that may take multiple elements, such as
 [LPUSH](https://redis.io/docs/latest/commands/lpush/),
 [LPOP](https://redis.io/docs/latest/commands/lpop/),
-[HSET](https://redis.io/docs/latest/commands/hset/), etc. will not be atomic
+[HSET](https://redis.io/docs/latest/commands/hset/), Valkey equivalents, etc. will not be atomic
 if provided more than 49 elements for each command, but instead the elements
 will be split into groups of 49 or less and atomic operation performed on each
 group.
@@ -606,59 +605,57 @@ self-contained.
 
 #### Concurrency Control
 
-The Redis proxy uses version-based concurrency control. In highly concurrent
+The API proxy uses version-based concurrency control. In highly concurrent
 environment, this means that an operation may have to be retried due to
 version mismatch caused by a concurrent transaction. The limit to the number
 of retries for each command defaults to 100. You can also change this limit by
-using *-max-retries* parameter when starting the Redis proxy. After the
+using *-max-retries* parameter when starting the API proxy. After the
 number of reties reaches the limit, an error will be returned to the
 application.
 
 ### Data Partitioning
 
-Oracle NoSQL Redis Proxy implements data distribution and scaling as specified
+Oracle NoSQL API proxy implements data distribution and scaling as specified
 in
-[Redis Cluster](https://redis.io/docs/latest/operate/oss_and_stack/management/scaling/).
+[Valkey Cluster](https://valkey.io/topics/cluster-spec/).
 The data scales horizontally by being distributed accross multiple shards.
-This is achieved by using
-[Redis Cluster Key Distribution Model](https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec/#key-distribution-model).
 
-Redis key space is split into 16384 hash slots. The data for keys belonging to
+The key space is split into 16384 hash slots. The data for keys belonging to
 the same slot is guaranteed to be stored on the same shard of Oracle NoSQL
 Database. Effectively, this means that the slot number serves as a shard key
-for particular Redis key. The slots are computed in similar mannner to Redis
+for particular Redis/Valkey key. The slots are computed in similar mannner to Redis/Valkey
 Cluster by using *CRC16(key) mod 16384*.
 
-Just as in Redis Cluster, any command that can operate on multiple keys, such
+Just as in Redis/Valkey Cluster, any command that can operate on multiple keys, such
 as MSET, MGET, DEL, etc. is only allowed when all the keys passed to it belong
 to the same slot. This corresponds to Oracle NoSQL Database requirement that
 only allows atomic operations on data that belongs to the same shard.
 
-Also, as in Redis Cluster, to facilitate creation of such keys, you can use
+Also, as in Redis/Valkey Cluster, to facilitate creation of such keys, you can use
 [Hash Tags](https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec/#hash-tags).
 So, for example, the keys such as *name:{user12345}* and *address:{user12345}*
 are guaranteed to belong to the same slot.
 
 Note that for collection types such as
 [lists](https://redis.io/docs/latest/develop/data-types/lists/) and
-[hashes](https://redis.io/docs/latest/develop/data-types/hashes/), the Redis
+[hashes](https://redis.io/docs/latest/develop/data-types/hashes/), or Valkey equivalents, the API
 proxy always stores all data belonging to the same collection on the same
 shard, corresponding to the hash slot of the collection's key.
 
-Note that like Redis Cluster, the Redis proxy does not support multiple
+Note that like Redis/Valkey Cluster, the API proxy does not support multiple
 logical databases, so commands like *SELECT* and *MOVE* are not supported.
 
-### Redis Data Types and Commands
+### Redis/Valkey Data Types and Commands
 
-The Redis proxy currently supports a limited subset of Redis types:
+The API proxy currently supports a limited subset of Redis/Valkey types:
 
 * Strings
 * Lists
 * Hashes
 * JSON
 
-The Redis proxy supports most of Redis commands for each of the above types,
-as described below. In addition, it supports most
+The API proxy supports most of Redis/Valkey commands for each of the above types,
+as described below with Redis links. In addition, it supports most
 [Generic commands](https://redis.io/docs/latest/commands/?group=generic) and
 some of
 [Connection Management commands](https://redis.io/docs/latest/commands/?group=connection)
@@ -666,7 +663,7 @@ commands. A limited number of
 [Server Management commands](https://redis.io/docs/latest/commands/?group=server)
 is also supported.
 
-As in Redis, the keys are binary strings (which can be either text or binary).
+As in Redis/Valkey, the keys are binary strings (which can be either text or binary).
 The key expiration semantics is also supported with millisecond precision.
 
 Below we will describe each of the supported command groups, which commands
@@ -674,15 +671,15 @@ are supported and their limitations.
 
 #### Size limitations
 
-Oracle NoSQL Redis Proxy imposes more stringent size limits than are in Redis.
+Oracle NoSQL API proxy imposes more stringent size limits than are in Redis/Valkey.
 
-The maximum key size is 128KB (vs 512MB in Redis). There are also limitations
+The maximum key size is 128KB (vs 512MB in Redis/Valkey). There are also limitations
 on maximum size of string values, JSON values, list elements and hash keys and
 values described in the sections below.
 
 #### Strings
 
-The Redis proxy supports most of
+The API proxy supports most of
 [String Commands](https://redis.io/docs/latest/commands/?group=string).
 
 Supported commands:
@@ -713,16 +710,16 @@ Currently not supported commands: *LCS*.
 
 There are following limitations:
 
-1. The size of the string is limited to 256KB (vs 512MB in Redis).
+1. The size of the string is limited to 256KB (vs 512MB in Redis/Valkey).
 
 2. As noted above, for multikey commands *MGET*, *MSET* and *MSETNX*, all keys
 passed to the command must belong to the same hash slot, otherwise *CROSSSLOT*
 error is returned. In addition, *MSET* and *MSETNX* allow maximum of 50 keys
 to be passed.
 
-3. Redis allows to execute unconditional *SET*, *SETEX* and other commands
+3. Redis/Valkey allows to execute unconditional *SET*, *SETEX* and other commands
 above that set a value of existing key even if the existing key holds
-different type of value. The Redis proxy allows this as well, but doing so is
+different type of value. The API proxy allows this as well, but doing so is
 problematic when an existing key holds a collection, like a list or a hash,
 because the storage for existing collection elements will not be immediately
 reclaimed. Instead, the cleanup thread will be run on the next proxy startup
@@ -737,7 +734,7 @@ deleting the key first is not recommended.
 
 #### Lists
 
-The Redis proxy suppports all of
+The API proxy suppports all of
 [List Commands](https://redis.io/docs/latest/commands/?group=list).
 
 Supported commands:
@@ -834,7 +831,7 @@ command will wait longer than it takes for data to become available in the
 list.
 
 4. For blocking list commands, when multiple clients are waiting on a key,
-there is no guaranteed order of unblocking when data arrives. Unlike Redis,
+there is no guaranteed order of unblocking when data arrives. Unlike Redis/Valkey,
 which first serves the client that has blocked on a key first, here whichever
 client happens to be polling first will get the data.
 
@@ -851,7 +848,7 @@ remote possibility.
 
 #### Hashes
 
-The Redis proxy suppports the following
+The API proxy suppports the following
 [Hash Commands](https://redis.io/docs/latest/commands/?group=hash):
 
 * HSET
@@ -902,7 +899,7 @@ elements each.
 
 #### JSON
 
-The Redis proxy supports most of
+The API proxy supports most of
 [JSON Commands](https://redis.io/docs/latest/commands/?group=json).
 
 Supported commands:
@@ -932,7 +929,7 @@ Supported commands:
 
 Commands not supported: *JSON.DEBUG*, *JSON.DEBUG MEMORY* and *JSON.RESP*.
 
-The Redis proxy uses
+The API proxy uses
 [JSON Path](https://redis.io/docs/latest/develop/data-types/json/path/) syntax
 based on path used in
 [Redis JSON](https://redis.io/docs/latest/develop/data-types/json/), with some
@@ -984,15 +981,15 @@ Besides JSON Path, there are also following restrictions and differences:
 
 1. There is limitation on maximum size of JSON value stored under a key,
 although there is not a definite limit valid for all types of NoSQL service
-which can be used by the Redis proxy. E.g. for Cloud Service, table records
+which can be used by the API proxy. E.g. for Cloud Service, table records
 are limited to maximum size of 512KB, so together, the size of the key, the
 value and additional meta information cannot exceed this limit, otherwise an
 error would be returned.
 
-2. Numeric values allow +/- Infinity and NaN. Like Redis JSON, the Redis proxy
+2. Numeric values allow +/- Infinity and NaN. Like Redis/Valkey JSON, the API proxy
 stores numeric JSON values as double precision floating point number. However,
-Redis JSON disallows non-numeric numbers such as Infinity, -Infinity and NaN,
-while the Redis proxy allows them. In particular, the values of +/- Infinity
+Redis/Valkey JSON disallows non-numeric numbers such as Infinity, -Infinity and NaN,
+while the API proxy allows them. In particular, the values of +/- Infinity
 may result when storing numeric values outside of double precision range of
 approximately +/- 1.79769E+308 or using commands *JSON.NUMINCRBY* and
 *JSON.NUMMULTBY* that would result in values outside this range.
@@ -1003,7 +1000,7 @@ In addition, *JSON.MSET* may take maximum of 50 keys.
 
 #### Generic commands
 
-The Redis proxy suppports the following
+The API proxy suppports the following
 [Generic Commands](https://redis.io/docs/latest/commands/?group=generic):
 
 * COPY
@@ -1039,9 +1036,9 @@ keys containing collections, such as lists and hashes, the deletion or copying
 of collection elements is not done atomically with the creation and/or
 deletion of the keys themselves. This does not affect concurrency or data
 integrity because the elements are bound to their keys via unique id (UUID).
-However, if the Redis proxy was terminated in the middle of such operation
+However, if the API proxy was terminated in the middle of such operation
 (e.g. deleting or copying of list elements), some stale data may remain in the
-database. The Redis proxy will try to cleanup such data at startup. This is
+database. The API proxy will try to cleanup such data at startup. This is
 controlled by command line parameter *-cleanup-on-startup* when starting the
 proxy, as described in [Command Line Parameters](#command-line-parameters)
 section.
@@ -1056,7 +1053,7 @@ command.
 
 #### Connection Management commands
 
-The Redis proxy supports limited number of
+The API proxy supports limited number of
 [Connection Management Commands](https://redis.io/docs/latest/commands/?group=connection):
 
 * PING
@@ -1068,7 +1065,7 @@ but should not be used by applications.
 
 #### Server Management Commands
 
-The Redis proxy supports the following
+The API proxy supports the following
 [Server Management Commands](https://redis.io/docs/latest/commands/?group=server):
 
 * DBSIZE
@@ -1079,18 +1076,18 @@ should not be used by applications.
 
 ## NoSQL Database Schema and Data Format
 
-The Redis proxy uses one parent table to store Redis keys and values as well
+The API proxy uses one parent table to store Redis/Valkey keys and values as well
 as two child tables to store elements of collections, for lists and hashes
-correspondingly. The tables and indexes are created the first time the Redis
+correspondingly. The tables and indexes are created the first time the API
 proxy connects to the database.
 
 ### On Encoding of Values
 
-In Redis, both keys and values are binary strings, which means they can store
+In Redis/Valkey, both keys and values are binary strings, which means they can store
 both text and arbitrary binary data. Even though, using text for keys and/or
 values is more common.
 
-The Redis proxy stores all keys and values as UTF-8 strings. This also
+The API proxy stores all keys and values as UTF-8 strings. This also
 includes list elements and hash fields and values. UTF-8 text values are
 stored as is. Binary values are stored as base-64 encoding of the value. To
 distinguish between these cases, a 1-character prefix is used, 'T' for text
@@ -1101,19 +1098,19 @@ For example:
 * String "abcde" will be stored as "Tabcde".
 * Binary value *00 00 00 00* will be stored as "BAAAAAA==".
 
-### Main Redis Table
+### Main Valkey Table
 
-The main Redis table is created as following:
+The main Valkey table is created as following:
 
 ```sql
-CREATE TABLE redis(slot INTEGER, id STRING, key JSON, value JSON,
+CREATE TABLE valkey(slot INTEGER, id STRING, key JSON, value JSON,
   PRIMARY KEY(SHARD(slot), id));
 ```
 
-Each row of this table stores information for a Redis key-value pair:
+Each row of this table stores information for a Redis/Valkey key-value pair:
 
-* Short primary key uniquely identifying the Redis key.
-* The Redis key itself.
+* Short primary key uniquely identifying the Redis/Valkey key.
+* The Redis/Valkey key itself.
 * The value, which stores both the data type and the data. The content of the
 data depends on its data type. For collection types such as lists and hashes,
 this value stores the header of the collection. The elements of the collection
@@ -1131,7 +1128,7 @@ same atomic operation.
 
 2. id - id used to uniquely identify the key. Since slot and id serve as
 primary key and the primary key can be maximum of 64 bytes, we cannot always
-use the Redis key itself (even encoded) as the value for id. Instead, the id
+use the Redis/Valkey key itself (even encoded) as the value for id. Instead, the id
 is determined as follows:
 
     The encoded value of the key is computed as described in
@@ -1154,7 +1151,7 @@ or 'H').
 
     where:
 
-    * "data" is a string that stores the full encoded value of the Redis key,
+    * "data" is a string that stores the full encoded value of the Redis/Valkey key,
 as described in [On Encoding of Values](#on-encoding-of-values) (not the
 SHA-256 digest).
     * "scanId" is 64-bit integer value that identifies the key for the purpose
@@ -1171,7 +1168,7 @@ depends on the type of value. Each value object has a "type" field that
 designates the type of value. Currently supported values for type field are:
 
     _string_, _list_, _hash_, _ReJSON-RL_ (the last one mimics the type name
-used by Redis JSON).
+used by Redis/Valkey JSON).
 
     1) For string values the format of value object is:
 
@@ -1205,21 +1202,21 @@ JSON value.
 There is an index on *scanId* to improve performance of *SCAN* command:
 
 ```sql
-CREATE INDEX scanIdIdx ON redis(key.scanId AS LONG);
+CREATE INDEX scanIdIdx ON valkey(key.scanId AS LONG);
 ```
 
 ### Child Collection Tables
 
 Because collections like lists and hashes can become very big and store many
 elements, it does not scale well to store the whole collection in one row of
-the main *redis* table. Instead, the collection elements are stored in
-separate tables *redis.lists* and *redis.hashes* which are child tables of the
-main *redis* table. Each collection element (list element or hash field-value)
+the main *valkey* table. Instead, the collection elements are stored in
+separate tables *valkey.lists* and *valkey.hashes* which are child tables of the
+main *valkey* table. Each collection element (list element or hash field-value)
 is stored in its own row.
 
-Note that *redis.lists* stores elements for all lists and *redis.hashes*
+Note that *valkey.lists* stores elements for all lists and *valkey.hashes*
 stores elements for all hashes. Since child table's primary key includes
-parent primary key, this uniquely identifies the Redis key of the collection
+parent primary key, this uniquely identifies the Redis/Valkey key of the collection
 to which an element belongs.
 
 One particular column that is present in both child tables is *cid*
@@ -1230,15 +1227,15 @@ This mapping is achived by also storing the same *cid* string as part of
 *value* object described in the previous section. This mapping is needed (even
 though there is already a parent key mapping) because operations like *DEL*,
 *COPY* and *RENAME* cannot be done atomically on large collections and the
-Redis proxy must avoid data corruption in scenarios when a Redis key holding a
+API proxy must avoid data corruption in scenarios when a Redis/Valkey key holding a
 collection is deleted and the same key is recreated (which may also hold a
 collection of the same type or a different value), which could be done by
-multiple Redis clients in a concurrent environment. Using UUID ensures unique
+multiple Redis/Valkey clients in a concurrent environment. Using UUID ensures unique
 mapping since UUID will not be reused even if a collection is deleted and new
-collection is created with the same Redis key.
+collection is created with the same Redis/Valkey key.
 
 Note that although using UUID protects data integrity, a "garbage" data may be
-left over in *redis.lists* or *redis.hashes* if the proxy is terminated in the
+left over in *valkey.lists* or *valkey.hashes* if the proxy is terminated in the
 middle of *DEL*, *COPY* or *RENAME* operation, or if one of unconditional
 *SET* commands is executed on a key holding a collection (doing this is not
 recommended). See *-cleanup-on-startup* parameter in
@@ -1246,7 +1243,7 @@ recommended). See *-cleanup-on-startup* parameter in
 
 #### Lists
 
-For Redis key holding a list, the *value* column of the main *redis* table
+For Redis/Valkey key holding a list, the *value* column of the main *valkey* table
 has the following format:
 
 ```json
@@ -1263,10 +1260,10 @@ where:
 elements as explained above.
 * "len" - 64-bit integer that stores the number of elements in the list.
 
-*redis.lists* child table is created as follows:
+*valkey.lists* child table is created as follows:
 
 ```sql
-CREATE TABLE redis.lists(elemId NUMBER, cid STRING AS UUID, value STRING,
+CREATE TABLE valkey.lists(elemId NUMBER, cid STRING AS UUID, value STRING,
   PRIMARY KEY(elemId));
 ```
 
@@ -1283,12 +1280,12 @@ The columns are:
 
 Hashes, as collections of field-value pairs, can represent objects, so using
 a small hash (with just a few field-value pairs) can be a very common use
-case. For this reason, Redis proxy optimizes storage for small hashes by
-storing them inline, inside the *value* field of the main *redis* table. If
+case. For this reason, API proxy optimizes storage for small hashes by
+storing them inline, inside the *value* field of the main *valkey* table. If
 the hash grows to exceed certain threshold size (number of elements), it is
 automatically converted to multi-row format where the *value* field of the
-main *redis* table only stores hash header and the elements (field-value
-pairs) are stored in *redis.hashes* child table, one per row.
+main *valkey* table only stores hash header and the elements (field-value
+pairs) are stored in *valkey.hashes* child table, one per row.
 
 The coversion takes place when the size exceeds threshold size of 48
 field-value pairs (chosen as such because it is maximum size at which the
@@ -1298,7 +1295,7 @@ as sum of lenghs of encoded field and value). Note that this is no backward
 conversion, i.e. if the hash becomes smaller it is not converted back to the
 inline format.
 
-For Redis key holding a hash, the *value* column of the main *redis* table
+For Redis/Valkey key holding a hash, the *value* column of the main *valkey* table
 has the following format:
 
 ```json
@@ -1323,27 +1320,27 @@ format of this field below.
 Note that fields *len* and *smallVal* are mutually exclusive as desribed
 above.
 
-*redis.hashes* child table is used to store hash entries (field-value pairs),
+*valkey.hashes* child table is used to store hash entries (field-value pairs),
 one per row, for hashes stored in regular multi-row format (not inline). It is
 created as follows:
 
 ```sql
-CREATE TABLE redis.hashes(keyId STRING, cid STRING AS UUID, key JSON,
+CREATE TABLE valkey.hashes(keyId STRING, cid STRING AS UUID, key JSON,
   value STRING, PRIMARY KEY(keyId));
 ```
 
 The columns are:
 
 1. keyId - id to uniquely identify hash entry in the given hash. It is
-analogous to the *id* column of the main *redis* table and is computed in the
-same way as described for *id* column in [Main Redis Table](#main-redis-table)
+analogous to the *id* column of the main *valkey* table and is computed in the
+same way as described for *id* column in [Main VAlkey Table](#main-valkey-table)
 section from the field of the entry.
 
 2. cid - see explanation in the beginning of
 [this section](#child-collection-tables).
 
 3. key - stores the field of the entry. This is analogous to the *key* column
-of the main *redis* table, described in [Main Redis Table](#main-redis-table)
+of the main *valkey* table, described in [Main Valkey Table](#main-valkey-table)
 section. It is a JSON object in the following format:
 
     ```json
@@ -1356,7 +1353,7 @@ section. It is a JSON object in the following format:
     where "data" is the hash field stored as string encoded as specifed in
 [On Encoding of Values](#on-encoding-of-values) and "scanId" is 64-bit
 integer used for *HSCAN* command, analogous to "scanId" field of key column
-described in [Main Redis Table](#main-redis-table) section. "exp" field may
+described in [Main Valkey Table](#main-valkey-table) section. "exp" field may
 also be added in future to support per-hash-entry expiration.
 
 4. value - the value as a string encoded as specified in
@@ -1367,12 +1364,12 @@ also be added in future to support per-hash-entry expiration.
 There is an index on *key.scanId* to improve performance of *HSCAN* command:
 
 ```sql
-CREATE INDEX hScanIdIdx ON redis.hashes(key.scanId AS LONG);
+CREATE INDEX hScanIdIdx ON valkey.hashes(key.scanId AS LONG);
 ```
 
-Going back to the case when the hash is stored inline in the main *redis*
-table (and *redis.hashes* is not used), the format of *smallVal* field of the
-*value* column mimics *keyId*, *key* and *value* columns of *redis.hashes*
+Going back to the case when the hash is stored inline in the main *valkey*
+table (and *valkey.hashes* is not used), the format of *smallVal* field of the
+*value* column mimics *keyId*, *key* and *value* columns of *valkey.hashes*
 table. The format of *smallVal* is as follows:
 
 ```json
@@ -1392,12 +1389,12 @@ table. The format of *smallVal* is as follows:
 Each field of *smallVal* is the key id of the hash entry, the value of which
 is an object containing fields "key" and "value" for corresponding hash entry.
 The format for "keyId...", "key" and "value" fields in *smallVal* is the same
-as described above for *keyId*, *key* and *value* columns of *redis.hashes*.
+as described above for *keyId*, *key* and *value* columns of *valkey.hashes*.
 
 ### JSON Format
 
 As mentioned, JSON values are stored in "json" field of *value* column in the
-main *redis* table. One caveat concerns the storage of JSON arrays. For
+main *valkey* table. One caveat concerns the storage of JSON arrays. For
 technical reasons, each array element is stored encapsulated into an object
 with field "v" storing the element value. E.g. JSON value
 
@@ -1415,7 +1412,7 @@ will be stored as
 }
 ```
 
-This applies to all arrays within the JSON value. The Redis proxy will
-transparently convert between this and regular representation, so Redis
+This applies to all arrays within the JSON value. The API proxy will
+transparently convert between this and regular representation, so Redis/Valkey
 clients will not be aware of this. This format is only seen if examining the
 table data directly.
