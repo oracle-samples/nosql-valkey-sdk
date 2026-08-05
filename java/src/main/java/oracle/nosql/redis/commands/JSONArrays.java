@@ -88,12 +88,12 @@ public class JSONArrays extends JSONCommandsBase {
         SQL_RETURNING + SQL_ARR_LENS_FMT + SQL_IS_JSON;
     private static final String SQL_SEL_ARR_LENS_FMT = DECL_KEY_ID +
         "%sSELECT " + SQL_ARR_LENS_FMT + SQL_IS_JSON +
-        " FROM redis $r WHERE " + SQL_EXISTS_COND;
+        " FROM valkey $r WHERE " + SQL_EXISTS_COND;
     private static final String SQL_SEL_ARR_INDEX_OF_FMT =
         "SELECT [seq_transform(%s, CASE WHEN $ IS OF TYPE (Array(Any)) THEN " +
         "index_of(concat(seq_transform($[%s], CASE WHEN $.v = $val THEN 1 " +
         "ELSE 0 END)), 1%s) ELSE NULL END)] AS res " + SQL_IS_JSON +
-        " FROM redis $r WHERE " + SQL_EXISTS_COND;
+        " FROM valkey $r WHERE " + SQL_EXISTS_COND;
 
     private static final String SQL_TRIM_POS_EXPR_FMT =
         "(CASE WHEN %s >= 0 THEN %s ELSE size($) + %s END)";
