@@ -49,7 +49,7 @@ public class JSONValueOps extends JSONCommandsBase {
         SQL_RETURNING + SQL_STR_LENS_FMT + SQL_IS_JSON;
     private static final String SQL_SEL_STR_LENS_FMT = DECL_KEY_ID +
         "%sSELECT " + SQL_STR_LENS_FMT + SQL_IS_JSON +
-        " FROM redis $r WHERE " + SQL_EXISTS_COND;
+        " FROM valkey $r WHERE " + SQL_EXISTS_COND;
     private static final String SQL_BOOL_TOGGLE_FMT = DECL_KEY_ID +
         "%sUPDATE redis $r SET %s = NOT $ WHERE " + SQL_EXISTS_COND +
         SQL_RETURNING + "[seq_transform(%s, CASE WHEN $ IS OF TYPE " +
@@ -65,16 +65,16 @@ public class JSONValueOps extends JSONCommandsBase {
         "WHEN $ IS OF TYPE (Map(Any)) THEN 'object' " +
         // somehow IS NULL doesn't work here
         "WHEN $ = NULL THEN 'null' " +
-        "ELSE NULL END)] AS res" + SQL_IS_JSON + " FROM redis $r WHERE " +
+        "ELSE NULL END)] AS res" + SQL_IS_JSON + " FROM valkey $r WHERE " +
         SQL_EXISTS_COND;
     private static final String SQL_SEL_OBJ_KEYS_FMT = DECL_KEY_ID +
         "%sSELECT [seq_transform(%s, CASE WHEN $ IS OF TYPE (Map(Any)) THEN " +
         "[$.keys()] ELSE NULL END)] AS res" + SQL_IS_JSON +
-        " FROM redis $r WHERE " + SQL_EXISTS_COND;
+        " FROM valkey $r WHERE " + SQL_EXISTS_COND;
     private static final String SQL_SEL_OBJ_LENS_FMT = DECL_KEY_ID +
         "%sSELECT [seq_transform(%s, CASE WHEN $ IS OF TYPE (Map(Any)) THEN " +
         "size($) ELSE NULL END)] AS res" + SQL_IS_JSON +
-        " FROM redis $r WHERE " +  SQL_EXISTS_COND;
+        " FROM valkey $r WHERE " +  SQL_EXISTS_COND;
 
     public JSONValueOps(NoSQLHandle nosqlHandle, RedisServerConfig config,
         PreparedStatementCache pstmtCache) {
