@@ -52,7 +52,7 @@ public class JSONArrays extends JSONCommandsBase {
     private static final String SQL_INS_POS_EXPR =
         "(CASE WHEN $idx >= 0 THEN $idx ELSE size($) + $idx END)";
     private static final String SQL_ARR_APP_INS_FMT =
-        " UPDATE redis $r ADD %s %s %s WHERE " + SQL_EXISTS_COND +
+        " UPDATE valkey $r ADD %s %s %s WHERE " + SQL_EXISTS_COND +
         SQL_RETURNING + SQL_ARR_LENS_FMT + SQL_IS_JSON;
     // For JSON.ARRINSERT we have to return error if index is out of bounds,
     // so we have to use additional filter to avoid update in this case. This
@@ -68,7 +68,7 @@ public class JSONArrays extends JSONCommandsBase {
         "ELSE 0 END)"; // $idx < -size($)
     private static final String SQL_ARR_POP_FMT =
         DECL_KEY_ID + SQL_POS_LONG + 
-        "%sUPDATE redis $r SET $r.value.pad = [seq_transform(%s, CASE WHEN " +
+        "%sUPDATE valkey $r SET $r.value.pad = [seq_transform(%s, CASE WHEN " +
         // Note that we return wrapped elements, so the actual value will be
         // under "v" field of the map value returned ($[%s] in THEN below).
         "$ IS OF TYPE (Array(Any)) AND size($) != 0 THEN $[%s] " +
@@ -84,7 +84,7 @@ public class JSONArrays extends JSONCommandsBase {
     // not doing this currently.
     private static final String SQL_ARR_TRIM_FMT =
         DECL_KEY_ID + SQL_START_STOP_LONG +
-        "%sUPDATE redis $r REMOVE %s[%s] WHERE " + SQL_EXISTS_COND +
+        "%sUPDATE valkey $r REMOVE %s[%s] WHERE " + SQL_EXISTS_COND +
         SQL_RETURNING + SQL_ARR_LENS_FMT + SQL_IS_JSON;
     private static final String SQL_SEL_ARR_LENS_FMT = DECL_KEY_ID +
         "%sSELECT " + SQL_ARR_LENS_FMT + SQL_IS_JSON +
