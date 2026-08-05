@@ -33,8 +33,8 @@ import static oracle.nosql.redis.util.Utils.*;
 public class ServerManagementCommands extends CommandsBase {
 
     private static final String SQL_GET_NUM_KEYS =
-        "SELECT count(*) AS res FROM redis $r WHERE " + NOT_EXPIRED;
-    private static final String SQL_DEL_ALL_KEYS = "DELETE FROM redis";
+        "SELECT count(*) AS res FROM valkey $r WHERE " + NOT_EXPIRED;
+    private static final String SQL_DEL_ALL_KEYS = "DELETE FROM valkey";
     private static final String SQL_DEL_ALL_LIST_ELEMS =
         "DELETE FROM valkey.lists";
     private static final String SQL_DEL_ALL_HASH_ELEMS =
