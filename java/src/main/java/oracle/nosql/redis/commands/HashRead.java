@@ -67,7 +67,7 @@ public class HashRead extends HashCommandsBase {
     
     private static class HashScan extends QueryScan {
 
-        // The reason we have to use JOIN and not just query of redis.hashes is
+        // The reason we have to use JOIN and not just query of valkey.hashes is
         // because we have to condition on cid to avoid returning obsolete
         // records that happen to have the same slot and keyId. This also
         // allows checking expiration time of parent key inside the query.
