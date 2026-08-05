@@ -1,8 +1,8 @@
-# Oracle NoSQL Redis Proxy
+# Oracle NoSQL Valkey/Redis API Adapter
 
-Oracle NoSQL Redis Proxy enables applications to use Oracle NoSQL Database as a Redis-compatible data store.
-It supports standard Redis clients and Redis commands while persisting Redis data structures in Oracle NoSQL Database.
-The proxy can be run as a Docker container, a standalone Java application, or embedded within Java applications.
+Oracle NoSQL Valkey/Redis API Adapter enables applications to use Oracle NoSQL Database as a Redis-compatible data store.
+It supports standard Valkey/Redis clients and Valkey/Redis commands while persisting those data structures in Oracle NoSQL Database.
+The adapter (API proxy) can be run as a Docker container, a standalone Java application, or embedded within Java applications.
 
 ## Installation
 
@@ -10,30 +10,30 @@ The proxy can be run as a Docker container, a standalone Java application, or em
 
 - Oracle NoSQL Database (Cloud Service, On-Premise, or Cloud Simulator)
 - Docker or Java 11+
-- Redis CLI or any supported Redis client
+- Valkey/Redis CLI or any supported Valkey/Redis client
 
 ### Install with Docker
 
 ```bash
-docker pull ghcr.io/oracle/nosql-redis-proxy:latest
-docker tag ghcr.io/oracle/nosql-redis-proxy oracle/nosql-redis-proxy
+docker pull ghcr.io/oracle/nosql-valkey-api:latest
+docker tag ghcr.io/oracle/nosql-valkey-api oracle/nosql-valkey-api
 ```
 
 ### Install with Maven
 
 ```xml
 <dependency>
-  <groupId>com.oracle.nosql.redis</groupId>
-  <artifactId>nosql-redis</artifactId>
+  <groupId>com.oracle.nosql.valkey</groupId>
+  <artifactId>nosql-valkey</artifactId>
   <version>latest-version</version>
 </dependency>
 ```
 
-After installation, start the Redis Proxy using Docker or Java and connect with any Redis-compatible client.
+After installation, start the API Proxy using Docker or Java and connect with any compatible client.
 
 ## Documentation
 
-For complete installation instructions, configuration options, supported Redis commands, and usage examples, see the Oracle NoSQL Database documentation:
+For complete installation instructions, configuration options, supported Valkey/Redis commands, and usage examples, see the Oracle NoSQL Database documentation:
 
 - https://docs.oracle.com/en/database/other-databases/nosql-database/
 
@@ -44,9 +44,9 @@ Developer documentation and additional guides are available in this repository.
 The project includes examples demonstrating how to:
 
 - Start Oracle NoSQL Database
-- Run the Redis Proxy
-- Connect using `redis-cli`
-- Execute common Redis commands, including:
+- Run the API Proxy
+- Connect using 'valkey-cli'/`redis-cli`
+- Execute common Valkey/Redis commands, including:
   - Strings (`SET`, `GET`)
   - Lists
   - Hashes
