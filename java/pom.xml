@@ -2,12 +2,12 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
-  <groupId>com.oracle.nosql.redis</groupId>
-  <artifactId>nosql-redis</artifactId>
+  <groupId>com.oracle.nosql.valkey</groupId>
+  <artifactId>nosql-valkey</artifactId>
   <version>0.1.0</version>
 
-  <name>Oracle NoSQL Redis SDK</name>
-  <description>Redis SDK for Oracle NoSQL Database</description>
+  <name>Oracle NoSQL Valkey API Adapter</name>
+  <description>Valkey API Adapter for Oracle NoSQL Database</description>
 
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -16,7 +16,7 @@
     <copyright>Copyright (c) 2026 Oracle and/or its affiliates. All rights reserved.</copyright>
 
     <!-- dependency versions -->
-    <netty.version>4.1.135.Final</netty.version>
+    <netty.version>4.1.136.Final</netty.version>
     <antlr.version>4.13.2</antlr.version>
     <re2j.version>1.8</re2j.version>
     <jackson.version>2.18.7</jackson.version>
