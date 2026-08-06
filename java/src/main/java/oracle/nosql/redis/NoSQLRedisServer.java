@@ -34,7 +34,7 @@ import oracle.nosql.driver.ops.TableResult;
 import oracle.nosql.redis.util.Utils;
 
 /**
- * This class represents NoSQL Redis proxy. You can use it to run the proxy
+ * This class represents NoSQL Valkey api proxy. You can use it to run the proxy
  * within your application's process. For example:
  * <pre>
  *     import oracle.nosql.driver.NoSQLHandleConfig;
@@ -194,7 +194,7 @@ public class NoSQLRedisServer {
             throw ex;
         }
 
-        logger.info(String.format("Started Redis Proxy on %s:%d",
+        logger.info(String.format("Started Valkey API Proxy on %s:%d",
             config.getHost(), config.getPort()));
     }
 
@@ -271,11 +271,11 @@ public class NoSQLRedisServer {
             if (!cmdWorkerPool.awaitTermination(HARD_TIMEOUT_MILLIS,
                 TimeUnit.MILLISECONDS)) {
                 System.err.println(
-                    "Timeout waiting to shut down Redis proxy worker pool");
+                    "Timeout waiting to shut down Valkey api proxy worker pool");
             }
         } catch (InterruptedException ex) {
             System.err.println(
-                "Waiting for shut down of Redis proxy worker pool was " +
+                "Waiting for shut down of Valkey api proxy worker pool was " +
                 "interrupted");
         }
 
@@ -307,12 +307,12 @@ public class NoSQLRedisServer {
     }
 
     /**
-     * Creates and starts NoSQL Redis proxy.
+     * Creates and starts NoSQL Valkey api proxy.
      * @param config Configuration object that specifies the parameters used
-     * to start NoSQL Redis proxy.
+     * to start NoSQL Valkey api proxy.
      * @return New instance of {@link NoSQLRedisServer} representing running
-     * Redis proxy
-     * @throws RuntimeException if the Redis proxy failed to start, in which
+     * Valkey api proxy
+     * @throws RuntimeException if the Valkey api proxy failed to start, in which
      * case the resources are released and the exception is rethrown back to
      * the caller
      */
@@ -323,7 +323,7 @@ public class NoSQLRedisServer {
     }
 
     /**
-     * Stops NoSQL Redis proxy.
+     * Stops NoSQL Valkey api proxy.
      * <p>
      * This method tries to perform a soft shutdown within the specified
      * timeout, which allows currently executing commands to finish. If soft
@@ -354,18 +354,18 @@ public class NoSQLRedisServer {
         }
 
         // This method is used in shutdown hook, thus not using logger.
-        System.out.println("\nStopping Redis Proxy...");
+        System.out.println("\nStopping Valkey api proxy...");
 
         try {
             if (!softStop(timeoutMillis)) {
                 System.err.println(
-                    "Soft stop of Redis proxy timed out after " +
+                    "Soft stop of Valkey api proxy timed out after " +
                     timeoutMillis + "ms, performing hard stop...");
                 hardStop();
                 return false;
             };
         } catch (Exception ex) {
-            System.err.println("Exception during soft stop of Redis Proxy: " +
+            System.err.println("Exception during soft stop of Valkey api proxy: " +
                 ex);
             System.err.println("Performing hard stop...");
             hardStop();
@@ -375,12 +375,12 @@ public class NoSQLRedisServer {
             throw ex;
         }
 
-        System.out.println("Stopped Redis Proxy");
+        System.out.println("Stopped Valkey api proxy");
         return true;
     }
 
     /**
-     * Stops NoSQL Redis proxy using default timeout of five seconds. This
+     * Stops NoSQL Valkey api proxy using default timeout of five seconds. This
      * method behaves the same as {@link #stop(long)} and performs hard
      * shutdown if soft shutdown timed out or failed for another reason.
      * @throws InterruptedException if the current thread was interrupted
@@ -391,10 +391,10 @@ public class NoSQLRedisServer {
     }
 
     /**
-     * Returns whether NoSQL Redis proxy is stopped. You cannot reuse stopped
+     * Returns whether NoSQL Valkey api proxy is stopped. You cannot reuse stopped
      * proxy. Call {@link #startServer(RedisServerConfig)} to create a new
      * instance.
-     * @return {@code true} if NoSQL Redis proxy is stopped, otherwise
+     * @return {@code true} if NoSQL Valkey api proxy is stopped, otherwise
      * {@code false}
      */
     public boolean isStopped() {
@@ -426,7 +426,7 @@ public class NoSQLRedisServer {
             }));
             svr.waitForStop();
         } catch (Throwable ex) {
-            System.err.println("Redis Proxy Server exited with error:");
+            System.err.println("Valkey API Proxy Server exited with error:");
             ex.printStackTrace(System.err);
             System.exit(1);
         }
