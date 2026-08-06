@@ -12,7 +12,7 @@ import oracle.nosql.driver.ops.TableLimits;
 
 /**
  * RedisServerConfig specifies configuration parameters needed to start NoSQL
- * Redis Proxy. The instances of this class are immutable. The only required
+ * Valkey API Proxy. The instances of this class are immutable. The only required
  * configuration parameter is NoSQLHandleConfig instance that specifies the
  * configuration needed to connect to Oracle NoSQL Database. For other
  * parameters, if not specified, the default values are used. See the public
@@ -62,7 +62,7 @@ public class RedisServerConfig {
     public static final int DEFAULT_MAX_ATOMIC_RETRIES = 100;
 
     /**
-     * Default value determining whether, on Redis proxy startup, to run a
+     * Default value determining whether, on Valkey api proxy startup, to run a
      * background cleanup thread that will check for and purge any abandoned
      * collection element data that was left due to previous abnormal
      * termination. The default is {@code true}.
@@ -85,15 +85,15 @@ public class RedisServerConfig {
      * specified, the defaults will be used. When the table already exists and
      * this parameter is specified, it is used to update the table limits of
      * the table.
-     * @param host hostname or ip address on which the Redis proxy will listen
+     * @param host hostname or ip address on which the Valkey api proxy will listen
      * for client connections.
-     * @param port port number on which the Redis proxy will listen for client
+     * @param port port number on which the Valkey api proxy will listen for client
      * connections.
      * @param maxAtomicRetries the limit on the number of retries of certain
      * operations if version mismatch is detected due to concurrent operation
      * on the same key. After the limit is reached, an error will be returned
      * to the application.
-     * @param cleanupElemsTablesOnStartup whether, on Redis proxy startup, to
+     * @param cleanupElemsTablesOnStartup whether, on Valkey api proxy startup, to
      * run a background cleanup thread that will check for and purge any
      * abandoned collection element data that was left due to previous
      * abnormal termination.
@@ -168,7 +168,7 @@ public class RedisServerConfig {
 
 
     /**
-     * Returns hostname or ip address on which the Redis proxy listens for
+     * Returns hostname or ip address on which the Valkey api proxy listens for
      * client connections.
      * @return host name or ip address
      */
@@ -177,7 +177,7 @@ public class RedisServerConfig {
     }
 
     /**
-     * Returns port on which Redis proxy listens for client connections.
+     * Returns port on which Valkey api proxy listens for client connections.
      * @return port number
      */
     public int getPort() {
@@ -195,7 +195,7 @@ public class RedisServerConfig {
     }
 
     /**
-     * Returns whether, on Redis proxy startup, to run a background cleanup
+     * Returns whether, on Valkey api proxy startup, to run a background cleanup
      * thread that will check for and purge any abandoned collection element
      * data that was left due to previous abnormal termination.
      * @return {@code true} to run background cleanup thread on startup,
