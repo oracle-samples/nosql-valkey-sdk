@@ -5,7 +5,7 @@
  *  https://oss.oracle.com/licenses/upl/
  */
 
-package oracle.nosql.redis;
+package oracle.nosql.valkey;
 
 import java.util.concurrent.ExecutorService;
 import io.netty.channel.ChannelFuture;
