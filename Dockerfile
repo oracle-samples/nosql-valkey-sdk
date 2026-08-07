@@ -11,8 +11,8 @@ ARG BUILD_DATE
 ARG VCS_REF
 ARG VERSION=${JAR_VER}
 
-LABEL org.opencontainers.image.title="Oracle NoSQL Redis Proxy" \
-      org.opencontainers.image.description="Redis protocol proxy for Oracle NoSQL Database" \
+LABEL org.opencontainers.image.title="Oracle NoSQL Valkey API Adapter" \
+      org.opencontainers.image.description="Valkey protocol api adapter for Oracle NoSQL Database" \
       org.opencontainers.image.vendor="Oracle" \
       org.opencontainers.image.authors="Oracle" \
       org.opencontainers.image.version="${VERSION}" \
@@ -24,23 +24,23 @@ LABEL org.opencontainers.image.title="Oracle NoSQL Redis Proxy" \
       org.opencontainers.image.documentation="https://github.com/<org>/<repo>/README.md"
 
 RUN groupadd --system oracle \
- && useradd --system --gid oracle --create-home --home-dir /redis redis
+ && useradd --system --gid oracle --create-home --home-dir /valkey valkey
 
-WORKDIR /redis
+WORKDIR /valkey
 
-ENV NOSQL_REDIS_PROXY_IN_CONTAINER=true
+ENV NOSQL_VALKEY_ADAPTER_IN_CONTAINER=true
 
-COPY --chown=redis:oracle \
-    java/target/nosql-redis-${JAR_VER}-jar-with-dependencies.jar \
-    /redis/nosql-redis-jar-with-dependencies.jar
+COPY --chown=valkey:oracle \
+    java/target/nosql-valkey-${JAR_VER}-jar-with-dependencies.jar \
+    /valkey/nosql-valkey-jar-with-dependencies.jar
 
-USER redis:oracle
+USER valkey:oracle
 
 EXPOSE 6379
 
 ENTRYPOINT [ \
   "java", \
   "-cp", \
-  "/redis/nosql-redis-jar-with-dependencies.jar", \
-  "oracle.nosql.redis.NoSQLRedisServer" \
+  "/valkey/nosql-valkey-jar-with-dependencies.jar", \
+  "oracle.nosql.valkey.NoSQLRedisServer" \
 ]
