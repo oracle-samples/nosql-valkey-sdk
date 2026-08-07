@@ -1,5 +1,5 @@
 // Generated from JSONPath.g4 by ANTLR 4.13.2
-package oracle.nosql.redis.commands.jsonpath.parser;
+package oracle.nosql.valkey.commands.jsonpath.parser;
 import org.antlr.v4.runtime.atn.*;
 import org.antlr.v4.runtime.dfa.DFA;
 import org.antlr.v4.runtime.*;

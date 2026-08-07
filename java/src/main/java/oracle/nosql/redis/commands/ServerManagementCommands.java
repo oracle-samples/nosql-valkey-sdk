@@ -5,7 +5,7 @@
  *  https://oss.oracle.com/licenses/upl/
  */
 
-package oracle.nosql.redis.commands;
+package oracle.nosql.valkey.commands;
 
 import java.time.Instant;
 import java.util.ArrayList;

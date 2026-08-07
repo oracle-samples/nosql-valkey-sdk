@@ -5,7 +5,7 @@
  *  https://oss.oracle.com/licenses/upl/
  */
 
-package oracle.nosql.redis.commands.jsonpath;
+package oracle.nosql.valkey.commands.jsonpath;
 
 import java.util.*;
 import java.util.regex.Pattern;

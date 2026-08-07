@@ -5,7 +5,7 @@
  *  https://oss.oracle.com/licenses/upl/
  */
 
-package oracle.nosql.redis.util;
+package oracle.nosql.valkey.util;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
