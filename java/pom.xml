@@ -113,7 +113,7 @@
           <listener>false</listener>
           <arguments>
             <argument>-package</argument>
-            <argument>oracle.nosql.redis.commands.jsonpath.parser</argument>
+            <argument>oracle.nosql.valkey.commands.jsonpath.parser</argument>
           </arguments>
         </configuration>
         <executions>
@@ -140,7 +140,7 @@
           <archive>
             <manifest>
               <addClasspath>true</addClasspath>
-              <mainClass>oracle.nosql.redis.NoSQLRedisServer</mainClass>
+              <mainClass>oracle.nosql.valkey.NoSQLRedisServer</mainClass>
             </manifest>
           </archive>
         </configuration>
@@ -183,7 +183,7 @@
           </sourceFileIncludes>
           <show>public</show>
           <header>
-            <![CDATA[<b>Oracle NoSQL Redis Proxy</b><br><font size=\"-1\"> Version ${project.version} ${maven.build.timestamp}</font>]]>
+            <![CDATA[<b>Oracle NoSQL Valkey API Adapter</b><br><font size=\"-1\"> Version ${project.version} ${maven.build.timestamp}</font>]]>
           </header>
           <bottom><![CDATA[<font size=1>${copyright}</font>]]></bottom>
         </configuration>
