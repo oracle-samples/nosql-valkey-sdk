@@ -295,7 +295,7 @@ class CommandLine {
     }
 
     private static void setDefaultLoggerConfig() {
-        Logger.getLogger("oracle.nosql.redis").setLevel(Level.INFO);
+        Logger.getLogger("oracle.nosql.valkey").setLevel(Level.INFO);
         Logger.getLogger("oracle.nosql.driver").setLevel(Level.WARNING);
         Logger.getLogger("io.netty").setLevel(Level.WARNING);
     }
@@ -494,7 +494,7 @@ class CommandLine {
 
         StringBuilder sb = new StringBuilder();
 
-        sb.append("Usage: java oracle.nosql.redis.NoSQLRedisServer ");
+        sb.append("Usage: java oracle.nosql.valkey.NoSQLRedisServer ");
         sb.append(startArg).append(ARG_REGION).append(" <region>")
             .append(orSep).append(ARG_ENDPOINT).append(" <endpoint>")
             .append(endArg);
