@@ -47,7 +47,7 @@ public class ServerManagementCommands extends CommandsBase {
         "rdb_bgsave_in_progress:0"
     };
     private static final String[] INFO_SERVER_DATA = {
-        "redis_version:7.2.0"
+        "valkey_version:7.2.5"
     };
 
     private static final String[] INFO_ALL_SECTS = {
