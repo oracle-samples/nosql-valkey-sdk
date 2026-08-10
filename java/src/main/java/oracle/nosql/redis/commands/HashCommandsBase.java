@@ -84,7 +84,7 @@ public class HashCommandsBase extends CollectionCommandsBase {
         "$h.slot = $slot AND $h.id = $id ";
     protected static final String WHERE_H_PK_COND = SQL_WHERE + H_PK_COND;
     protected static final String FROM_JOIN_WHERE_H_PK =
-        "FROM NESTED TABLES(valkey.hashes $h ANCESTORS(redis $r)) " +
+        "FROM NESTED TABLES(valkey.hashes $h ANCESTORS(valkey $r)) " +
             WHERE_H_PK_COND + "AND $h.cid = $r.value.cid ";
 
     protected static final String SQL_ENTRIES_FMT = DECL_KEY_ID +
