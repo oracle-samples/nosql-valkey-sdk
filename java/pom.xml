@@ -104,11 +104,11 @@
         <artifactId>antlr4-maven-plugin</artifactId>
         <version>${antlr.version}</version>
         <configuration>
-          <sourceDirectory>src/main/java/oracle/nosql/redis/commands/jsonpath/parser</sourceDirectory>
+          <sourceDirectory>src/main/java/oracle/nosql/valkey/commands/jsonpath/parser</sourceDirectory>
           <includes>
             <include>JSONPath.g4</include>
           </includes>
-          <outputDirectory>src/main/java/oracle/nosql/redis/commands/jsonpath/parser</outputDirectory>
+          <outputDirectory>src/main/java/oracle/nosql/valkey/commands/jsonpath/parser</outputDirectory>
           <visitor>true</visitor>
           <listener>false</listener>
           <arguments>
@@ -178,8 +178,8 @@
           <doctitle>${project.name} ${project.version}</doctitle>
           <windowtitle>${project.name} ${project.version}</windowtitle>
           <sourceFileIncludes>
-            <sourceFileInclude>**/oracle/nosql/redis/NoSQLRedisServer.java</sourceFileInclude>
-            <sourceFileInclude>**/oracle/nosql/redis/RedisServerConfig.java</sourceFileInclude>
+            <sourceFileInclude>**/oracle/nosql/valkey/NoSQLRedisServer.java</sourceFileInclude>
+            <sourceFileInclude>**/oracle/nosql/valkey/RedisServerConfig.java</sourceFileInclude>
           </sourceFileIncludes>
           <show>public</show>
           <header>
