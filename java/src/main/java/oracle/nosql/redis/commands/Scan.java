@@ -19,10 +19,10 @@ import io.netty.handler.codec.redis.FullBulkStringRedisMessage;
 import io.netty.handler.codec.redis.RedisMessage;
 import io.netty.util.CharsetUtil;
 import oracle.nosql.driver.values.MapValue;
-import oracle.nosql.redis.RedisResponseException;
-import oracle.nosql.redis.RedisResponseException.ErrorPrefix;
-import oracle.nosql.redis.util.Utils;
-import oracle.nosql.redis.util.Utils.ThrowingPredicate;
+import oracle.nosql.valkey.RedisResponseException;
+import oracle.nosql.valkey.RedisResponseException.ErrorPrefix;
+import oracle.nosql.valkey.util.Utils;
+import oracle.nosql.valkey.util.Utils.ThrowingPredicate;
 
 abstract class Scan extends CommandsBase implements AutoCloseable {
     

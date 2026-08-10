@@ -17,17 +17,17 @@ import oracle.nosql.driver.NoSQLHandle;
 import oracle.nosql.driver.TimeToLive;
 import oracle.nosql.driver.ops.*;
 import oracle.nosql.driver.values.*;
-import oracle.nosql.redis.CommandHandlers;
-import oracle.nosql.redis.CommandHandlers.CommandHandler;
-import oracle.nosql.redis.NoSQLRedisServer;
-import oracle.nosql.redis.RawCommand;
-import oracle.nosql.redis.RedisClientContext;
-import oracle.nosql.redis.RedisResponseException;
-import oracle.nosql.redis.RedisResponseException.ErrorPrefix;
-import oracle.nosql.redis.util.PreparedStatementCache;
-import oracle.nosql.redis.util.Utils;
-import oracle.nosql.redis.util.Utils.ThrowingPredicate;
-import oracle.nosql.redis.util.Utils.RedisRetryException;
+import oracle.nosql.valkey.CommandHandlers;
+import oracle.nosql.valkey.CommandHandlers.CommandHandler;
+import oracle.nosql.valkey.NoSQLRedisServer;
+import oracle.nosql.valkey.RawCommand;
+import oracle.nosql.valkey.RedisClientContext;
+import oracle.nosql.valkey.RedisResponseException;
+import oracle.nosql.valkey.RedisResponseException.ErrorPrefix;
+import oracle.nosql.valkey.util.PreparedStatementCache;
+import oracle.nosql.valkey.util.Utils;
+import oracle.nosql.valkey.util.Utils.ThrowingPredicate;
+import oracle.nosql.valkey.util.Utils.RedisRetryException;
 
 import static oracle.nosql.redis.util.Utils.*;
 

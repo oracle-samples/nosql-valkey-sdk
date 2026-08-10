@@ -16,7 +16,7 @@ import io.netty.channel.group.ChannelGroup;
 import io.netty.handler.codec.redis.ErrorRedisMessage;
 import io.netty.handler.codec.redis.RedisMessage;
 import io.netty.util.ReferenceCountUtil;
-import oracle.nosql.redis.CommandHandlers.CommandHandler;
+import oracle.nosql.valkey.CommandHandlers.CommandHandler;
 
 class RedisServerHandler extends SimpleChannelInboundHandler<RedisMessage> {
 

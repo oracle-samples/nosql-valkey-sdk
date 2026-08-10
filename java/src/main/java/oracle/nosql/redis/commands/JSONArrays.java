@@ -23,13 +23,13 @@ import oracle.nosql.driver.values.FieldValue;
 import oracle.nosql.driver.values.IntegerValue;
 import oracle.nosql.driver.values.LongValue;
 import oracle.nosql.driver.values.MapValue;
-import oracle.nosql.redis.CommandHandlers.CommandHandler;
-import oracle.nosql.redis.RawCommand;
-import oracle.nosql.redis.RedisClientContext;
-import oracle.nosql.redis.RedisResponseException;
-import oracle.nosql.redis.RedisServerConfig;
-import oracle.nosql.redis.util.PreparedStatementCache;
-import oracle.nosql.redis.util.Utils;
+import oracle.nosql.valkey.CommandHandlers.CommandHandler;
+import oracle.nosql.valkey.RawCommand;
+import oracle.nosql.valkey.RedisClientContext;
+import oracle.nosql.valkey.RedisResponseException;
+import oracle.nosql.valkey.RedisServerConfig;
+import oracle.nosql.valkey.util.PreparedStatementCache;
+import oracle.nosql.valkey.util.Utils;
 
 public class JSONArrays extends JSONCommandsBase {
 

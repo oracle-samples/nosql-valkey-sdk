@@ -16,8 +16,8 @@ import io.netty.handler.codec.redis.FullBulkStringRedisMessage;
 import io.netty.handler.codec.redis.InlineCommandRedisMessage;
 import io.netty.handler.codec.redis.RedisMessage;
 import io.netty.util.CharsetUtil;
-import oracle.nosql.redis.RedisResponseException.ErrorPrefix;
-import oracle.nosql.redis.util.Utils;
+import oracle.nosql.valkey.RedisResponseException.ErrorPrefix;
+import oracle.nosql.valkey.util.Utils;
 
 public class RawCommand {
 	

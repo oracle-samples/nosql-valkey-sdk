@@ -22,13 +22,13 @@ import oracle.nosql.driver.ops.PutRequest;
 import oracle.nosql.driver.ops.WriteMultipleRequest;
 import oracle.nosql.driver.ops.WriteMultipleResult;
 import oracle.nosql.driver.values.*;
-import oracle.nosql.redis.*;
-import oracle.nosql.redis.CommandHandlers.CommandHandler;
-import oracle.nosql.redis.commands.jsonpath.JSONPathValueVisitor;
-import oracle.nosql.redis.util.JSONSerializer;
-import oracle.nosql.redis.util.PreparedStatementCache;
-import oracle.nosql.redis.util.Utils;
-import oracle.nosql.redis.util.Utils.RedisRetryException;
+import oracle.nosql.valkey.*;
+import oracle.nosql.valkey.CommandHandlers.CommandHandler;
+import oracle.nosql.valkey.commands.jsonpath.JSONPathValueVisitor;
+import oracle.nosql.valkey.util.JSONSerializer;
+import oracle.nosql.valkey.util.PreparedStatementCache;
+import oracle.nosql.valkey.util.Utils;
+import oracle.nosql.valkey.util.Utils.RedisRetryException;
 import org.antlr.v4.runtime.tree.ParseTree;
 
 public class JSONGetSet extends JSONCommandsBase {

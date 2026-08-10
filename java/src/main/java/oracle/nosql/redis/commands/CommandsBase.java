@@ -36,16 +36,16 @@ import oracle.nosql.driver.values.IntegerValue;
 import oracle.nosql.driver.values.LongValue;
 import oracle.nosql.driver.values.MapValue;
 import oracle.nosql.driver.values.StringValue;
-import oracle.nosql.redis.CommandHandlers.CommandHandler;
-import oracle.nosql.redis.NoSQLRedisServer;
-import oracle.nosql.redis.RawCommand;
-import oracle.nosql.redis.RedisResponseException;
-import oracle.nosql.redis.RedisResponseException.ErrorPrefix;
-import oracle.nosql.redis.RedisServerConfig;
-import oracle.nosql.redis.util.PreparedStatementCache;
-import oracle.nosql.redis.util.Utils;
-import oracle.nosql.redis.util.Utils.ThrowingConsumer;
-import oracle.nosql.redis.util.Utils.ThrowingFunction;
+import oracle.nosql.valkey.CommandHandlers.CommandHandler;
+import oracle.nosql.valkey.NoSQLRedisServer;
+import oracle.nosql.valkey.RawCommand;
+import oracle.nosql.valkey.RedisResponseException;
+import oracle.nosql.valkey.RedisResponseException.ErrorPrefix;
+import oracle.nosql.valkey.RedisServerConfig;
+import oracle.nosql.valkey.util.PreparedStatementCache;
+import oracle.nosql.valkey.util.Utils;
+import oracle.nosql.valkey.util.Utils.ThrowingConsumer;
+import oracle.nosql.valkey.util.Utils.ThrowingFunction;
 
 import static oracle.nosql.redis.util.Utils.*;
 

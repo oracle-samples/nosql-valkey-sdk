@@ -31,7 +31,7 @@ import oracle.nosql.driver.NoSQLHandleFactory;
 import oracle.nosql.driver.ops.TableLimits;
 import oracle.nosql.driver.ops.TableRequest;
 import oracle.nosql.driver.ops.TableResult;
-import oracle.nosql.redis.util.Utils;
+import oracle.nosql.valkey.util.Utils;
 
 /**
  * This class represents NoSQL Valkey api proxy. You can use it to run the proxy

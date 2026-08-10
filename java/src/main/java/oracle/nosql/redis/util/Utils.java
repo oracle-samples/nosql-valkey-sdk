@@ -26,8 +26,8 @@ import oracle.nosql.driver.ops.TableLimits;
 import oracle.nosql.driver.values.ArrayValue;
 import oracle.nosql.driver.values.FieldValue;
 import oracle.nosql.driver.values.MapValue;
-import oracle.nosql.redis.RedisResponseException;
-import oracle.nosql.redis.RedisResponseException.ErrorPrefix;
+import oracle.nosql.valkey.RedisResponseException;
+import oracle.nosql.valkey.RedisResponseException.ErrorPrefix;
 
 public class Utils {
 

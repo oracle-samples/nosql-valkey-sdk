@@ -17,7 +17,7 @@ import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.JsonToken;
 import com.fasterxml.jackson.core.json.JsonReadFeature;
 import oracle.nosql.driver.values.*;
-import oracle.nosql.redis.RedisResponseException;
+import oracle.nosql.valkey.RedisResponseException;
 
 public class JSONDeserializer {
 

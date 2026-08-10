@@ -29,13 +29,13 @@ import oracle.nosql.driver.values.FieldValue;
 import oracle.nosql.driver.values.IntegerValue;
 import oracle.nosql.driver.values.MapValue;
 import oracle.nosql.driver.values.StringValue;
-import oracle.nosql.redis.*;
-import oracle.nosql.redis.CommandHandlers.CommandHandler;
-import oracle.nosql.redis.RedisResponseException.ErrorPrefix;
-import oracle.nosql.redis.util.PreparedStatementCache;
-import oracle.nosql.redis.util.Utils;
-import oracle.nosql.redis.util.Utils.RedisRetryException;
-import oracle.nosql.redis.util.Utils.ThrowingFunction;
+import oracle.nosql.valkey.*;
+import oracle.nosql.valkey.CommandHandlers.CommandHandler;
+import oracle.nosql.valkey.RedisResponseException.ErrorPrefix;
+import oracle.nosql.valkey.util.PreparedStatementCache;
+import oracle.nosql.valkey.util.Utils;
+import oracle.nosql.valkey.util.Utils.RedisRetryException;
+import oracle.nosql.valkey.util.Utils.ThrowingFunction;
 
 import static oracle.nosql.redis.util.Utils.getStringField;
 

@@ -14,9 +14,9 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.group.ChannelGroup;
 import io.netty.handler.codec.redis.RedisMessage;
 import oracle.nosql.driver.NoSQLHandle;
-import oracle.nosql.redis.commands.*;
-import oracle.nosql.redis.util.PreparedStatementCache;
-import oracle.nosql.redis.util.Utils.ThrowingBiFunction;
+import oracle.nosql.valkey.commands.*;
+import oracle.nosql.valkey.util.PreparedStatementCache;
+import oracle.nosql.valkey.util.Utils.ThrowingBiFunction;
 
 public class CommandHandlers {
 	

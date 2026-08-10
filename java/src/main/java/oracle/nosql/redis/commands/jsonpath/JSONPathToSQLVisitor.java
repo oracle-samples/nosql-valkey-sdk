@@ -22,15 +22,15 @@ import oracle.nosql.driver.JsonParseException;
 import oracle.nosql.driver.values.FieldValue;
 import oracle.nosql.driver.values.IntegerValue;
 import oracle.nosql.driver.values.StringValue;
-import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser;
-import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.AndExprContext;
-import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.ArraySelectorContext;
-import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.BasicExprContext;
-import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.CompContext;
-import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.FilterExprContext;
-import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.MapSelectorContext;
-import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.PathOrValContext;
-import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.SegmentsContext;
+import oracle.nosql.valkey.commands.jsonpath.parser.JSONPathParser;
+import oracle.nosql.valkey.commands.jsonpath.parser.JSONPathParser.AndExprContext;
+import oracle.nosql.valkey.commands.jsonpath.parser.JSONPathParser.ArraySelectorContext;
+import oracle.nosql.valkey.commands.jsonpath.parser.JSONPathParser.BasicExprContext;
+import oracle.nosql.valkey.commands.jsonpath.parser.JSONPathParser.CompContext;
+import oracle.nosql.valkey.commands.jsonpath.parser.JSONPathParser.FilterExprContext;
+import oracle.nosql.valkey.commands.jsonpath.parser.JSONPathParser.MapSelectorContext;
+import oracle.nosql.valkey.commands.jsonpath.parser.JSONPathParser.PathOrValContext;
+import oracle.nosql.valkey.commands.jsonpath.parser.JSONPathParser.SegmentsContext;
 
 public class JSONPathToSQLVisitor extends JSONPathVisitorBase<String> {
 

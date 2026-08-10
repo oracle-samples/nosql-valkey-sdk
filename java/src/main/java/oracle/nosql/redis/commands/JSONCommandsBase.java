@@ -15,8 +15,8 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 import oracle.nosql.driver.RowSizeLimitException;
-import oracle.nosql.redis.RedisServerConfig;
-import oracle.nosql.redis.util.JSONDeserializer;
+import oracle.nosql.valkey.RedisServerConfig;
+import oracle.nosql.valkey.util.JSONDeserializer;
 import org.antlr.v4.runtime.*;
 import org.antlr.v4.runtime.tree.ParseTree;
 
@@ -36,13 +36,13 @@ import oracle.nosql.driver.values.IntegerValue;
 import oracle.nosql.driver.values.JsonNullValue;
 import oracle.nosql.driver.values.MapValue;
 import oracle.nosql.driver.values.StringValue;
-import oracle.nosql.redis.RedisResponseException;
-import oracle.nosql.redis.RedisResponseException.ErrorPrefix;
-import oracle.nosql.redis.commands.jsonpath.JSONPathToSQLVisitor;
-import oracle.nosql.redis.commands.jsonpath.parser.JSONPathLexer;
-import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser;
-import oracle.nosql.redis.util.PreparedStatementCache;
-import oracle.nosql.redis.util.Utils;
+import oracle.nosql.valkey.RedisResponseException;
+import oracle.nosql.valkey.RedisResponseException.ErrorPrefix;
+import oracle.nosql.valkey.commands.jsonpath.JSONPathToSQLVisitor;
+import oracle.nosql.valkey.commands.jsonpath.parser.JSONPathLexer;
+import oracle.nosql.valkey.commands.jsonpath.parser.JSONPathParser;
+import oracle.nosql.valkey.util.PreparedStatementCache;
+import oracle.nosql.valkey.util.Utils;
 
 import static oracle.nosql.redis.util.Utils.*;
 

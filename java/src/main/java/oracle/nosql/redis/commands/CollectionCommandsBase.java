@@ -22,12 +22,12 @@ import oracle.nosql.driver.ops.QueryResult;
 import oracle.nosql.driver.ops.WriteMultipleRequest;
 import oracle.nosql.driver.ops.WriteMultipleResult;
 import oracle.nosql.driver.values.*;
-import oracle.nosql.redis.NoSQLRedisServer;
-import oracle.nosql.redis.RedisResponseException;
-import oracle.nosql.redis.RedisServerConfig;
-import oracle.nosql.redis.util.PreparedStatementCache;
-import oracle.nosql.redis.util.Utils;
-import oracle.nosql.redis.util.Utils.ThrowingFunction;
+import oracle.nosql.valkey.NoSQLRedisServer;
+import oracle.nosql.valkey.RedisResponseException;
+import oracle.nosql.valkey.RedisServerConfig;
+import oracle.nosql.valkey.util.PreparedStatementCache;
+import oracle.nosql.valkey.util.Utils;
+import oracle.nosql.valkey.util.Utils.ThrowingFunction;
 
 abstract class CollectionCommandsBase extends CommandsBase {
 

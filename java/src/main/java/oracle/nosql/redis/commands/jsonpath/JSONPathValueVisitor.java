@@ -16,13 +16,13 @@ import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
 import oracle.nosql.driver.JsonParseException;
-import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser;
-import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.AndExprContext;
-import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.BasicExprContext;
-import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.CompContext;
-import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.FilterExprContext;
-import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.PathOrValContext;
-import oracle.nosql.redis.commands.jsonpath.parser.JSONPathParser.SegmentsContext;
+import oracle.nosql.valkey.commands.jsonpath.parser.JSONPathParser;
+import oracle.nosql.valkey.commands.jsonpath.parser.JSONPathParser.AndExprContext;
+import oracle.nosql.valkey.commands.jsonpath.parser.JSONPathParser.BasicExprContext;
+import oracle.nosql.valkey.commands.jsonpath.parser.JSONPathParser.CompContext;
+import oracle.nosql.valkey.commands.jsonpath.parser.JSONPathParser.FilterExprContext;
+import oracle.nosql.valkey.commands.jsonpath.parser.JSONPathParser.PathOrValContext;
+import oracle.nosql.valkey.commands.jsonpath.parser.JSONPathParser.SegmentsContext;
 
 // This visitor allows both getting and setting value indicated by JSON path
 // provided via the parse tree.
