@@ -25,7 +25,7 @@ import oracle.nosql.valkey.util.PreparedStatementCache;
 import oracle.nosql.valkey.util.Utils;
 import oracle.nosql.valkey.util.Utils.ThrowingBiFunction;
 
-import static oracle.nosql.redis.util.Utils.getStringField;
+import static oracle.nosql.valkey.util.Utils.getStringField;
 
 public class HashCommandsBase extends CollectionCommandsBase {
 

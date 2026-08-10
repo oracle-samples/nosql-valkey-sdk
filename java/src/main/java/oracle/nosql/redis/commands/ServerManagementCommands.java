@@ -28,7 +28,7 @@ import oracle.nosql.valkey.RedisServerConfig;
 import oracle.nosql.valkey.util.PreparedStatementCache;
 import oracle.nosql.valkey.util.Utils;
 
-import static oracle.nosql.redis.util.Utils.*;
+import static oracle.nosql.valkey.util.Utils.*;
 
 public class ServerManagementCommands extends CommandsBase {
 

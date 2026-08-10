@@ -44,7 +44,7 @@ import oracle.nosql.valkey.commands.jsonpath.parser.JSONPathParser;
 import oracle.nosql.valkey.util.PreparedStatementCache;
 import oracle.nosql.valkey.util.Utils;
 
-import static oracle.nosql.redis.util.Utils.*;
+import static oracle.nosql.valkey.util.Utils.*;
 
 abstract class JSONCommandsBase extends CommandsBase {
 

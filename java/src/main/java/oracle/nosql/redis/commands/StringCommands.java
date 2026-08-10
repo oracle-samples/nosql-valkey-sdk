@@ -37,7 +37,7 @@ import oracle.nosql.valkey.util.Utils;
 import oracle.nosql.valkey.util.Utils.RedisRetryException;
 import oracle.nosql.valkey.util.Utils.ThrowingFunction;
 
-import static oracle.nosql.redis.util.Utils.getStringField;
+import static oracle.nosql.valkey.util.Utils.getStringField;
 
 public class StringCommands extends CommandsBase {
 

@@ -7,7 +7,7 @@
 
 package oracle.nosql.valkey;
 
-import static oracle.nosql.redis.util.Utils.escapeSimpleString;
+import static oracle.nosql.valkey.util.Utils.escapeSimpleString;
 
 public class RedisResponseException extends Exception {
 	 

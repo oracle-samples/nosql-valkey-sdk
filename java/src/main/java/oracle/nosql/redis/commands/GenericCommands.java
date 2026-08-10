@@ -29,7 +29,7 @@ import oracle.nosql.valkey.util.Utils;
 import oracle.nosql.valkey.util.Utils.ThrowingPredicate;
 import oracle.nosql.valkey.util.Utils.RedisRetryException;
 
-import static oracle.nosql.redis.util.Utils.*;
+import static oracle.nosql.valkey.util.Utils.*;
 
 public class GenericCommands extends CommandsBase {
 

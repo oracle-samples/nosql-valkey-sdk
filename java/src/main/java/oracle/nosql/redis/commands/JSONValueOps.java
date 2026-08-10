@@ -7,7 +7,7 @@
 
 package oracle.nosql.valkey.commands;
 
-import static oracle.nosql.redis.util.Utils.stringToByteBuf;
+import static oracle.nosql.valkey.util.Utils.stringToByteBuf;
 
 import java.math.MathContext;
 import java.util.ArrayList;

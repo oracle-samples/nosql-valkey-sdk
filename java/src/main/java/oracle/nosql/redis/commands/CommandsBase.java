@@ -47,7 +47,7 @@ import oracle.nosql.valkey.util.Utils;
 import oracle.nosql.valkey.util.Utils.ThrowingConsumer;
 import oracle.nosql.valkey.util.Utils.ThrowingFunction;
 
-import static oracle.nosql.redis.util.Utils.*;
+import static oracle.nosql.valkey.util.Utils.*;
 
 public abstract class CommandsBase {
 

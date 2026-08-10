@@ -23,7 +23,7 @@ import oracle.nosql.valkey.RedisServerConfig;
 import oracle.nosql.valkey.util.PreparedStatementCache;
 import oracle.nosql.valkey.util.Utils;
 
-import static oracle.nosql.redis.util.Utils.getStringField;
+import static oracle.nosql.valkey.util.Utils.getStringField;
 
 abstract class ListCommandsBase extends CollectionCommandsBase {
 
