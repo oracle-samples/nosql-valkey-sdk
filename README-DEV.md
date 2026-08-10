@@ -344,10 +344,10 @@ follows:
 
 ```bash
 java -cp path/to/nosql-valkey-<version>-jar-with-dependencies.jar \
-  oracle.nosql.redis.NoSQLRedisServer [-param1 value1 -param2 value2 ...]
+  oracle.nosql.valkey.NoSQLRedisServer [-param1 value1 -param2 value2 ...]
 ```
 
-The main class name (oracle.nosql.redis.NoSQLRedisServer) is optionally
+The main class name (oracle.nosql.valkey.NoSQLRedisServer) is optionally
 followed by command line parameters for the API proxy, which are described
 in [Command Line Parameters](#command-line-parameters) section.
 
@@ -355,7 +355,7 @@ From the last example in the previous section:
 
 ```bash
 java -cp path/to/nosql-valkey-<version>-jar-with-dependencies.jar \
-  oracle.nosql.redis.NoSQLRedisServer -auth user -compartment users/john
+  oracle.nosql.valkey.NoSQLRedisServer -auth user -compartment users/john
 ```
 
 ### Run within Java Application

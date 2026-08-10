@@ -12,7 +12,7 @@ import io.netty.util.AttributeKey;
 public class RedisClientContext {
 
     public static final AttributeKey<RedisClientContext> ATTR_KEY =
-        AttributeKey.valueOf("oracle.nosql.redis.RedisClientContext");
+        AttributeKey.valueOf("oracle.nosql.valkey.RedisClientContext");
 
     private volatile boolean isBlocked;
 
