@@ -46,7 +46,7 @@ abstract class ListCommandsBase extends CollectionCommandsBase {
     protected static final String WHERE_L_PK_COND = SQL_WHERE + L_PK_COND;
 
     protected static final String FROM_JOIN_WHERE_L_PK =
-        "FROM NESTED TABLES(valkey.lists $l ANCESTORS(redis $r)) " +
+        "FROM NESTED TABLES(valkey.lists $l ANCESTORS(valkey $r)) " +
             WHERE_L_PK_COND + "AND $l.cid = $r.value.cid ";
     protected static final String PK_COLS = "$l.slot, $l.id, $l.elemId";
     protected static final String PK_COLS_DESC =
