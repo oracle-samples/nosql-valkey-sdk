@@ -16,10 +16,10 @@
     <copyright>Copyright (c) 2026 Oracle and/or its affiliates. All rights reserved.</copyright>
 
     <!-- dependency versions -->
-    <netty.version>4.1.136.Final</netty.version>
+    <netty.version>4.1.137.Final</netty.version>
     <antlr.version>4.13.2</antlr.version>
     <re2j.version>1.8</re2j.version>
-    <jackson.version>2.18.7</jackson.version>
+    <jackson.version>2.18.9</jackson.version>
     <nosqldriver.version>5.4.23</nosqldriver.version>
   </properties>
 
