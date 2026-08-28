@@ -20,6 +20,7 @@
     <antlr.version>4.13.2</antlr.version>
     <re2j.version>1.8</re2j.version>
     <jackson.version>2.18.9</jackson.version>
+    <!-- do not bump the version until ML-KEM support decision -->
     <nosqldriver.version>5.4.23</nosqldriver.version>
   </properties>
 
