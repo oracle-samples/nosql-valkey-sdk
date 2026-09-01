@@ -99,62 +99,124 @@ dependency of your project in *pom.xml*:
     Change the version above to the desired version.
 
 ## Quickstart
+  
+	The goal of the quick start is to set up a test environment quickly.   As such, you will use
+KVLITE, a lightweight, single-node, single-shard, non-replicated version of the database,; the HTTP Proxy, all
+applications written using one of the NoSQL SDKs go through the proxy,; a Valkey/Redis CLI , 
+quick way to issue command,; and the API Adapter (Proxy). In addition, if you want to do testing
+during setup, we recommend downloading on of the NoSQL SDKs.
 
-1. Download and install
+### Set up the backend
+
+1. Download the
 [Oracle NoSQL Database](https://www.oracle.com/database/technologies/nosql-database-server-downloads.html)
-Enterprise Edition.
+Enterprise Edition and unzip it.  The directory where you unzip it becomes the <kv-install-dir>. 
+You can optionally download the Community Edition.   We are not going to walk through the standard database setup 
+but rather use a few of the jar files contained in the package.   
 
-2. Download and install (Equivalent Valkey components can be used)
-[Redis CLI](https://redis.io/docs/latest/develop/tools/cli/) as indicated.
-
-    Alternatively you may install *redis-tools* package (for Debian or Ubuntu
-Linux) which includes *redis-cli*:
-
+2. Run KVLite to create a single-shard database E.g.:
+  <kv-install-dir> - from step 1
+  <kv-root-dir> - location where you want the database files placed
+    
     ```bash
-    sudo apt update
-    sudo apt install redis-tools
-    ```
-
-3. Install the API proxy as a Docker container as described in
-[Installation](#installation) section.
-
-4. Run KVLite. E.g.:
-
-    ```bash
-    $ cd <kv-install-dir>/kv-25.3.21/lib
+    $ cd <kv-install-dir>/kv-XX.YY.ZZ/lib
     $ java -jar kvstore.jar kvlite -root <kv-root-dir> -store kvstore \
-      -secure-config disable
-    Created new kvlite store with args:
-    -root /home/ypolonsk/test/kv/kvstore-ns/ -store kvstore \
-      -host <hostname> -port 5000 -admin-web-port -1 -secure-config disable
+      -secure-config disable &
+    
+    In the <kv-root-dir> you should have a config.xml, security.policy, snaboot_0.x
+    files and a kvstore directory that holds the database file.  The config.xml
+    contains the parameters used to create the single-shard database. Kvlite will
+    listen on port 5000 by default.
     ```
 
-5. Run NoSQL Database Proxy. E.g.:
+    Basic verification: you can look for the process
+    ```bash
+    ps -ef | grep kvlite
+    ```
+    
+    Advanced verification: you get details of the topology.  Note if you used a different port above,
+    then adjust accordingly.
+     ```bash
+    $ cd <kv-install-dir>/kv-XX.YY.ZZ/lib
+    $ java -jar lib/kvstore.jar ping -host localhost -port 5000
+    ```
+    You will see output similar to below.
+    ```
+    Pinging components of store kvstore based upon topology sequence #14
+    10 partitions and 1 storage nodes
+    Time: 2026-08-11 18:15:09 UTC   Version: 26.1.14
+    Shard Status: healthy: 1 writable-degraded: 0 read-only: 0 offline: 0 total: 1
+    Admin Status: healthy
+    Zone [name=KVLite id=zn1 type=PRIMARY allowArbiters=false masterAffinity=false]   RN Status: online: 1 read-only: 0 offline: 0
+    Storage Node [sn1] on phoenix92821: 5000    Zone: [name=KVLite id=zn1 type=PRIMARY allowArbiters=false masterAffinity=false]    Status: RUNNING   Ver: 26.1.14 2026-06-24 13:36:16 UTC  Build id: 738806fc6c89 Edition: Enterprise    isMasterBalanced: true  serviceStartTime: 2026-08-10 20:57:45 UTC
+        Admin [admin1]          Status: RUNNING,MASTER  serviceStartTime: 2026-08-10 20:57:48 UTC     stateChangeTime: 2026-08-10 20:57:47 UTC availableStorageSize: 2 GB
+        Rep Node [rg1-rn1]      Status: RUNNING,MASTER sequenceNumber: 1,141 haPort: 5003 availableStorageSize: 9 GB storageType: HD   serviceStartTime: 2026-08-10 20:57:46 UTC       stateChangeTime: 2026-08-10 20:57:47 UTC
+    ```
+    
+3. Run NoSQL Database Proxy. E.g.:
+    
+    <kv-install-dir> - from step 1
+    -helperHosts --  specifies the host name and port pair to the proxy so it can discover and connect to kvlite, use same port from above
 
     ```bash
-    $ cd <kv-install-dir>/kv-25.3.21/lib
+    $ cd <kv-install-dir>/kv-XX.YY.ZZ/lib
     $ java -jar httpproxy.jar -httpPort 8080 -storeName kvstore \
-      -helperHosts localhost:5000 -verbose true
+      -helperHosts localhost:5000 -verbose true &
     Starting HTTP Proxy
     Proxy started:
     ...
     ```
 
-6. On another terminal, run API proxy:
-(Note that NoSQL endpoint defaults to *host.docker.internal:8080*, see
-[Command Line Parameters](#command-line-parameters)).
+    Basic verification: you can look for the process
+    ```bash
+    ps -ef | grep httpproxy
+    ```
+      
+4. Advanced Verification (optional)
+  This requires compiling and running a small program that 
+  connects through the proxy to kvlite.   In the tests directory 
+  locate the ProxyTest.java. This a simple program you can use to
+  connect to kvlite database that is not secure.  It does a request
+  to see if a table exists or not.  If you get either a "Proxy request failed:"
+  or "Proxy request succeeded" then application program -> HttpsProxy -> KVlite 
+  is working.  Download and unpackage the lastest NoSQL Java SDK from here:
+  https://github.com/oracle/nosql-java-sdk/releases.  This package contains 
+  the nosqldriver.jar.
+      
+     ```bash
+    $  javac -cp .:<directory-path-to-java-sdk>/nosqldriver.jar ProxyTest.java
+    $  java -cp .:<directory-path-to-java-sdk>/nosqldriver.jar ProxyTest
+    ```   
+         
+### Set up the frontend
+  
+5. Download and install (Equivalent Redis components can be used)
+[Valkey CLI](https://valkey.io/download/) as indicated.  
+
+    Alternatively you may install *valkey* package (for Debian or Ubuntu
+Linux) which includes *valkey-cli*:
 
     ```bash
-    $ docker run --rm -p 6379:6379 oracle/nosql-valkey-api -auth kvstore
-    Nov 25, 2025 3:25:55 AM io.netty.handler.logging.LoggingHandler channelRegistered
-    INFO: [id: 0xae728060] REGISTERED
-    Nov 25, 2025 3:25:55 AM io.netty.handler.logging.LoggingHandler bind
-    INFO: [id: 0xae728060] BIND: /0.0.0.0:6379
-    Nov 25, 2025 3:25:55 AM io.netty.handler.logging.LoggingHandler channelActive
-    INFO: [id: 0xae728060, L:/[0:0:0:0:0:0:0:0]:6379] ACTIVE
+    sudo apt update
+    sudo apt-get install valkey
+    ```
+6. Install the Valkey API Adapter as a Docker container as described in
+[Installation](#installation) section.
+  
+7. On another terminal, run API proxy:
+(Note see [Command Line Parameters](#command-line-parameters) for additional information).
+
+    ```bash
+     docker run --rm -p 6379:6379 localhost/oracle/nosql-valkey-api:latest -auth kvstore -endpoint http://host.docker.internal:8080   
+		Aug 12, 2026 2:36:56 PM oracle.nosql.valkey.NoSQLRedisServer start
+		INFO: Initializing table schema...
+		Aug 12, 2026 2:36:56 PM oracle.nosql.valkey.NoSQLRedisServer start
+		INFO: Table schema initialized
+		Aug 12, 2026 2:36:56 PM oracle.nosql.valkey.NoSQLRedisServer start
+		INFO: Started Valkey API Proxy on 127.0.0.1:6379  
     ```
 
-6. On another terminal start *redis-cli* or *valkey-cli*. No arguments are necessary since
+8. On another terminal start *redis-cli* or *valkey-cli*. No arguments are necessary since
 it uses the same default host and port. Then execute some commands. For
 example:
 

@@ -31,13 +31,31 @@ docker tag ghcr.io/oracle/nosql-valkey-api oracle/nosql-valkey-api
 
 After installation, start the API Proxy using Docker or Java and connect with any compatible client.
 
+## Quick start: building the container image
+
+This assume you have cloned this repository and are in the root directory.
+
+To build a container image named oracle/nosql-valkey-api:latest use:
+
+````bash
+mvn -f ./java/pom.xml clean package && docker build -t oracle/nosql-valkey-api:latest .
+````
+
+
 ## Documentation
 
-For complete installation instructions, configuration options, supported Valkey/Redis commands, and usage examples, see the Oracle NoSQL Database documentation:
+For a reproducible local Docker workflow with KVLite, the API Adapter, and
+Redis/Valkey CLI containers, see
+[oracle-nosql-valkey-docker-runbook.md](oracle-nosql-valkey-docker-runbook.md).
 
+For complete developer documentation, including configuration, command-line
+parameters, supported environments, and Java usage, see
+[README-DEV.md](README-DEV.md).
+
+For Oracle NoSQL Database and Proxy install and configuration, see the Oracle NoSQL Database documentation:
 - https://docs.oracle.com/en/database/other-databases/nosql-database/
 
-Developer documentation and additional guides are available in this repository.
+
 
 ## Examples
 
